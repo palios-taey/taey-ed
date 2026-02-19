@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+*.db
+*.sqlite
+/tmp/
+.env
+palios-taey-secrets.json
+*.log

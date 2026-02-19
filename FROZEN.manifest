@@ -1,0 +1,3 @@
+# FROZEN.manifest - Files that must not be modified without explicit unfreezing
+# Format: one file path per line (relative to repo root)
+# Pre-commit hook checks: no file in this list appears in git diff --cached

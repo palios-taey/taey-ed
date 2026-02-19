@@ -1,0 +1,34 @@
+version: "9.0"
+platform: test
+app_name: "Firefox"
+
+screens:
+  test_screen:
+    description: "TRANSITION - Test screen placeholder, needs real tree data to map properly"
+    markers:
+      - text: "test"
+        match: contains
+    tree:
+      type: sequence
+      children:
+        - type: action
+          action: wait
+          params:
+            seconds: 2
+    expected_next:
+      - next_screen
+
+  next_screen:
+    description: "TRANSITION - Next screen placeholder"
+    markers:
+      - text: "next"
+        match: contains
+    tree:
+      type: sequence
+      children:
+        - type: action
+          action: wait
+          params:
+            seconds: 1
+    expected_next:
+      - test_screen

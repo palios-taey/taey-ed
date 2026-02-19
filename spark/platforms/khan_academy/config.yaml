@@ -1,0 +1,272 @@
+platform: khan_academy
+version: "13.0"
+
+# YAML screens serve as KNOWN-GOOD fallback AND override for Weaviate entries.
+# When Weaviate matches a screen AND YAML also matches, YAML tree takes priority.
+# This prevents bad consultation-learned BTs from causing screen skipping.
+#
+# COMPLETION CHECK: Server Step 2.7 handles the universal case:
+# after video_poll (continue_loop) + tree changed → content done → navigate forward.
+# YAML markers handle the direct-navigation case (landing on completed content).
+
+screens:
+
+  # ═══════════════════════════════════════════════════════════
+  # VIDEO SCREENS — three states, same for every video everywhere
+  # ═══════════════════════════════════════════════════════════
+
+  VIDEO_COMPLETE:
+    description: >
+      TRANSITION — Video done (sidebar shows "completed Video" for current item).
+      Close modal and return to unit page. Checked FIRST (higher marker count).
+      DO NOT click "Up next" — uses mastery-adaptive routing that skips content.
+    markers:
+      - text: "completed Video"
+        match: contains
+      - text: "Transcript"
+        match: contains
+      - text: "Play"
+    tree:
+      type: sequence
+      children:
+        - type: action
+          action: press_key
+          params:
+            key: Escape
+        - type: action
+          action: wait
+          params:
+            seconds: 2.0
+
+  VIDEO_PLAYING:
+    description: >
+      CONTENT — Video is currently playing (Pause button visible).
+      video_poll sleeps 30s, returns continue_loop. Pipeline re-captures
+      tree on each loop. When video ends, server Step 2.7 detects tree
+      change and navigates forward automatically.
+    markers:
+      - text: "Pause"
+        match: contains
+      - text: "Transcript"
+        match: contains
+    tree:
+      type: action
+      action: video_poll
+
+  VIDEO_UNSTARTED:
+    description: >
+      CONTENT — Video player visible, Play button present, not yet started.
+      Click Play to begin, then pipeline re-captures and matches VIDEO_PLAYING.
+      Negative marker: only matches if sidebar does NOT show "completed Video"
+      (prevents replaying completed videos).
+    markers:
+      - text: "Play"
+      - text: "Transcript"
+        match: contains
+      - text: "completed Video"
+        match: contains
+        present: false
+    tree:
+      type: sequence
+      children:
+        - type: action
+          action: find_and_click
+          params:
+            target: "Play"
+            role: AXButton
+            strategy: mouse_click
+            match_mode: contains
+            post_delay: 3.0
+
+  # ═══════════════════════════════════════════════════════════
+  # ARTICLE — opened as modal from unit page
+  # ═══════════════════════════════════════════════════════════
+
+  ARTICLE_CONTENT:
+    description: >
+      CONTENT — Article opened as modal. Opening = completion on KA.
+      Extract content, then close modal and return to unit/course page.
+      DO NOT click "Up next" — uses mastery-adaptive routing that skips content.
+    markers:
+      - text: "Up next"
+        match: contains
+      - text: "Transcript"
+        match: contains
+        present: false
+    extract:
+      scope: webarea
+      content:
+        - role: AXStaticText
+          text: true
+    tree:
+      type: sequence
+      children:
+        - type: action
+          action: press_key
+          params:
+            key: Escape
+        - type: action
+          action: wait
+          params:
+            seconds: 2.0
+
+  # ═══════════════════════════════════════════════════════════
+  # NAVIGATION — course and unit overview screens
+  # ═══════════════════════════════════════════════════════════
+
+  UNIT_OVERVIEW:
+    description: >
+      NAVIGATION — Unit page showing content list (videos, articles, exercises).
+      Find all content links and use LLM to pick the first uncompleted item.
+      Priority: Videos > Articles > Exercises. Skip completed items.
+      Negative markers exclude exercise/quiz screens that share the same sidebar.
+    markers:
+      - text: "Content list"
+        match: contains
+      - text: "in course"
+        match: contains
+      - text: "COURSE:"
+        match: contains
+      # Negative markers: exercise screens have these but UNIT_OVERVIEW doesn't
+      - text: "Check"
+        present: false
+      - text: "Select an answer"
+        present: false
+    tree:
+      type: sequence
+      children:
+        - type: action
+          action: find_all
+          params:
+            role: AXLink
+          store: all_links
+        - type: action
+          action: send_to_llm
+          params:
+            question_type: navigate
+            items: "$all_links"
+          store: nav_result
+        - type: action
+          action: find_and_click
+          params:
+            target: "$nav_result.answer"
+            role: AXLink
+            strategy: mouse_click
+            match_mode: contains
+            post_delay: 3.0
+
+  COURSE_OVERVIEW:
+    description: >
+      NAVIGATION — Course overview page showing units/sections.
+      Find all links and use LLM to pick the next content to work on.
+    markers:
+      - text: "Course challenge"
+        match: contains
+      - text: "Unit"
+        match: contains
+    tree:
+      type: sequence
+      children:
+        - type: action
+          action: find_all
+          params:
+            role: AXLink
+          store: all_links
+        - type: action
+          action: send_to_llm
+          params:
+            question_type: navigate
+            items: "$all_links"
+          store: nav_result
+        - type: action
+          action: find_and_click
+          params:
+            target: "$nav_result.answer"
+            role: AXLink
+            strategy: mouse_click
+            match_mode: contains
+            post_delay: 3.0
+
+  PRACTICE_START:
+    description: >
+      TRANSITION — Exercise start screen with "Let's go" or "Start" button.
+    markers:
+      - text: "Let"
+        match: contains
+      - role: AXButton
+        count_min: 1
+    tree:
+      type: sequence
+      children:
+        - type: action
+          action: find_and_click
+          params:
+            target: "Let"
+            role: AXButton
+            strategy: mouse_click
+            match_mode: contains
+            post_delay: 3.0
+
+  EXERCISE_COMPLETE:
+    description: >
+      TRANSITION — Exercise score card shown after all questions answered.
+      Go back to unit/course page.
+    markers:
+      - text: "Score"
+        match: contains
+    tree:
+      type: sequence
+      children:
+        - type: action
+          action: press_key
+          params:
+            key: left
+            modifiers: ["cmd"]
+        - type: action
+          action: wait
+          params:
+            seconds: 2.0
+
+  # ═══════════════════════════════════════════════════════════
+  # EXERCISE — correct/wrong feedback screens
+  # ═══════════════════════════════════════════════════════════
+
+  EXERCISE_CORRECT_FEEDBACK:
+    description: >
+      TRANSITION — Correct answer feedback. Click "Next question" to advance.
+    markers:
+      - text: "Next question"
+        match: contains
+      - text: "Correct"
+        match: contains
+    tree:
+      type: sequence
+      children:
+        - type: action
+          action: find_and_click
+          params:
+            target: "Next question"
+            role: AXButton
+            strategy: mouse_click
+            match_mode: contains
+            post_delay: 2.0
+
+  EXERCISE_WRONG_FEEDBACK:
+    description: >
+      TRANSITION — Wrong answer feedback with "Try again" button.
+    markers:
+      - text: "Try again"
+        match: contains
+      - text: "Incorrect"
+        match: contains
+    tree:
+      type: sequence
+      children:
+        - type: action
+          action: find_and_click
+          params:
+            target: "Try again"
+            role: AXButton
+            strategy: mouse_click
+            match_mode: contains
+            post_delay: 2.0
