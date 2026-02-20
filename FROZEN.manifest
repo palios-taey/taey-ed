@@ -56,3 +56,6 @@ app/tasks/bt_handlers.py
 app/tasks/extract_question.py
 app/tasks/handle_extraction.py
 app/pipeline.py
+
+# Step 5: prompt_codex.py (heart of V8)
+spark/tasks/prompt_codex.py
