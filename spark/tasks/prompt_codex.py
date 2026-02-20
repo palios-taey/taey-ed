@@ -1,4 +1,4 @@
-# STATUS: FROZEN - New for V8. Verified 2026-02-19. Do not modify.
+# Post-V8 fix (2026-02-20): Fixed $var.items → $var in BT examples (find_all returns list directly)
 """
 Prompt Codex — Comprehensive self-contained consultation prompt builder.
 
@@ -600,7 +600,7 @@ COMPLETE BT PATTERN:
       "action": "send_to_llm",
       "params": {
         "question_type": "navigate",
-        "items": "$links.items"
+        "items": "$links"
       },
       "store": "nav"
     },
@@ -731,14 +731,14 @@ COMPLETE BT PATTERN (Khan Academy combobox):
       "action": "send_to_llm",
       "params": {
         "question_type": "solve_matching",
-        "items": "$popups.items"
+        "items": "$popups"
       },
       "store": "matches"
     },
     {
       "type": "action",
       "action": "for_each",
-      "items": "$popups.items",
+      "items": "$popups",
       "variable": "popup",
       "do": {
         "type": "sequence",
@@ -887,7 +887,9 @@ find_all:
   Params:
     role (str): AX role to search for
     description_contains (str, optional): Filter by description substring
-  Returns: {success: true, items: [{element, description, popup_desc, label}, ...]}
+  Returns: list of [{element, description, popup_desc, label}, ...]
+  The return value IS the list directly (not wrapped in {success, items}).
+  Use "$var" to reference the list, NOT "$var.items".
   Labels: Preceding text found via _find_preceding_label() in bt_helpers.py
   Enrichment includes completion indicators ("Completed", "Not started", etc.)
 

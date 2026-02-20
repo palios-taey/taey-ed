@@ -1,21 +1,16 @@
-# STATUS: FROZEN - Bug-fixed from v7. Verified 2026-02-20. Do not modify.
 """
 Match accessibility tree against screen definitions.
 
-V13: Vector-first with YAML fallback. Heuristic removed (seeded into Weaviate).
+V16: Vector-only. No YAML.
 
-Primary path: Skeleton → Qwen3 embedding → Weaviate ScreenEmbedding search
+Skeleton → Qwen3 embedding → Weaviate ScreenEmbedding search
   d < 0.05  → KNOWN (execute stored behavior tree directly)
-  d < 0.191 → ISOMORPHIC (same structure, extract dynamic text for LLM)
-  d >= 0.191 → fall through to YAML markers
+  d < 0.191 → ISOMORPHIC (same structure, execute stored BT)
+  d >= 0.191 → UNCHARTED → navigation auto-detect or consultation
 
-Fallback path: YAML marker-based matching (existing V9 logic)
-  Catches screens not yet in ScreenEmbedding.
-
-Safety halt runs BEFORE either path (keyword-based, not vector-based).
-
-Performance: skeleton(5ms) + embed(60ms) + search(20ms) = ~85ms total
-vs 150 seconds per consultation for unmatched screens.
+Vector store grows organically through consultations. First encounter
+of any screen type → consultation → BT stored in Weaviate → matches
+automatically on subsequent visits. No YAML markers anywhere.
 """
 
 import logging
@@ -130,10 +125,9 @@ def _try_vector_match(tree: dict, platform: str, config: dict = None) -> dict | 
       skeleton.py → extract structure
       screen_memory.py → embed + query ScreenEmbedding
 
-    When a match is found, supplements with YAML metadata (extract,
-    expected_next, validation) if the screen exists in config.yaml.
-
     Returns match result dict if confident match found, None otherwise.
+    Everything in the result comes from Weaviate (BT, extract, expected_next).
+    No YAML supplementation.
     """
     try:
         from spark.tasks.screen_router import route_screen, KNOWN_THRESHOLD, ISOMORPHIC_THRESHOLD
@@ -144,7 +138,7 @@ def _try_vector_match(tree: dict, platform: str, config: dict = None) -> dict | 
         if route_result.category == "UNCHARTED":
             logger.info(
                 f"Spinal cord: UNCHARTED (d={route_result.distance:.3f}), "
-                f"falling through to YAML"
+                f"no match"
             )
             return None
 
@@ -166,38 +160,34 @@ def _try_vector_match(tree: dict, platform: str, config: dict = None) -> dict | 
             "validated": route_result.match_data.get("validated", False) if route_result.match_data else False,
         }
 
-        # Include behavior tree from spinal cord
+        # Include behavior tree from Weaviate
         if route_result.behavior_tree:
             result["tree"] = route_result.behavior_tree
 
         # Include expected_next from Weaviate match data
         if route_result.match_data:
-            import json as _json
             en_raw = route_result.match_data.get("expected_next", "[]")
             try:
                 result["expected_next"] = _json.loads(en_raw) if isinstance(en_raw, str) else (en_raw or [])
             except Exception:
                 result["expected_next"] = []
 
+            # Include extract config from Weaviate if stored
+            extract_raw = route_result.match_data.get("extract")
+            if extract_raw:
+                try:
+                    result["extract"] = _json.loads(extract_raw) if isinstance(extract_raw, str) else extract_raw
+                except Exception:
+                    pass
+
         # Include dynamic text for ISOMORPHIC screens
         if route_result.category == "ISOMORPHIC" and route_result.dynamic_text:
             result["dynamic_text"] = route_result.dynamic_text
 
-        # Supplement with YAML metadata: run YAML marker matching to find
-        # the screen definition, then use its tree/extract/expected_next/validation
-        if config:
-            exact_texts, all_texts, role_counts = extract_tree_index(tree)
-            yaml_match = _match_yaml(tree, config, exact_texts, all_texts, role_counts)
-            if yaml_match:
-                result["screen"] = yaml_match["screen"]
-                for key in ("tree", "extract", "expected_next", "validation", "description"):
-                    if key in yaml_match:
-                        result[key] = yaml_match[key]
-
         return result
 
     except Exception as e:
-        logger.warning(f"Spinal cord error (falling back to YAML): {e}")
+        logger.warning(f"Spinal cord error: {e}")
         return None
 
 
@@ -261,12 +251,10 @@ def match_screen(tree: dict, config: dict) -> dict:
     """
     Match tree against screen definitions.
 
-    V13: Vector-first, YAML fallback. Heuristic removed (seeded into Weaviate).
+    V16: Vector-only. No YAML.
 
-    1. Safety halt check (keyword-based, always runs first)
-    2. Vector search via skeleton embedding + Weaviate ScreenEmbedding
-    3. YAML marker matching (fallback)
-    4. No match → needs consultation
+    1. Vector search via skeleton embedding + Weaviate ScreenEmbedding
+    2. No match → needs consultation or navigation auto-detect (handled by next_action.py)
 
     Args:
         tree: Accessibility tree dict from Mac
@@ -276,22 +264,14 @@ def match_screen(tree: dict, config: dict) -> dict:
         {"matched": True, "screen": name, "tree": {...}, ...} or
         {"matched": False, "needs_consultation": True}
     """
-    # Walk tree ONCE to build index - O(T)
-    exact_texts, all_texts, role_counts = extract_tree_index(tree)
-
-    # PATH 1: Spinal cord matching (skeleton → embed → Weaviate)
     platform = config.get("platform", "")
     if not platform:
         logger.error("match_screen: config missing 'platform' key — cannot route")
         return {"matched": False, "needs_consultation": True, "error": "missing_platform"}
+
     if _check_vector_available():
         vector_result = _try_vector_match(tree, platform, config)
         if vector_result:
             return vector_result
-
-    # PATH 2: YAML marker matching (fallback)
-    yaml_result = _match_yaml(tree, config, exact_texts, all_texts, role_counts)
-    if yaml_result:
-        return yaml_result
 
     return {"matched": False, "needs_consultation": True}

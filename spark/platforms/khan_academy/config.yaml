@@ -1,13 +1,13 @@
 platform: khan_academy
-version: "13.0"
+version: "14.0"
 
-# YAML screens serve as KNOWN-GOOD fallback AND override for Weaviate entries.
-# When Weaviate matches a screen AND YAML also matches, YAML tree takes priority.
-# This prevents bad consultation-learned BTs from causing screen skipping.
+# REFERENCE ONLY — not used for screen matching.
+# Screen matching is vector-only (Weaviate ScreenEmbedding).
+# These screen definitions exist as documentation of known BT patterns
+# for when consultations teach new screens to the vector store.
 #
-# COMPLETION CHECK: Server Step 2.7 handles the universal case:
-# after video_poll (continue_loop) + tree changed → content done → navigate forward.
-# YAML markers handle the direct-navigation case (landing on completed content).
+# Navigation, exercises, quizzes, feedback — all handled by LLM intelligence.
+# Only video and article have deterministic BTs worth documenting here.
 
 screens:
 
@@ -95,7 +95,7 @@ screens:
         present: false
     extract:
       scope: webarea
-      content:
+      text:
         - role: AXStaticText
           text: true
     tree:
@@ -111,162 +111,9 @@ screens:
             seconds: 2.0
 
   # ═══════════════════════════════════════════════════════════
-  # NAVIGATION — course and unit overview screens
+  # ALL OTHER SCREENS → LLM intelligence
   # ═══════════════════════════════════════════════════════════
-
-  UNIT_OVERVIEW:
-    description: >
-      NAVIGATION — Unit page showing content list (videos, articles, exercises).
-      Find all content links and use LLM to pick the first uncompleted item.
-      Priority: Videos > Articles > Exercises. Skip completed items.
-      Negative markers exclude exercise/quiz screens that share the same sidebar.
-    markers:
-      - text: "Content list"
-        match: contains
-      - text: "in course"
-        match: contains
-      - text: "COURSE:"
-        match: contains
-      # Negative markers: exercise screens have these but UNIT_OVERVIEW doesn't
-      - text: "Check"
-        present: false
-      - text: "Select an answer"
-        present: false
-    tree:
-      type: sequence
-      children:
-        - type: action
-          action: find_all
-          params:
-            role: AXLink
-          store: all_links
-        - type: action
-          action: send_to_llm
-          params:
-            question_type: navigate
-            items: "$all_links"
-          store: nav_result
-        - type: action
-          action: find_and_click
-          params:
-            target: "$nav_result.answer"
-            role: AXLink
-            strategy: mouse_click
-            match_mode: contains
-            post_delay: 3.0
-
-  COURSE_OVERVIEW:
-    description: >
-      NAVIGATION — Course overview page showing units/sections.
-      Find all links and use LLM to pick the next content to work on.
-    markers:
-      - text: "Course challenge"
-        match: contains
-      - text: "Unit"
-        match: contains
-    tree:
-      type: sequence
-      children:
-        - type: action
-          action: find_all
-          params:
-            role: AXLink
-          store: all_links
-        - type: action
-          action: send_to_llm
-          params:
-            question_type: navigate
-            items: "$all_links"
-          store: nav_result
-        - type: action
-          action: find_and_click
-          params:
-            target: "$nav_result.answer"
-            role: AXLink
-            strategy: mouse_click
-            match_mode: contains
-            post_delay: 3.0
-
-  PRACTICE_START:
-    description: >
-      TRANSITION — Exercise start screen with "Let's go" or "Start" button.
-    markers:
-      - text: "Let"
-        match: contains
-      - role: AXButton
-        count_min: 1
-    tree:
-      type: sequence
-      children:
-        - type: action
-          action: find_and_click
-          params:
-            target: "Let"
-            role: AXButton
-            strategy: mouse_click
-            match_mode: contains
-            post_delay: 3.0
-
-  EXERCISE_COMPLETE:
-    description: >
-      TRANSITION — Exercise score card shown after all questions answered.
-      Go back to unit/course page.
-    markers:
-      - text: "Score"
-        match: contains
-    tree:
-      type: sequence
-      children:
-        - type: action
-          action: press_key
-          params:
-            key: left
-            modifiers: ["cmd"]
-        - type: action
-          action: wait
-          params:
-            seconds: 2.0
-
-  # ═══════════════════════════════════════════════════════════
-  # EXERCISE — correct/wrong feedback screens
-  # ═══════════════════════════════════════════════════════════
-
-  EXERCISE_CORRECT_FEEDBACK:
-    description: >
-      TRANSITION — Correct answer feedback. Click "Next question" to advance.
-    markers:
-      - text: "Next question"
-        match: contains
-      - text: "Correct"
-        match: contains
-    tree:
-      type: sequence
-      children:
-        - type: action
-          action: find_and_click
-          params:
-            target: "Next question"
-            role: AXButton
-            strategy: mouse_click
-            match_mode: contains
-            post_delay: 2.0
-
-  EXERCISE_WRONG_FEEDBACK:
-    description: >
-      TRANSITION — Wrong answer feedback with "Try again" button.
-    markers:
-      - text: "Try again"
-        match: contains
-      - text: "Incorrect"
-        match: contains
-    tree:
-      type: sequence
-      children:
-        - type: action
-          action: find_and_click
-          params:
-            target: "Try again"
-            role: AXButton
-            strategy: mouse_click
-            match_mode: contains
-            post_delay: 2.0
+  # Navigation, exercises, quizzes, feedback screens are NOT mapped here.
+  # They are handled by:
+  #   - Step 5 navigation auto-detect (≥5 links → LLM picks next item)
+  #   - Consultation flow (unknown screens → LLM generates BT)

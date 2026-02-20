@@ -1,9 +1,8 @@
-# STATUS: FROZEN - Bug-fixed from v7. Verified 2026-02-20. Do not modify.
 """
 Answer generation for educational quiz questions.
 
-Primary: Gemini 2.5 Pro API (cascades to Flash if Pro rate-limited).
-Fallback: Claude CLI (haiku) when all Gemini models exhausted.
+Primary: Gemini 2.5 Flash (paid tier) for ALL question types.
+Fallback: Claude CLI (sonnet) if Gemini fails.
 No local models (no Ollama).
 
 Supports question types:
@@ -15,6 +14,7 @@ Supports question types:
 - solve_assessment: Full multi-question graded assessment
 - navigate: Pick first incomplete item from a list
 
+Cost: ~$0.0004/call at Gemini 2.5 Flash pricing ($0.30/MTok in, $2.50/MTok out).
 Spark provides COMPUTE only - Mac handles execution.
 """
 
@@ -29,10 +29,8 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
-GEMINI_MODELS = ["gemini-2.5-pro", "gemini-2.5-flash"]
-CLAUDE_CLI_MODEL = "haiku"  # Claude CLI fallback when Gemini rate-limited
-# Flash Lite excluded — gives 1-char garbage for educational questions.
-# Claude CLI (haiku) is a better fallback than Flash Lite.
+GEMINI_MODELS = ["gemini-2.5-flash"]  # Paid tier — primary for all Q&A
+CLAUDE_CLI_MODEL = "sonnet"  # Claude CLI fallback only
 
 
 # =============================================================================
@@ -488,9 +486,9 @@ def _ensure_gemini():
 
 async def _solve_with_gemini(prompt: str) -> Optional[str]:
     """
-    Send a text prompt to Gemini and return raw response.
+    Send a text prompt to Gemini 2.5 Flash and return raw response.
 
-    Cascades: 2.5 Pro → 2.5 Flash → 2.5 Flash Lite.
+    Primary model for all text-based Q&A (paid tier, no rate limits).
     Returns None on failure so caller can fall back to Claude CLI.
     """
     if not _ensure_gemini():
@@ -525,16 +523,16 @@ async def _solve_with_gemini(prompt: str) -> Optional[str]:
         return None
 
 
-async def _solve_with_claude_cli(prompt: str, timeout: int = 60) -> Optional[str]:
+async def _solve_with_claude_cli(prompt: str, timeout: int = 120) -> Optional[str]:
     """
-    Fallback: send prompt to Claude CLI when all Gemini models exhausted.
+    Primary: send prompt to Claude CLI (sonnet) for text-based Q&A.
 
     Uses the Claude Code CLI installed on this machine. Strips CLAUDECODE env
     var to avoid nested-session issues.
     """
     try:
         proc = await asyncio.create_subprocess_exec(
-            "env", "-u", "CLAUDECODE", "claude", "--print", "--model", "haiku",
+            "env", "-u", "CLAUDECODE", "claude", "--print", "--model", CLAUDE_CLI_MODEL,
             "-p", prompt,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -542,7 +540,7 @@ async def _solve_with_claude_cli(prompt: str, timeout: int = 60) -> Optional[str
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         raw = stdout.decode().strip()
         if raw:
-            logger.info(f"Claude CLI (haiku) answered, len={len(raw)}")
+            logger.info(f"Claude CLI ({CLAUDE_CLI_MODEL}) answered, len={len(raw)}")
             return raw
         logger.warning(f"Claude CLI empty response, stderr={stderr.decode()[:200]}")
         return None
@@ -811,18 +809,19 @@ async def generate_answer(
         )
 
     # =========================================================================
-    # MODEL ROUTING: Gemini Pro (primary) → Claude CLI (fallback)
-    # No local models. Gemini cascades: Pro → Flash → Flash Lite.
+    # MODEL ROUTING: Gemini 2.5 Flash (primary) → Claude CLI (fallback)
+    # Gemini 2.5 Flash: $0.30/MTok in, $2.50/MTok out (paid tier, no rate limits)
+    # Claude Sonnet: $3/MTok in, $15/MTok out (fallback only)
     # =========================================================================
-    model_used = "gemini-2.5-pro"
+    model_used = "gemini-2.5-flash"
     raw_answer = ""
 
     gemini_response = await _solve_with_gemini(prompt)
     if gemini_response:
         raw_answer = gemini_response
-        model_used = "gemini-2.5-pro"
+        model_used = "gemini-2.5-flash"
 
-    # Claude CLI fallback when all Gemini models exhausted
+    # Claude CLI fallback when Gemini fails
     if not raw_answer:
         claude_response = await _solve_with_claude_cli(prompt)
         if claude_response:

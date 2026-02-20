@@ -1,14 +1,25 @@
-# STATUS: FROZEN - V8 next_action state machine. Verified 2026-02-19. Do not modify.
 """
 /next_action — V8 Directive Model.
 
 Mac sends state, Spark returns ONE directive. All intelligence server-side.
 Mac is a dumb executor; Spark makes all decisions.
 
+Flow:
+  1. Active consultation? → wait or execute completed BT
+  2. Validate previous action → stuck detection, wrong-answer detection
+  3. match_screen() → vector-only (Weaviate ScreenEmbedding)
+  4. No match + many links → NAVIGATION_AUTO (LLM picks first incomplete)
+  5. No match + few links → consultation (screenshot needed)
+
 Bug fixes from V7:
   #8: Uses CURRENT tree hash for validation, not stale consultation hash
   #9: Single match_screen call (remove double-call)
   #10: Log + flag when after-tree matches nothing
+
+Post-V8 fixes (2026-02-20):
+  - Step 1: Handle "not_found" consultations (no infinite wait)
+  - Step 2.5: Bypass stuck escalation for navigation screens (≥5 links)
+  - Step 5: Navigation auto-detect with LLM intelligence
 """
 
 import json
@@ -33,6 +44,20 @@ router = APIRouter()
 
 def _make_directive_id() -> str:
     return f"d-{uuid.uuid4().hex[:8]}"
+
+
+def _count_role(tree: dict, role: str) -> int:
+    """Count elements with a given role in the accessibility tree."""
+    count = 0
+    stack = [tree]
+    while stack:
+        node = stack.pop()
+        if node.get("role") == role:
+            count += 1
+        children = node.get("children")
+        if children:
+            stack.extend(children)
+    return count
 
 
 def _consultation_or_wait(consult_result: dict) -> dict:
@@ -164,6 +189,9 @@ def next_action(request: NextActionRequest):
                     "skeleton_hash": _consult_skeleton_hash,
                 }
             logger.warning(f"Consultation {consultation_id} complete but no tree, re-matching")
+        elif consult_status.get("status") == "not_found":
+            logger.warning(f"Consultation {consultation_id} not found, clearing and re-matching")
+            # Fall through to Step 4 (match screen) instead of waiting forever
         else:
             return {
                 "directive": "wait",
@@ -228,28 +256,37 @@ def next_action(request: NextActionRequest):
             )
 
     # ── Step 2.5: Stuck detection ──
-    # Bug #9: Single match_screen call (moved to Step 4)
     if lr and lr.success and not lr.continue_loop and lr.screen:
         tree_hash_changed = lr.tree_hash_before != lr.tree_hash_after
         if not tree_hash_changed:
-            logger.warning(f"STUCK: {lr.screen} unchanged after BT. Escalating.")
-            if not request.screenshot_b64:
-                return {
-                    "directive": "need_screenshot",
-                    "directive_id": _make_directive_id(),
-                    "reason": "stuck_same_screen",
-                }
-            consult_result = request_consultation(
-                platform=platform,
-                tree=tree,
-                screenshot_b64=request.screenshot_b64,
-                context={
-                    "stuck_screen": lr.screen,
-                    "failure_reason": "BT executed but screen unchanged. BT is wrong.",
-                    "reconsultation": True,
-                },
-            )
-            return _consultation_or_wait(consult_result)
+            # Before escalating, check if current screen is a navigation page.
+            # Navigation screens don't need consultation — just send to LLM.
+            link_count = _count_role(tree, "AXLink")
+            if link_count >= 5:
+                logger.info(
+                    f"STUCK on {lr.screen} but current screen has {link_count} links — "
+                    f"treating as navigation screen instead of escalating."
+                )
+                # Fall through to Step 4/5 instead of creating consultation
+            else:
+                logger.warning(f"STUCK: {lr.screen} unchanged after BT. Escalating.")
+                if not request.screenshot_b64:
+                    return {
+                        "directive": "need_screenshot",
+                        "directive_id": _make_directive_id(),
+                        "reason": "stuck_same_screen",
+                    }
+                consult_result = request_consultation(
+                    platform=platform,
+                    tree=tree,
+                    screenshot_b64=request.screenshot_b64,
+                    context={
+                        "stuck_screen": lr.screen,
+                        "failure_reason": "BT executed but screen unchanged. BT is wrong.",
+                        "reconsultation": True,
+                    },
+                )
+                return _consultation_or_wait(consult_result)
 
     # ── Step 2.7: Polling completion detection ──
     if lr and lr.continue_loop and lr.tree_hash_before and lr.tree_hash_after:
@@ -322,7 +359,66 @@ def next_action(request: NextActionRequest):
             "skeleton_hash": match_result.get("skeleton_hash", ""),
         }
 
-    # Not matched — needs consultation
+    # ── Step 5: Navigation detection ──
+    # If the screen has many links, it's a navigation screen.
+    # Skip consultation — just return the navigate BT directly.
+    link_count = _count_role(tree, "AXLink")
+    if link_count >= 5:
+        logger.info(
+            f"Navigation screen detected ({link_count} links). "
+            f"Returning navigate BT directly — no consultation needed."
+        )
+        return {
+            "directive": "execute_tree",
+            "directive_id": _make_directive_id(),
+            "tree": {
+                "type": "sequence",
+                "children": [
+                    {
+                        "type": "action",
+                        "action": "find_all",
+                        "params": {"role": "AXLink"},
+                        "store": "all_links",
+                    },
+                    {
+                        "type": "action",
+                        "action": "send_to_llm",
+                        "params": {
+                            "question_type": "navigate",
+                            "question": (
+                                "From the list of links, find the first incomplete content item.\n"
+                                "Rules:\n"
+                                "1. Skip items starting with 'completed' (already done)\n"
+                                "2. Skip navigation links (Skip to main content, Search, Donate, Log in, Sign up, user menu)\n"
+                                "3. If 'Try again' appears, return it (first priority)\n"
+                                "4. If 'Practice' appears, return it (second priority)\n"
+                                "5. Otherwise return the first Video or Article link NOT marked completed\n"
+                                "6. If none of the above, return the first Unit link\n"
+                                "\n"
+                                "Return ONLY the exact description text from one item in the list. "
+                                "Do not add any extra words, prefixes, or suffixes."
+                            ),
+                            "items": "$all_links",
+                        },
+                        "store": "nav_result",
+                    },
+                    {
+                        "type": "action",
+                        "action": "find_and_click",
+                        "params": {
+                            "target": "$nav_result.answer",
+                            "role": "AXLink",
+                            "strategy": "mouse_click",
+                            "match_mode": "contains",
+                            "post_delay": 3.0,
+                        },
+                    },
+                ],
+            },
+            "screen": "NAVIGATION_AUTO",
+        }
+
+    # Not matched, not navigation — needs consultation
     if not request.screenshot_b64:
         return {
             "directive": "need_screenshot",
