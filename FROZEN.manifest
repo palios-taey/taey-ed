@@ -63,3 +63,16 @@ spark/tasks/prompt_codex.py
 # Step 6: Consultation request rewrite
 spark/tasks/consultation_request.py
 spark/tasks/handle_consultation.py
+spark/tasks/validate_action.py
+spark/tasks/action_review.py
+
+# Step 7: Server split into modular routes
+spark/server.py
+spark/models.py
+spark/routes/health.py
+spark/routes/next_action.py
+spark/routes/consultation.py
+spark/routes/compute.py
+spark/routes/review.py
+spark/routes/spinal_cord.py
+spark/routes/validation.py
