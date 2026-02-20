@@ -59,3 +59,7 @@ app/pipeline.py
 
 # Step 5: prompt_codex.py (heart of V8)
 spark/tasks/prompt_codex.py
+
+# Step 6: Consultation request rewrite
+spark/tasks/consultation_request.py
+spark/tasks/handle_consultation.py
