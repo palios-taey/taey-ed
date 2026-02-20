@@ -43,3 +43,16 @@ app/tasks/browser_url.py
 app/tasks/behavior_tree.py
 app/config.py
 app/storage/sqlite_store.py
+
+# Step 3: Bug-fixed Spark files (4)
+spark/tasks/screen_memory.py
+spark/tasks/match_screen.py
+spark/tasks/screen_router.py
+spark/tasks/call_ollama.py
+
+# Step 4: Bug-fixed Mac files (5)
+app/tasks/bt_core.py
+app/tasks/bt_handlers.py
+app/tasks/extract_question.py
+app/tasks/handle_extraction.py
+app/pipeline.py
