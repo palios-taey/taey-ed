@@ -1,0 +1,17 @@
+[Unit]
+Description=Taey-Ed V8 API Server
+After=network.target
+
+[Service]
+Type=simple
+User=spark
+WorkingDirectory=/home/user/taey-ed
+Environment=PATH=/home/user/jupyter-env/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONPATH=/home/user/taey-ed
+Environment=TAEY_ED_API_KEY=***REMOVED-INTERNAL-API-KEY***
+ExecStart=/home/user/jupyter-env/bin/uvicorn spark.server:app --host 0.0.0.0 --port 5002
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
