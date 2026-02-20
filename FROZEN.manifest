@@ -1,3 +1,45 @@
 # FROZEN.manifest - Files that must not be modified without explicit unfreezing
 # Format: one file path per line (relative to repo root)
-# Pre-commit hook checks: no file in this list appears in git diff --cached
+
+# Step 0: Platform configs (source of truth)
+spark/platforms/khan_academy/config.yaml
+spark/platforms/khan_academy/RESEARCH.md
+spark/platforms/acellus/config.yaml
+spark/platforms/acellus/RESEARCH.md
+spark/platforms/coursera/config.yaml
+spark/platforms/edx/config.yaml
+spark/platforms/udemy/config.yaml
+spark/platforms/test/config.yaml
+
+# Step 1: Proven Spark files (11)
+spark/tasks/skeleton.py
+spark/tasks/screen_collapse.py
+spark/tasks/call_vision.py
+spark/tasks/call_embedding.py
+spark/tasks/consultation_state.py
+spark/tasks/consultation_respond.py
+spark/tasks/consultation_escalate.py
+spark/tasks/atomic_write.py
+spark/tasks/notify_tmux.py
+spark/tasks/validate_config.py
+spark/tasks/load_yaml.py
+
+# Step 2: Proven Mac files (16 + storage + config)
+app/tasks/bt_helpers.py
+app/tasks/find_element.py
+app/tasks/click_element.py
+app/tasks/capture_tree.py
+app/tasks/capture_macapptree.py
+app/tasks/compute_tree_hash.py
+app/tasks/extract_text.py
+app/tasks/call_spark.py
+app/tasks/type_text.py
+app/tasks/wait.py
+app/tasks/build_kb_context.py
+app/tasks/store_qa.py
+app/tasks/crop_image.py
+app/tasks/checkpoint.py
+app/tasks/browser_url.py
+app/tasks/behavior_tree.py
+app/config.py
+app/storage/sqlite_store.py
