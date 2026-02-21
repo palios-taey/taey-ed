@@ -101,23 +101,22 @@ def check_marker_indexed(marker: dict, exact_texts: set, all_texts: list, role_c
 
 
 def _check_vector_available() -> bool:
-    """Check if spinal cord (ScreenEmbedding) is available.
+    """Check if spinal cord (ScreenEmbedding) collection exists.
 
-    Always checks fresh — no caching. The collection starts empty and grows
-    organically as consultations teach new screens. Caching would prevent
-    vectors from activating after the first screen is learned.
+    Only checks existence, not entry count. Empty collections are valid —
+    route_screen() handles empty results gracefully and we still need the
+    skeleton + embedding computation for storage on first encounter.
     """
     try:
         from spark.tasks.screen_memory import get_stats
         stats = get_stats()
-        available = stats.get("exists", False) and stats.get("count", 0) > 0
-        return available
+        return stats.get("exists", False)
     except Exception as e:
         logger.debug(f"Spinal cord unavailable: {e}")
         return False
 
 
-def _try_vector_match(tree: dict, platform: str, config: dict = None) -> dict | None:
+def _try_vector_match(tree: dict, platform: str, config: dict = None) -> dict:
     """
     Try to match screen via spinal cord (skeleton → embed → Weaviate).
 
@@ -125,9 +124,9 @@ def _try_vector_match(tree: dict, platform: str, config: dict = None) -> dict | 
       skeleton.py → extract structure
       screen_memory.py → embed + query ScreenEmbedding
 
-    Returns match result dict if confident match found, None otherwise.
-    Everything in the result comes from Weaviate (BT, extract, expected_next).
-    No YAML supplementation.
+    Always returns a dict. On UNCHARTED, returns matched=False but includes
+    skeleton_hash, embedding, and skeleton_text so callers can store without
+    recomputing.
     """
     try:
         from spark.tasks.screen_router import route_screen, KNOWN_THRESHOLD, ISOMORPHIC_THRESHOLD
@@ -140,7 +139,13 @@ def _try_vector_match(tree: dict, platform: str, config: dict = None) -> dict | 
                 f"Spinal cord: UNCHARTED (d={route_result.distance:.3f}), "
                 f"no match"
             )
-            return None
+            return {
+                "matched": False,
+                "needs_consultation": True,
+                "skeleton_hash": route_result.skeleton_hash,
+                "embedding": route_result.embedding,
+                "skeleton_text": route_result.skeleton,
+            }
 
         # KNOWN or ISOMORPHIC — we have a match
         logger.info(
@@ -188,7 +193,7 @@ def _try_vector_match(tree: dict, platform: str, config: dict = None) -> dict | 
 
     except Exception as e:
         logger.warning(f"Spinal cord error: {e}")
-        return None
+        return {"matched": False, "needs_consultation": True}
 
 
 def _match_yaml(tree: dict, config: dict, exact_texts: set, all_texts: list, role_counts: Counter) -> dict | None:
@@ -270,8 +275,23 @@ def match_screen(tree: dict, config: dict) -> dict:
         return {"matched": False, "needs_consultation": True, "error": "missing_platform"}
 
     if _check_vector_available():
-        vector_result = _try_vector_match(tree, platform, config)
-        if vector_result:
-            return vector_result
+        return _try_vector_match(tree, platform, config)
 
-    return {"matched": False, "needs_consultation": True}
+    # Collection doesn't exist — compute skeleton/embedding anyway for storage
+    try:
+        from spark.tasks.skeleton import extract_skeleton, skeleton_hash as _skel_hash
+        from spark.tasks.screen_memory import embed_text, ensure_schema
+        ensure_schema()  # Create collection if missing
+        skel = extract_skeleton(tree)
+        shash = _skel_hash(skel)
+        vec = embed_text(skel)
+        return {
+            "matched": False,
+            "needs_consultation": True,
+            "skeleton_hash": shash,
+            "embedding": vec,
+            "skeleton_text": skel,
+        }
+    except Exception as e:
+        logger.warning(f"Skeleton/embedding computation failed: {e}")
+        return {"matched": False, "needs_consultation": True}

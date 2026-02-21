@@ -1331,3 +1331,130 @@ The agent does NOT need to:
 - Read any file other than screenshot.png, tree.json, and metadata.json
 - Guess about handler params or BT syntax
 - Wonder whether to use mouse_click or ax_press
+
+---
+
+## Part 10: 2-Step Screen Classification (Feb 21, 2026)
+
+**Supersedes**: Step 5 (navigation auto-detect) in `next_action.py` and the
+heuristic `analyze_tree()` role-counting approach in `prompt_codex.py`.
+
+### Why the Old Approach Failed
+
+1. **Step 5** counted links (>=5) and auto-detected "navigation" screens. But
+   nearly every Coursera page has a sidebar with links to all modules, so Step 5
+   fired on almost every screen — quizzes, videos, articles, everything.
+
+2. **`analyze_tree()`** counted AX roles (radio buttons, checkboxes, etc.) to
+   guess screen type via heuristic. Same approach that caused the auto-classify
+   infinite loop disaster. Counting roles is not classification.
+
+3. **`prompt_codex.compile_prompt()`** sent a monolithic ~40K char prompt with
+   ALL patterns to a consultation agent via tmux. Most of that content was
+   irrelevant to the specific screen being classified.
+
+### The New Process
+
+When a screen has no Weaviate match, it goes through 2 steps. This only happens
+the FIRST TIME a screen structure is encountered. After that, Weaviate serves
+the stored BT directly.
+
+#### Step A: Classification (Gemini API call)
+
+Send to Gemini directly (not through tmux/Spark Claude):
+- Full accessibility tree (always — we don't know what's important)
+- Screenshot (base64)
+- Platform name
+- List of universal screen categories (see below)
+- Platform-specific screen variants from RESEARCH.md (if available)
+
+Gemini returns:
+- `screen_type`: One of the universal categories
+- `confidence_note`: Brief explanation of why (for logging/debugging)
+- `platform_variant`: Platform-specific subtype if relevant (e.g., "EXERCISE_DROPDOWN")
+
+Prompt is small and focused. No BT patterns, no handler references, no 40K dump.
+Just: "Look at this screen. What type is it? Here are the categories."
+
+#### Step B: Action (depends on classification)
+
+**For deterministic screens** (VIDEO, ARTICLE, TRANSITION):
+- Build BT from a predefined template for that type
+- Store in Weaviate immediately
+- Return `execute_tree`
+- No second LLM call needed
+- Future encounters match in Weaviate, zero LLM cost
+
+**For interactive screens** (NAVIGATION, EXERCISE, ASSESSMENT):
+- Send Gemini NARROWED instructions specific to that screen type only
+- Not the full prompt_codex — just the relevant pattern + handler subset
+- Gemini returns the BT
+- Store in Weaviate as provisional
+- Future encounters match in Weaviate
+
+### Universal Screen Categories
+
+These are global categories validated against IMS Caliper Analytics profiles,
+Moodle activity taxonomy, edX XBlock types, and Canvas assessment types.
+They apply to ALL educational platforms. They are NOT platform-specific.
+
+**Source**: Perplexity Deep Research, Feb 21 2026 — cross-referenced against
+IMS Caliper (NavigationEvent, MediaEvent, ReadingEvent, AssessmentItemEvent,
+ForumEvent), edX XBlocks (html, video, problem, discussion), Moodle activities
+(Page, Video, Quiz, Forum), and Canvas (Quiz, Discussion Board).
+
+| # | Category | Caliper Equivalent | Description | Action Pattern |
+|---|----------|--------------------|-------------|----------------|
+| 1 | **NAVIGATION** | NavigationEvent | Dashboards, menus, module lists, unit overviews. Primary action: pick which content to go to next. | LLM picks first incomplete item, click |
+| 2 | **VIDEO** | MediaEvent | Video lessons, embedded video. Sub-states: unstarted (Play), playing (poll), complete (Next). | Template per sub-state |
+| 3 | **ARTICLE** | ReadingEvent | Reading pages, HTML content, static lessons. Scroll, mark complete, advance. | Extract content, click Next |
+| 4 | **EXERCISE** | AssessmentItemEvent | Any quiz/assessment screen: MCQ (radio), multi-select (checkbox), fill-blank (text), dropdown, matching. Single or multi-question — the interaction pattern is the same: extract → generate answer → enter → submit. | Template structure, LLM for answers |
+| 5 | **TRANSITION** | (no standard equiv) | Loading screens, score cards, "Start quiz", "Continue", "Resume", completion messages, confirmation modals. Single action to advance. | Click target button |
+| 6 | **UNKNOWN** | N/A | Anything that doesn't fit the above. Do NOT guess — escalate. | Escalate to consultation/user |
+
+**ASSESSMENT merged into EXERCISE**: Every platform (Canvas, Moodle, edX) treats
+single-question and multi-question assessments identically. A 20-question exam is
+just EXERCISE repeated N times with a submit at the end — a sequencing concern,
+not a category concern. If needed later, add `multi: true` sub-flag.
+
+**DISCUSSION deferred**: Forum posts are a real distinct type (Caliper ForumEvent,
+edX discussion XBlock) but the automation pattern is complex (generate student-like
+posts, read/reply to peers) and we haven't encountered one. UNKNOWN catches these
+and triggers consultation when they appear.
+
+Platform-specific variants (from RESEARCH.md) refine these categories:
+- Khan Academy: EXERCISE_DROPDOWN (React combobox), EXERCISE_MATCHING (drag-drop)
+- Coursera: ARTICLE variant with "Mark as completed" button
+- Acellus: strictly linear, no skipping
+
+The classification prompt includes these 6 categories plus any platform-specific
+variants from the platform's RESEARCH.md.
+
+### What Changes in Code
+
+| File | Change | Reason |
+|------|--------|--------|
+| `next_action.py` | Remove Step 5 (lines 388-444) | Hardcoded nav BT based on link count |
+| `next_action.py` | Step 6 calls classify → then acts | 2-step process |
+| NEW: `classify_screen.py` | Gemini API call for classification | Step A |
+| NEW: `build_screen_bt.py` | Template BTs + narrowed LLM instructions | Step B |
+| `prompt_codex.py` | No longer used for classification | Replaced by 2-step |
+| `consultation_request.py` | May be simplified | No more tmux chain for first classification |
+
+### What Does NOT Change
+
+- Mac capture (capture_tree, capture_macapptree, compute_tree_hash) — FROZEN
+- Weaviate storage/retrieval (screen_memory, match_screen) — FROZEN
+- BT execution engine (bt_core, bt_handlers) — FROZEN
+- Escalation chain (spark_claude → perplexity → user) — still exists for failures
+- RESEARCH.md files — still platform knowledge source
+
+### Change Log
+
+| Date | Change | Status |
+|------|--------|--------|
+| Feb 21 | Remove Step 5 (nav auto-detect) | Approved, not implemented |
+| Feb 21 | 2-step classification process defined | Approved, not implemented |
+| Feb 21 | Universal screen categories (6 active + UNKNOWN) | Validated via Perplexity/Caliper |
+| Feb 21 | ASSESSMENT merged into EXERCISE | Validated via Perplexity |
+| Feb 21 | DISCUSSION deferred (UNKNOWN catches it) | Validated via Perplexity |

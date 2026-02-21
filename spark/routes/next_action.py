@@ -8,18 +8,25 @@ Flow:
   1. Active consultation? → wait or execute completed BT
   2. Validate previous action → stuck detection, wrong-answer detection
   3. match_screen() → vector-only (Weaviate ScreenEmbedding)
-  4. No match + many links → NAVIGATION_AUTO (LLM picks first incomplete)
-  5. No match + few links → consultation (screenshot needed)
+  4. Match found:
+     A. Has BT → execute_tree
+     B. No BT but screen_type known → consult with type context (skip classification)
+  5. No match → classify via Gemini → store in Weaviate → consult for BT
+     UNKNOWN → consultation escalation
+
+Screen types (6 universal + 1 escalation, IMS Caliper validated):
+  NAVIGATION, VIDEO, ARTICLE, EXERCISE, TRANSITION, UNKNOWN
 
 Bug fixes from V7:
   #8: Uses CURRENT tree hash for validation, not stale consultation hash
   #9: Single match_screen call (remove double-call)
   #10: Log + flag when after-tree matches nothing
 
-Post-V8 fixes (2026-02-20):
-  - Step 1: Handle "not_found" consultations (no infinite wait)
-  - Step 2.5: Bypass stuck escalation for navigation screens (≥5 links)
-  - Step 5: Navigation auto-detect with LLM intelligence
+Post-V8 fixes (2026-02-21):
+  - Removed navigation auto-detect (link count heuristic broke Coursera)
+  - Gemini classification replaces heuristic analyze_tree()
+  - Classifications stored in Weaviate immediately for future recognition
+  - match_screen() returns skeleton/embedding even on no-match (avoid recompute)
 """
 
 import json
@@ -45,19 +52,6 @@ router = APIRouter()
 def _make_directive_id() -> str:
     return f"d-{uuid.uuid4().hex[:8]}"
 
-
-def _count_role(tree: dict, role: str) -> int:
-    """Count elements with a given role in the accessibility tree."""
-    count = 0
-    stack = [tree]
-    while stack:
-        node = stack.pop()
-        if node.get("role") == role:
-            count += 1
-        children = node.get("children")
-        if children:
-            stack.extend(children)
-    return count
 
 
 def _consultation_or_wait(consult_result: dict) -> dict:
@@ -158,7 +152,22 @@ def next_action(request: NextActionRequest):
 
     config = load_yaml(platform)
 
+    logger.info(
+        f">>> /next_action: platform={platform} "
+        f"has_screenshot={'yes' if request.screenshot_b64 else 'no'} "
+        f"has_last_result={'yes' if lr else 'no'} "
+        f"active_consultation={cs.active_consultation_id or 'none'}"
+    )
+    if lr:
+        logger.info(
+            f"    last_result: success={lr.success} screen={lr.screen} "
+            f"action={lr.action} continue_loop={lr.continue_loop} "
+            f"hash_before={lr.tree_hash_before[:12] if lr.tree_hash_before else 'none'} "
+            f"hash_after={lr.tree_hash_after[:12] if lr.tree_hash_after else 'none'}"
+        )
+
     # ── Step 1: Active consultation? Check if done ──
+    logger.info("  Step 1: Checking active consultation...")
     consultation_id = cs.active_consultation_id
     if consultation_id:
         consult_status = check_consultation(consultation_id)
@@ -201,6 +210,7 @@ def next_action(request: NextActionRequest):
             }
 
     # ── Step 2: Validate previous action result ──
+    logger.info("  Step 2: Validating previous action...")
     if lr and lr.success and lr.after_tree and not lr.continue_loop:
         vr = _validate_last_action(platform, config, lr, tree)
 
@@ -256,39 +266,31 @@ def next_action(request: NextActionRequest):
             )
 
     # ── Step 2.5: Stuck detection ──
+    logger.info("  Step 2.5: Checking for stuck screen...")
     if lr and lr.success and not lr.continue_loop and lr.screen:
         tree_hash_changed = lr.tree_hash_before != lr.tree_hash_after
         if not tree_hash_changed:
-            # Before escalating, check if current screen is a navigation page.
-            # Navigation screens don't need consultation — just send to LLM.
-            link_count = _count_role(tree, "AXLink")
-            if link_count >= 5:
-                logger.info(
-                    f"STUCK on {lr.screen} but current screen has {link_count} links — "
-                    f"treating as navigation screen instead of escalating."
-                )
-                # Fall through to Step 4/5 instead of creating consultation
-            else:
-                logger.warning(f"STUCK: {lr.screen} unchanged after BT. Escalating.")
-                if not request.screenshot_b64:
-                    return {
-                        "directive": "need_screenshot",
-                        "directive_id": _make_directive_id(),
-                        "reason": "stuck_same_screen",
-                    }
-                consult_result = request_consultation(
-                    platform=platform,
-                    tree=tree,
-                    screenshot_b64=request.screenshot_b64,
-                    context={
-                        "stuck_screen": lr.screen,
-                        "failure_reason": "BT executed but screen unchanged. BT is wrong.",
-                        "reconsultation": True,
-                    },
-                )
-                return _consultation_or_wait(consult_result)
+            logger.warning(f"STUCK: {lr.screen} unchanged after BT. Escalating.")
+            if not request.screenshot_b64:
+                return {
+                    "directive": "need_screenshot",
+                    "directive_id": _make_directive_id(),
+                    "reason": "stuck_same_screen",
+                }
+            consult_result = request_consultation(
+                platform=platform,
+                tree=tree,
+                screenshot_b64=request.screenshot_b64,
+                context={
+                    "stuck_screen": lr.screen,
+                    "failure_reason": "BT executed but screen unchanged. BT is wrong.",
+                    "reconsultation": True,
+                },
+            )
+            return _consultation_or_wait(consult_result)
 
     # ── Step 2.7: Polling completion detection ──
+    logger.info("  Step 2.7: Checking polling completion...")
     if lr and lr.continue_loop and lr.tree_hash_before and lr.tree_hash_after:
         if lr.tree_hash_before != lr.tree_hash_after:
             logger.info(
@@ -309,6 +311,7 @@ def next_action(request: NextActionRequest):
             }
 
     # ── Step 3: Previous action failed? ──
+    logger.info("  Step 3: Checking for previous failure...")
     if lr and lr.success is False:
         if lr.user_response:
             if not request.screenshot_b64:
@@ -343,10 +346,19 @@ def next_action(request: NextActionRequest):
         )
         return _consultation_or_wait(consult_result)
 
-    # ── Step 4: Match screen ──
+    # ── Step 4: Match screen (Weaviate vector search) ──
+    logger.info("  Step 4: Vector matching against Weaviate...")
     match_result = match_screen(tree, config)
+    logger.info(
+        f"    match_result: matched={match_result.get('matched')} "
+        f"screen={match_result.get('screen', 'none')} "
+        f"screen_type={match_result.get('screen_type', 'none')} "
+        f"has_tree={'yes' if match_result.get('tree') else 'no'} "
+        f"has_embedding={'yes' if match_result.get('embedding') else 'no'}"
+    )
 
     if match_result.get("matched") and match_result.get("tree"):
+        logger.info(f"  <<< RETURNING: execute_tree for {match_result.get('screen', 'UNKNOWN')}")
         return {
             "directive": "execute_tree",
             "directive_id": _make_directive_id(),
@@ -359,76 +371,119 @@ def next_action(request: NextActionRequest):
             "skeleton_hash": match_result.get("skeleton_hash", ""),
         }
 
-    # ── Step 5: Navigation detection ──
-    # If the screen has many links, it's a navigation screen.
-    # Skip consultation — just return the navigate BT directly.
-    link_count = _count_role(tree, "AXLink")
-    if link_count >= 5:
+    # ── Step 4B: Matched screen but no BT — previously classified ──
+    if match_result.get("matched") and not match_result.get("tree"):
+        known_type = match_result.get("screen_type", "")
         logger.info(
-            f"Navigation screen detected ({link_count} links). "
-            f"Returning navigate BT directly — no consultation needed."
+            f"  Step 4B: Screen recognized as {known_type} "
+            f"(hash={match_result.get('skeleton_hash', '')[:12]}, "
+            f"d={match_result.get('match_distance', 0):.4f}) — no BT stored"
         )
-        return {
-            "directive": "execute_tree",
-            "directive_id": _make_directive_id(),
-            "tree": {
-                "type": "sequence",
-                "children": [
-                    {
-                        "type": "action",
-                        "action": "find_all",
-                        "params": {"role": "AXLink"},
-                        "store": "all_links",
-                    },
-                    {
-                        "type": "action",
-                        "action": "send_to_llm",
-                        "params": {
-                            "question_type": "navigate",
-                            "question": (
-                                "From the list of links, find the first incomplete content item.\n"
-                                "Rules:\n"
-                                "1. Skip items starting with 'completed' (already done)\n"
-                                "2. Skip navigation links (Skip to main content, Search, Donate, Log in, Sign up, user menu)\n"
-                                "3. If 'Try again' appears, return it (first priority)\n"
-                                "4. If 'Practice' appears, return it (second priority)\n"
-                                "5. Otherwise return the first Video or Article link NOT marked completed\n"
-                                "6. If none of the above, return the first Unit link\n"
-                                "\n"
-                                "Return ONLY the exact description text from one item in the list. "
-                                "Do not add any extra words, prefixes, or suffixes."
-                            ),
-                            "items": "$all_links",
-                        },
-                        "store": "nav_result",
-                    },
-                    {
-                        "type": "action",
-                        "action": "find_and_click",
-                        "params": {
-                            "target": "$nav_result.answer",
-                            "role": "AXLink",
-                            "strategy": "mouse_click",
-                            "match_mode": "contains",
-                            "post_delay": 3.0,
-                        },
-                    },
-                ],
+        # Screen type is known — consult with type context for BT generation
+        if not request.screenshot_b64:
+            return {
+                "directive": "need_screenshot",
+                "directive_id": _make_directive_id(),
+                "reason": f"bt_generation_for_{known_type}",
+            }
+        consult_result = request_consultation(
+            platform=platform,
+            tree=tree,
+            screenshot_b64=request.screenshot_b64,
+            context={
+                "screen_type": known_type,
+                "reason": f"Screen classified as {known_type} but no behavior tree stored yet.",
             },
-            "screen": "NAVIGATION_AUTO",
-        }
+        )
+        return _consultation_or_wait(consult_result)
 
-    # Not matched, not navigation — needs consultation
+    # ── Step 5: No match — classify and store ──
+    logger.info("  Step 5: No Weaviate match — classifying and storing")
+
+    # Step 5A: Need screenshot for classification
     if not request.screenshot_b64:
+        logger.info("  Step 5A: Requesting screenshot for classification")
         return {
             "directive": "need_screenshot",
             "directive_id": _make_directive_id(),
-            "reason": "consultation_needed",
+            "reason": "classification_needed",
         }
+
+    # Step 5A: Classify screen type via Gemini
+    from spark.tasks.classify_screen import classify_screen
+    classification = classify_screen(
+        tree=tree,
+        screenshot_b64=request.screenshot_b64,
+        platform=platform,
+    )
+    screen_type = classification.get("screen_type", "UNKNOWN")
+    logger.info(
+        f"  Step 5A: Classification result: type={screen_type} "
+        f"variant={classification.get('platform_variant', '')} "
+        f"note={classification.get('confidence_note', '')}"
+    )
+
+    # ── Step 5B: Store classification in Weaviate ──
+    # Store immediately so this screen is recognized on next encounter.
+    # skeleton_hash and embedding come from match_screen() Step 4 (pre-computed).
+    if screen_type != "UNKNOWN":
+        skel_hash = match_result.get("skeleton_hash", "")
+        embedding = match_result.get("embedding")
+        skeleton_text = match_result.get("skeleton_text", "")
+
+        if skel_hash and embedding:
+            try:
+                from spark.tasks.screen_memory import store_screen
+                store_screen(
+                    vector=embedding,
+                    skeleton_hash=skel_hash,
+                    platform=platform,
+                    behavior_tree={},
+                    skeleton_text=skeleton_text,
+                    screen_type=screen_type,
+                    validated=False,
+                    source="classification",
+                )
+                logger.info(
+                    f"  Step 5B: Stored {screen_type} in Weaviate "
+                    f"(hash={skel_hash[:12]})"
+                )
+            except Exception as e:
+                logger.error(f"  Step 5B: Failed to store classification: {e}")
+        else:
+            logger.warning(
+                "  Step 5B: No skeleton/embedding from Step 4 — cannot store. "
+                "This screen will need re-classification next time."
+            )
+
+    # ── Step 5C: Return directive based on classification ──
+    if screen_type == "UNKNOWN":
+        logger.warning("  Step 5C: UNKNOWN screen — escalating to consultation")
+        consult_result = request_consultation(
+            platform=platform,
+            tree=tree,
+            screenshot_b64=request.screenshot_b64,
+            context={
+                "classification_failed": True,
+                "confidence_note": classification.get("confidence_note", ""),
+            },
+        )
+        return _consultation_or_wait(consult_result)
+
+    # Known type — consult with screen_type context for BT generation
+    logger.info(
+        f"  Step 5C: {screen_type} classified and stored — "
+        f"consulting for BT generation"
+    )
     consult_result = request_consultation(
         platform=platform,
         tree=tree,
         screenshot_b64=request.screenshot_b64,
-        context={},
+        context={
+            "screen_type": screen_type,
+            "platform_variant": classification.get("platform_variant", ""),
+            "confidence_note": classification.get("confidence_note", ""),
+            "reason": f"First encounter of {screen_type} screen. Generate behavior tree.",
+        },
     )
     return _consultation_or_wait(consult_result)
