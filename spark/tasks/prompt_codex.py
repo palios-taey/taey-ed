@@ -427,7 +427,7 @@ Add find_and_type for the text field AFTER clicking the radio button.
 
 VARIANT: If question has images/diagrams visible in screenshot:
 Use question_type="solve_complex" instead. This sends the screenshot to
-Gemini 2.5 Flash for multimodal analysis.
+Gemini 2.5 Pro for multimodal analysis.
 
 SUBMIT BUTTON NAMES (varies by platform):
 - Khan Academy: "Check" (AXButton)
@@ -1032,7 +1032,7 @@ BLACKBOARD VARIABLE SUBSTITUTION:
 SECTION_6_QUESTION_TYPES = """\
 === LLM QUESTION TYPES (via send_to_llm → /api/v1/generate) ===
 
-All types route through Gemini 2.5 Pro (primary) or Gemini 2.5 Flash.
+All types route through Gemini 2.5 Pro.
 
 solve_choice:
   Input: question (str), options (list of str)
@@ -1076,7 +1076,7 @@ solve_assessment:
 solve_complex:
   Input: question (str) + screenshot (multimodal)
   Output: {success: true, answer: "answer text"}
-  How: Sends screenshot to Gemini 2.5 Flash for visual question understanding
+  How: Sends screenshot to Gemini 2.5 Pro for visual question understanding
   Use when question has images/diagrams not captured in tree text
 
 navigate:

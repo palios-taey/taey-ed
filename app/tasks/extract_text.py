@@ -52,6 +52,12 @@ def extract_text(tree: dict, config: dict = None) -> list:
             if criteria["contains"].lower() not in text.lower():
                 return False
 
+        # Min length filter (optional) - skip short nav labels, button text, etc.
+        if "min_length" in criteria:
+            text = node.get("value") or node.get("title") or node.get("description") or ""
+            if len(str(text).strip()) < criteria["min_length"]:
+                return False
+
         return True
 
     def walk_tree(node: dict, parent_name: str = "", parent_role: str = ""):

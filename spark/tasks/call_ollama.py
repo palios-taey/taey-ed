@@ -1,7 +1,7 @@
 """
 Answer generation for educational quiz questions.
 
-Primary: Gemini 2.5 Flash (paid tier) for ALL question types.
+Primary: Gemini 2.5 Pro (paid tier) for ALL question types.
 Fallback: Claude CLI (sonnet) if Gemini fails.
 No local models (no Ollama).
 
@@ -14,7 +14,7 @@ Supports question types:
 - solve_assessment: Full multi-question graded assessment
 - navigate: Pick first incomplete item from a list
 
-Cost: ~$0.0004/call at Gemini 2.5 Flash pricing ($0.30/MTok in, $2.50/MTok out).
+Cost: ~$0.003/call at Gemini 2.5 Pro pricing ($1.25/MTok in, $10/MTok out).
 Spark provides COMPUTE only - Mac handles execution.
 """
 
@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
-GEMINI_MODELS = ["gemini-2.5-flash"]  # Paid tier — primary for all Q&A
+GEMINI_MODELS = ["gemini-2.5-pro"]  # Paid tier — primary for all Q&A
 CLAUDE_CLI_MODEL = "sonnet"  # Claude CLI fallback only
 
 
@@ -152,7 +152,7 @@ IMPORTANT: Use the EXACT option text as shown above. Do not paraphrase or abbrev
 
 
 # =============================================================================
-# SOLVE_COMPLEX: Gemini 2.5 Flash Vision for Complex Screens
+# SOLVE_COMPLEX: Gemini 2.5 Pro Vision for Complex Screens
 # =============================================================================
 
 SOLVE_COMPLEX_PROMPT = """You are analyzing an educational quiz screenshot. Your job is to determine which answer(s) to select.
@@ -182,7 +182,7 @@ async def _solve_complex_with_gemini(
     screenshot_b64: Optional[str] = None,
 ) -> dict:
     """
-    Route complex screen to Gemini 2.5 Flash for vision-based solving.
+    Route complex screen to Gemini 2.5 Pro for vision-based solving.
 
     Uses screenshot (if available) + question + options to determine answers.
     Returns in solve_checkbox format (selected list) for for_each compatibility.
@@ -200,7 +200,7 @@ async def _solve_complex_with_gemini(
                 "error": "Gemini API key not configured (palios-taey-secrets.json missing)",
                 "answer": "",
                 "question_type": "solve_complex",
-                "model": "gemini-2.5-flash"
+                "model": "gemini-2.5-pro"
             }
 
         import json as _json
@@ -212,7 +212,7 @@ async def _solve_complex_with_gemini(
                 "error": "Gemini API key empty in secrets file",
                 "answer": "",
                 "question_type": "solve_complex",
-                "model": "gemini-2.5-flash"
+                "model": "gemini-2.5-pro"
             }
 
         genai.configure(api_key=api_key)
@@ -313,12 +313,12 @@ async def _solve_complex_with_gemini(
             "error": f"Gemini solve_complex failed: {e}",
             "answer": "",
             "question_type": "solve_complex",
-            "model": "gemini-2.5-flash"
+            "model": "gemini-2.5-pro"
         }
 
 
 # =============================================================================
-# SOLVE_MATCHING: Gemini 2.5 Flash Vision for Visual Matching Exercises
+# SOLVE_MATCHING: Gemini 2.5 Pro Vision for Visual Matching Exercises
 # =============================================================================
 
 SOLVE_MATCHING_GEMINI_PROMPT = """You are analyzing an educational matching exercise. The screenshot shows a diagram or visual element with labeled parts that need to be matched to correct answers via dropdown menus.
@@ -346,7 +346,7 @@ async def _solve_matching_with_gemini(
     screenshot_b64: str = None,
 ) -> dict:
     """
-    Route matching exercise to Gemini 2.5 Flash for vision-based solving.
+    Route matching exercise to Gemini 2.5 Pro for vision-based solving.
 
     Uses screenshot to understand visual context (diagrams, positions) that
     text-only Llama cannot interpret. Returns matches dict like Ollama path.
@@ -363,7 +363,7 @@ async def _solve_matching_with_gemini(
                 "error": "Gemini API key not configured",
                 "answer": "",
                 "question_type": "solve_matching",
-                "model": "gemini-2.5-flash"
+                "model": "gemini-2.5-pro"
             }
 
         import json as _json
@@ -375,7 +375,7 @@ async def _solve_matching_with_gemini(
                 "error": "Gemini API key empty",
                 "answer": "",
                 "question_type": "solve_matching",
-                "model": "gemini-2.5-flash"
+                "model": "gemini-2.5-pro"
             }
 
         genai.configure(api_key=api_key)
@@ -423,7 +423,7 @@ async def _solve_matching_with_gemini(
                 "error": "Empty response from Gemini",
                 "answer": "",
                 "question_type": "solve_matching",
-                "model": "gemini-2.5-flash"
+                "model": "gemini-2.5-pro"
             }
 
         # Parse using same logic as Ollama path
@@ -446,7 +446,7 @@ async def _solve_matching_with_gemini(
             "error": f"Gemini solve_matching failed: {e}",
             "answer": "",
             "question_type": "solve_matching",
-            "model": "gemini-2.5-flash"
+            "model": "gemini-2.5-pro"
         }
 
 
@@ -486,7 +486,7 @@ def _ensure_gemini():
 
 async def _solve_with_gemini(prompt: str) -> Optional[str]:
     """
-    Send a text prompt to Gemini 2.5 Flash and return raw response.
+    Send a text prompt to Gemini 2.5 Pro and return raw response.
 
     Primary model for all text-based Q&A (paid tier, no rate limits).
     Returns None on failure so caller can fall back to Claude CLI.
@@ -682,7 +682,7 @@ async def generate_answer(
     context_block = "\n\n".join(context_parts) if context_parts else "No reference material available."
 
     # =========================================================================
-    # SOLVE_COMPLEX: Route to Gemini 2.5 Flash (vision) instead of Ollama
+    # SOLVE_COMPLEX: Route to Gemini 2.5 Pro (vision) instead of Ollama
     # =========================================================================
     if question_type == "solve_complex":
         return await _solve_complex_with_gemini(
@@ -809,17 +809,17 @@ async def generate_answer(
         )
 
     # =========================================================================
-    # MODEL ROUTING: Gemini 2.5 Flash (primary) → Claude CLI (fallback)
-    # Gemini 2.5 Flash: $0.30/MTok in, $2.50/MTok out (paid tier, no rate limits)
+    # MODEL ROUTING: Gemini 2.5 Pro (primary) → Claude CLI (fallback)
+    # Gemini 2.5 Pro: $0.30/MTok in, $2.50/MTok out (paid tier, no rate limits)
     # Claude Sonnet: $3/MTok in, $15/MTok out (fallback only)
     # =========================================================================
-    model_used = "gemini-2.5-flash"
+    model_used = "gemini-2.5-pro"
     raw_answer = ""
 
     gemini_response = await _solve_with_gemini(prompt)
     if gemini_response:
         raw_answer = gemini_response
-        model_used = "gemini-2.5-flash"
+        model_used = "gemini-2.5-pro"
 
     # Claude CLI fallback when Gemini fails
     if not raw_answer:

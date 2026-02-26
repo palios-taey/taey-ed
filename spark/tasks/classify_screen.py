@@ -335,9 +335,8 @@ def get_click_target(
 # Uses "fallback" nodes for optional steps (try first child, if fails try next).
 # Includes "extract" configs so Mac pipeline captures content via handle_extraction().
 
-# Standard extract config for content screens (articles, exercises, videos).
-# Mac's extract_text() walks AXWebArea subtree matching these criteria.
-# Mac's crop_image() captures full window screenshot for visual content.
+# Minimal fallback extract config — ONLY used when Gemini doesn't return one.
+# Gemini builds targeted extraction configs dynamically by analyzing the actual tree.
 _CONTENT_EXTRACT = {
     "text": [{"role": "AXStaticText"}],
     "images": [{"source": "window"}],
@@ -605,8 +604,8 @@ Return ONLY valid JSON. No markdown fences. No explanation outside the JSON obje
     "children": [...]
   }},
   "extract": {{
-    "text": [{{"role": "AXStaticText"}}],
-    "images": [{{"source": "window"}}]
+    "text": [...],
+    "images": [...]
   }},
   "expected_next": ["SCREEN_TYPE_AFTER_THIS"],
   "reason": "One sentence: what this BT does and why"
@@ -615,8 +614,53 @@ Return ONLY valid JSON. No markdown fences. No explanation outside the JSON obje
 RULES:
 - screen_type: descriptive name for this specific screen (EXERCISE_RADIO, ARTICLE_READING, etc.)
 - tree: valid BT with type "sequence" at root. Use "fallback" for optional steps.
-- extract: always include for content screens so text/images get captured
 - expected_next: what screen types appear after this BT runs. NEVER include current screen type.
+
+=== EXTRACTION CONFIG (extract field) ===
+Extract captures the UNIQUE CONTENT of this screen for learning records. NOT page chrome,
+sidebars, or navigation. YOU must analyze the accessibility tree to determine what the
+unique content is and WHERE it lives in the tree, then build targeted extraction criteria.
+
+TEXT EXTRACTION CRITERIA:
+Each criteria object matches nodes in the accessibility tree. Available filters:
+  - "role" (required): AX role to match, e.g. "AXStaticText"
+  - "parent_role" (optional): Only match if parent has this role, e.g. "AXGroup"
+  - "parent_contains" (optional): Only match if parent's name contains this string
+    LOOK AT THE TREE to find the actual parent container names for the content area.
+    Examples: "transcript", "lesson-content", "article-body", "reading", "question"
+  - "contains" (optional): Only match if the text value contains this substring
+  - "min_length" (optional): Skip text shorter than this (filters button labels, nav links)
+
+Examples:
+  Video with transcript section:
+    {{"text": [{{"role": "AXStaticText", "parent_contains": "transcript"}}],
+     "images": [{{"source": "window", "purpose": "Describe the video content being shown"}}]}}
+
+  Article inside a content container:
+    {{"text": [{{"role": "AXStaticText", "parent_contains": "lesson-content", "min_length": 20}}],
+     "images": [{{"source": "window", "purpose": "Describe the article content"}}]}}
+
+  Exercise with questions:
+    {{"text": [{{"role": "AXStaticText", "parent_contains": "question", "min_length": 10}}],
+     "images": [{{"source": "window", "purpose": "Describe the exercise"}}]}}
+
+  Generic content (when you can't find a specific parent):
+    {{"text": [{{"role": "AXStaticText", "min_length": 40}}],
+     "images": [{{"source": "window"}}]}}
+
+IMAGE EXTRACTION OPTIONS:
+  - {{"source": "window"}}: Full window screenshot sent to VLM for description
+  - {{"source": "window", "purpose": "..."}}: Same but with purpose context for VLM
+  - {{"role": "AXImage", "name": "diagram"}}: Find element in tree, crop its region
+  - {{"bbox": [x, y, w, h]}}: Crop a specific region
+
+HOW TO BUILD GOOD EXTRACTION:
+1. Look at the accessibility tree for the content area structure
+2. Find the parent container that holds the unique content (article body, transcript, question)
+3. Use parent_contains to scope extraction to that container
+4. Use min_length to filter out short labels if needed
+5. Always include an image extraction for VLM to describe visual content
+6. NAVIGATION/TRANSITION screens: omit extract (no unique content to capture)
 """
 
 # Valid handler names for BT validation

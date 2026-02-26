@@ -54,7 +54,7 @@ class ValidateRequest(BaseModel):
 # ── Compute (Phase 5-6) ──
 
 class ExtractImageRequest(BaseModel):
-    """Image content extraction via Gemini 2.5 Flash."""
+    """Image content extraction via Gemini 2.5 Pro."""
     image_b64: str
     purpose: Optional[str] = None
     context: Optional[str] = None

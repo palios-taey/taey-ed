@@ -5,7 +5,7 @@ Gemini API image analysis for content extraction.
 Phase 5: Extract text descriptions from lesson images/diagrams.
 Spark provides COMPUTE only - Mac stores results locally.
 
-Uses Gemini 2.5 Flash/Pro with model cascade for rate limit handling.
+Uses Gemini 2.5 Pro with model cascade for rate limit handling.
 """
 
 import base64
@@ -34,11 +34,11 @@ _api_key = _load_api_key()
 if _api_key:
     genai.configure(api_key=_api_key)
 
-# Model cascade: Flash → Pro → Flash-Lite
+# Model cascade: Pro → Pro (single model, no fallback)
 MODELS = {
-    "primary": "gemini-2.5-flash",
+    "primary": "gemini-2.5-pro",
     "heavy": "gemini-2.5-pro",
-    "fallback": "gemini-2.5-flash-lite",
+    "fallback": "gemini-2.5-pro",
 }
 
 EXTRACTION_PROMPT = """Extract from this educational screenshot:
@@ -150,7 +150,7 @@ async def extract_image_content(
         mime_type = "image/jpeg"
 
     # Try model cascade
-    models_to_try = ["primary", "fallback"]  # Start with Flash, fallback to Flash-Lite
+    models_to_try = ["primary", "fallback"]  # Gemini 2.5 Pro
 
     for model_key in models_to_try:
         try:

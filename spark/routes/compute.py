@@ -14,7 +14,7 @@ router = APIRouter(prefix="/api/v1")
 
 @router.post("/extract_image")
 async def extract_image(request: ExtractImageRequest):
-    """Extract text description from image using Gemini 2.5 Flash."""
+    """Extract text description from image using Gemini 2.5 Pro."""
     from spark.tasks.call_vision import extract_image_content
     result = await extract_image_content(
         image_b64=request.image_b64,

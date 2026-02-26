@@ -277,6 +277,63 @@ def next_action(request: NextActionRequest):
         store_message(platform, build_user_message(request.chat_message))
         logger.info(f"  Chat: stored user message: {request.chat_message[:80]}")
 
+        # ── URGENT: User message = priority override ──
+        # User messages are treated like error reports — full context, immediate action.
+        # If user is telling us something, there's something wrong that needs addressing.
+        if request.screenshot_b64:
+            logger.info("  URGENT: User sent proactive message — overriding normal flow")
+            # Build context from previous state
+            guidance_parts = [f"USER MESSAGE (URGENT — address immediately): {request.chat_message}"]
+            if lr:
+                guidance_parts.append(f"Previous screen: {lr.screen or 'unknown'}")
+                guidance_parts.append(f"Previous action: {lr.action or 'unknown'}")
+                guidance_parts.append(f"Action succeeded: {lr.success}")
+                if lr.bt_debug_tail:
+                    guidance_parts.append(f"Last BT debug:\n{lr.bt_debug_tail}")
+            user_guidance = "\n".join(guidance_parts)
+
+            # Classify current screen to give Gemini context
+            from spark.tasks.classify_screen import classify_screen, build_bt_from_tree
+            classification = classify_screen(
+                tree=tree,
+                screenshot_b64=request.screenshot_b64,
+                platform=platform,
+            )
+            screen_type = classification.get("screen_type", "UNKNOWN")
+            logger.info(f"  URGENT: Current screen classified as {screen_type}")
+
+            result = build_bt_from_tree(
+                tree=tree,
+                screenshot_b64=request.screenshot_b64,
+                platform=platform,
+                screen_type=screen_type,
+                user_guidance=user_guidance,
+            )
+            if result:
+                sig_hash = ""
+                try:
+                    _match = match_screen(tree, config)
+                    sig_hash = _match.get("sig_hash", "")
+                except Exception:
+                    pass
+                return _store_and_return_bt(result, platform, tree, sig_hash)
+
+            # Gemini couldn't build BT — ask user for more specific guidance
+            logger.warning("  URGENT: Gemini couldn't build BT from user message")
+            from spark.tasks.classify_screen import _describe_screen
+            _reason = (f"I received your message but couldn't build an automation from it. "
+                       f"Can you tell me more specifically what to do on this screen?")
+            return _with_chat({
+                "directive": "user_input_needed",
+                "directive_id": _make_directive_id(),
+                "reason": _reason,
+                "screen_type": screen_type,
+                "screen_description": _describe_screen(tree),
+            }, platform, [
+                build_status(f"Received your message — need more specific guidance"),
+                build_question(_reason),
+            ])
+
     logger.info(
         f">>> /next_action: platform={platform} "
         f"has_screenshot={'yes' if request.screenshot_b64 else 'no'} "
@@ -599,7 +656,7 @@ def next_action(request: NextActionRequest):
                 "tree": stored_bt,
                 "screen": known_type,
                 "skeleton_hash": sig_hash,
-                "extract": {"text": [{"role": "AXStaticText"}], "images": [{"source": "window"}]},
+                "extract": match_result.get("extract"),
                 "expected_next": [],
             }, platform, [build_status(f"Executing {known_type} automation")])
 
