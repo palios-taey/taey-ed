@@ -1,4 +1,3 @@
-# STATUS: FROZEN - Proven in v7. Verified 2026-02-19. Do not modify.
 """
 Crop screenshot region for VLM analysis.
 Single function. No fallbacks. Uses Pillow.

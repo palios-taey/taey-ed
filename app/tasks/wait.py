@@ -1,4 +1,3 @@
-# STATUS: FROZEN - Proven in v7. Verified 2026-02-19. Do not modify.
 """
 Wait for element to appear in accessibility tree.
 Polls with max_wait timeout to prevent infinite hang.

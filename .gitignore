@@ -11,3 +11,6 @@ build/
 .env
 palios-taey-secrets.json
 *.log
+.DS_Store
+.pytest_cache/
+venv/

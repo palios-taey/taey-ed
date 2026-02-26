@@ -7,11 +7,11 @@ Mac is a dumb executor; Spark makes all decisions.
 Flow:
   1. Active consultation? → wait or execute completed BT
   2. Validate previous action → stuck detection, wrong-answer detection
-  3. match_screen() → vector-only (Weaviate ScreenEmbedding)
+  3. match_screen() → set-difference signature matching (JSON files)
   4. Match found:
      A. Has BT → execute_tree
      B. No BT but screen_type known → consult with type context (skip classification)
-  5. No match → classify via Gemini → store in Weaviate → consult for BT
+  5. No match → classify via Gemini → store signature → consult for BT
      UNKNOWN → consultation escalation
 
 Screen types (6 universal + 1 escalation, IMS Caliper validated):
@@ -25,8 +25,8 @@ Bug fixes from V7:
 Post-V8 fixes (2026-02-21):
   - Removed navigation auto-detect (link count heuristic broke Coursera)
   - Gemini classification replaces heuristic analyze_tree()
-  - Classifications stored in Weaviate immediately for future recognition
-  - match_screen() returns skeleton/embedding even on no-match (avoid recompute)
+  - V17: Replaced Weaviate vector matching with set-difference signature matching
+  - Signatures stored in /var/spark/taey-ed/signatures/{platform}.json
 """
 
 import json
@@ -43,6 +43,12 @@ from spark.tasks.handle_consultation import (
     request_consultation,
     check_consultation,
 )
+from spark.tasks.chat_store import (
+    store_message,
+    build_status,
+    build_question,
+    build_user_message,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +58,51 @@ router = APIRouter()
 def _make_directive_id() -> str:
     return f"d-{uuid.uuid4().hex[:8]}"
 
+
+def _with_chat(response: dict, platform: str, messages: list[dict]) -> dict:
+    """Attach chat_messages to a response and persist them to Redis."""
+    for msg in messages:
+        store_message(platform, msg)
+    response["chat_messages"] = messages
+    return response
+
+
+
+def _store_and_return_bt(result: dict, platform: str, tree: dict, sig_hash: str) -> dict:
+    """Store a Gemini-built BT with the signature and return execute_tree directive."""
+    variant_type = result.get("screen_type", "UNKNOWN")
+
+    # Only store BT with signature for deterministic types (VIDEO, ARTICLE).
+    # Non-deterministic types store signature for recognition but NOT the BT,
+    # so Gemini rebuilds it fresh each time with current screen content.
+    from spark.tasks.screen_type_util import is_deterministic
+    bt_to_store = result["tree"] if is_deterministic(variant_type) else None
+
+    try:
+        from spark.tasks.screen_signatures import learn_screen
+        stored_hash = learn_screen(
+            platform=platform,
+            tree=tree,
+            screen_type=variant_type,
+            behavior_tree=bt_to_store,
+            source="gemini_bt",
+        )
+        logger.info(f"  Stored {'BT + ' if bt_to_store else ''}signature for {variant_type} (hash={stored_hash[:12]})")
+    except Exception as e:
+        logger.warning(f"  Failed to store Gemini BT: {e}")
+
+    bt_json = json.dumps(result["tree"], indent=2)
+    logger.info(f"  Gemini BT for {variant_type}:\n{bt_json}")
+
+    return _with_chat({
+        "directive": "execute_tree",
+        "directive_id": _make_directive_id(),
+        "tree": result["tree"],
+        "screen": variant_type,
+        "skeleton_hash": sig_hash,
+        "extract": result.get("extract"),
+        "expected_next": result.get("expected_next", []),
+    }, platform, [build_status(f"Built new {variant_type} automation — executing")])
 
 
 def _consultation_or_wait(consult_result: dict) -> dict:
@@ -70,6 +121,75 @@ def _consultation_or_wait(consult_result: dict) -> dict:
         "consultation_id": consult_result["consultation_id"],
         "poll_interval": 5.0,
     }
+
+
+def _build_screen_directive(request, platform: str, tree: dict, screen_type: str, sig_hash: str,
+                            user_guidance: str = None) -> dict:
+    """
+    Gemini 2.5 Pro builds a screen-specific BT by looking at the actual tree + screenshot.
+    Templates are only a fallback when no screenshot is available.
+
+    Flow:
+    1. Has screenshot? → Gemini 2.5 Pro builds dynamic BT → store with signature
+    2. No screenshot? → deterministic template as last resort
+    3. Both fail? → user_input_needed
+    """
+    from spark.tasks.classify_screen import build_bt, get_click_target, build_bt_from_tree
+
+    # PRIMARY PATH: Gemini 2.5 Pro builds a BT specific to THIS screen
+    if request.screenshot_b64:
+        logger.info(f"  Building dynamic BT via Gemini 2.5 Pro for {screen_type}")
+        result = build_bt_from_tree(
+            tree=tree,
+            screenshot_b64=request.screenshot_b64,
+            platform=platform,
+            screen_type=screen_type,
+            user_guidance=user_guidance,
+        )
+        if result:
+            return _store_and_return_bt(result, platform, tree, sig_hash)
+        logger.warning(f"  Gemini 2.5 Pro BT build failed for {screen_type} — falling back to template")
+
+    # FALLBACK: Deterministic template (no screenshot or Gemini failed)
+    click_target = None
+    if screen_type in ("NAVIGATION", "TRANSITION") and request.screenshot_b64:
+        click_target = get_click_target(
+            tree=tree,
+            screenshot_b64=request.screenshot_b64,
+            platform=platform,
+            screen_type=screen_type,
+        )
+
+    result = build_bt(screen_type, click_target)
+    if result:
+        variant_type = result.get("screen_type", screen_type)
+        logger.info(f"  Template fallback BT for {variant_type}")
+        bt_json = json.dumps(result["tree"], indent=2)
+        logger.info(f"  BT =\n{bt_json}")
+        return _with_chat({
+            "directive": "execute_tree",
+            "directive_id": _make_directive_id(),
+            "tree": result["tree"],
+            "screen": variant_type,
+            "skeleton_hash": sig_hash,
+            "extract": result.get("extract"),
+            "expected_next": result.get("expected_next", []),
+        }, platform, [build_status(f"Executing {variant_type} automation (template)")])
+
+    # NOTHING WORKED — ask user
+    from spark.tasks.classify_screen import _describe_screen
+    _reason = (f"Could not build behavior tree for '{screen_type}'. "
+               f"Tell me what to do on this screen.")
+    return _with_chat({
+        "directive": "user_input_needed",
+        "directive_id": _make_directive_id(),
+        "reason": _reason,
+        "screen_type": screen_type,
+        "screen_description": _describe_screen(tree),
+    }, platform, [
+        build_status(f"Could not build automation for {screen_type}"),
+        build_question(_reason),
+    ])
 
 
 def _validate_last_action(platform: str, config: dict, lr, current_tree: dict) -> dict:
@@ -152,6 +272,11 @@ def next_action(request: NextActionRequest):
 
     config = load_yaml(platform)
 
+    # Store incoming user chat message (proactive or response)
+    if request.chat_message:
+        store_message(platform, build_user_message(request.chat_message))
+        logger.info(f"  Chat: stored user message: {request.chat_message[:80]}")
+
     logger.info(
         f">>> /next_action: platform={platform} "
         f"has_screenshot={'yes' if request.screenshot_b64 else 'no'} "
@@ -165,6 +290,8 @@ def next_action(request: NextActionRequest):
             f"hash_before={lr.tree_hash_before[:12] if lr.tree_hash_before else 'none'} "
             f"hash_after={lr.tree_hash_after[:12] if lr.tree_hash_after else 'none'}"
         )
+        if lr.bt_debug_tail:
+            logger.info(f"    bt_debug_tail:\n{lr.bt_debug_tail}")
 
     # ── Step 1: Active consultation? Check if done ──
     logger.info("  Step 1: Checking active consultation...")
@@ -186,17 +313,18 @@ def next_action(request: NextActionRequest):
                 except Exception:
                     pass
 
-                return {
+                _screen = consult_status.get("screen_type", "CONSULTATION")
+                return _with_chat({
                     "directive": "execute_tree",
                     "directive_id": _make_directive_id(),
                     "tree": tree_def,
-                    "screen": consult_status.get("screen_type", "CONSULTATION"),
+                    "screen": _screen,
                     "extract": consult_status.get("extract"),
                     "course_id": consult_status.get("course_id", cs.course_id),
                     "lesson": "",
                     "expected_next": consult_status.get("expected_next", []),
                     "skeleton_hash": _consult_skeleton_hash,
-                }
+                }, platform, [build_status(f"Consultation resolved — executing {_screen} automation")])
             logger.warning(f"Consultation {consultation_id} complete but no tree, re-matching")
         elif consult_status.get("status") == "not_found":
             logger.warning(f"Consultation {consultation_id} not found, clearing and re-matching")
@@ -217,8 +345,8 @@ def next_action(request: NextActionRequest):
         if vr["validated"]:
             if lr.directive_skeleton_hash:
                 try:
-                    from spark.tasks.screen_memory import mark_validated
-                    mark_validated(lr.directive_skeleton_hash, screen_type=lr.screen or "")
+                    from spark.tasks.screen_signatures import mark_validated
+                    mark_validated(platform=platform, sig_hash=lr.directive_skeleton_hash)
                     logger.info(
                         f"Step 2: Validated {lr.screen} "
                         f"(hash={lr.directive_skeleton_hash[:12]}, "
@@ -228,35 +356,30 @@ def next_action(request: NextActionRequest):
                     logger.warning(f"Step 2: mark_validated failed (non-fatal): {e}")
 
         elif vr["wrong_answer"]:
-            logger.warning(
-                f"Step 2: WRONG ANSWER detected for {lr.screen} "
-                f"(hash={lr.directive_skeleton_hash})"
+            # ONE TRY ONLY: Wrong answer means the action was wrong. STOP.
+            logger.error(
+                f"Step 2: WRONG ANSWER for {lr.screen} — "
+                f"ONE TRY ONLY — stopping. Hash={lr.directive_skeleton_hash}"
             )
             if lr.directive_skeleton_hash:
                 try:
-                    from spark.tasks.screen_memory import mark_invalidated
-                    mark_invalidated(lr.directive_skeleton_hash, screen_type=lr.screen or "")
+                    from spark.tasks.screen_signatures import delete_screen
+                    delete_screen(platform=platform, sig_hash=lr.directive_skeleton_hash)
                 except Exception as e:
-                    logger.warning(f"Step 2: mark_invalidated failed: {e}")
-
-            if not request.screenshot_b64:
-                return {
-                    "directive": "need_screenshot",
-                    "directive_id": _make_directive_id(),
-                    "reason": "wrong_answer_needs_consultation",
-                }
-            consult_result = request_consultation(
-                platform=platform,
-                tree=tree,
-                screenshot_b64=request.screenshot_b64,
-                context={
-                    "failure_reason": "wrong_answer_same_question",
-                    "previous_screen": lr.screen,
-                    "previous_action": lr.action,
-                    "reconsultation": True,
-                },
-            )
-            return _consultation_or_wait(consult_result)
+                    logger.warning(f"Step 2: delete_screen failed: {e}")
+            from spark.tasks.classify_screen import _describe_screen
+            _reason = (f"WRONG ANSWER on screen '{lr.screen}'. "
+                       f"Tell me what the correct action is for this screen.")
+            return _with_chat({
+                "directive": "user_input_needed",
+                "directive_id": _make_directive_id(),
+                "reason": _reason,
+                "screen_type": lr.screen or "UNKNOWN",
+                "screen_description": _describe_screen(tree),
+            }, platform, [
+                build_status(f"Wrong answer detected on {lr.screen} — deleted old approach"),
+                build_question(_reason),
+            ])
 
         else:
             logger.warning(
@@ -266,60 +389,123 @@ def next_action(request: NextActionRequest):
             )
 
     # ── Step 2.5: Stuck detection ──
+    # ONE TRY ONLY: If the action didn't change the screen, STOP.
+    # Do NOT re-classify, do NOT create a consultation. Just stop.
     logger.info("  Step 2.5: Checking for stuck screen...")
     if lr and lr.success and not lr.continue_loop and lr.screen:
         tree_hash_changed = lr.tree_hash_before != lr.tree_hash_after
         if not tree_hash_changed:
-            logger.warning(f"STUCK: {lr.screen} unchanged after BT. Escalating.")
-            if not request.screenshot_b64:
-                return {
-                    "directive": "need_screenshot",
-                    "directive_id": _make_directive_id(),
-                    "reason": "stuck_same_screen",
-                }
-            consult_result = request_consultation(
-                platform=platform,
-                tree=tree,
-                screenshot_b64=request.screenshot_b64,
-                context={
-                    "stuck_screen": lr.screen,
-                    "failure_reason": "BT executed but screen unchanged. BT is wrong.",
-                    "reconsultation": True,
-                },
+            logger.error(
+                f"STUCK: {lr.screen} unchanged after action. "
+                f"ONE TRY ONLY — stopping. Hash={lr.directive_skeleton_hash or 'none'}"
             )
-            return _consultation_or_wait(consult_result)
+            # Delete the failed entry so it doesn't re-match next time
+            if lr.directive_skeleton_hash:
+                try:
+                    from spark.tasks.screen_signatures import delete_screen as _del_screen
+                    _del_screen(platform=platform, sig_hash=lr.directive_skeleton_hash)
+                    logger.info(f"Step 2.5: Deleted failed screen entry {lr.directive_skeleton_hash[:12]}")
+                except Exception as e:
+                    logger.warning(f"Step 2.5: delete_screen failed: {e}")
+            from spark.tasks.classify_screen import _describe_screen
+            _reason = (f"STUCK: Screen '{lr.screen}' unchanged after action. "
+                       f"Tell me what to do on this screen.")
+            return _with_chat({
+                "directive": "user_input_needed",
+                "directive_id": _make_directive_id(),
+                "reason": _reason,
+                "screen_type": lr.screen or "UNKNOWN",
+                "screen_description": _describe_screen(tree),
+            }, platform, [
+                build_status(f"Screen unchanged after action on {lr.screen} — need your help"),
+                build_question(_reason),
+            ])
 
     # ── Step 2.7: Polling completion detection ──
     logger.info("  Step 2.7: Checking polling completion...")
     if lr and lr.continue_loop and lr.tree_hash_before and lr.tree_hash_after:
         if lr.tree_hash_before != lr.tree_hash_after:
+            # For VIDEO screens: tree hash ALWAYS changes during playback
+            # (timestamps, progress bar). Check if video is actually done
+            # by looking for video signals in the current tree.
+            is_video = lr.screen and "VIDEO" in (lr.screen or "").upper()
+            if is_video:
+                from spark.tasks.prompt_codex import analyze_tree as _analyze
+                current_tags = _analyze(tree)
+                if "HAS_VIDEO" in current_tags:
+                    logger.info(
+                        f"Step 2.7: Video still playing (HAS_VIDEO in current tree). "
+                        f"Continuing poll — NOT advancing."
+                    )
+                    # Return video_poll again to keep watching
+                    return {
+                        "directive": "execute_tree",
+                        "directive_id": _make_directive_id(),
+                        "tree": {
+                            "type": "sequence",
+                            "children": [
+                                {"type": "action", "action": "video_poll"},
+                            ],
+                        },
+                        "screen": lr.screen,
+                    }
+                else:
+                    logger.info(
+                        f"Step 2.7: Video screen no longer has video signals. "
+                        f"Video completed — navigating forward."
+                    )
+
             logger.info(
                 f"Content completed: tree changed after {lr.action} "
-                f"(screen={lr.screen}). Navigating forward."
+                f"(screen={lr.screen}). Building advancement BT via Gemini."
             )
-            return {
-                "directive": "execute_tree",
-                "directive_id": _make_directive_id(),
-                "tree": {
-                    "type": "sequence",
-                    "children": [
-                        {"type": "action", "action": "press_key", "params": {"key": "Escape"}},
-                        {"type": "action", "action": "wait", "params": {"seconds": 2.0}},
-                    ],
-                },
-                "screen": f"{lr.screen or 'CONTENT'}_COMPLETE",
-            }
+            # Button names vary by platform — let Gemini read the actual tree
+            if not request.screenshot_b64:
+                return {
+                    "directive": "need_screenshot",
+                    "directive_id": _make_directive_id(),
+                    "reason": "content_complete_advance",
+                }
+            return _build_screen_directive(
+                request, platform, tree, "TRANSITION", "",
+                user_guidance="Content just completed. Find and click the completion/mark-complete button if present, then the advance/next button. Look at the tree for actual button names.",
+            )
 
     # ── Step 3: Previous action failed? ──
     logger.info("  Step 3: Checking for previous failure...")
     if lr and lr.success is False:
         if lr.user_response:
+            # User provided guidance — build BT directly using Gemini
+            logger.info(
+                f"Step 3: User guidance received for {lr.screen}: "
+                f"'{lr.user_response[:100]}'"
+            )
             if not request.screenshot_b64:
                 return {
                     "directive": "need_screenshot",
                     "directive_id": _make_directive_id(),
-                    "reason": "failure_needs_consultation",
+                    "reason": "user_guidance_needs_screenshot",
                 }
+            from spark.tasks.classify_screen import build_bt_from_tree
+            result = build_bt_from_tree(
+                tree=tree,
+                screenshot_b64=request.screenshot_b64,
+                platform=platform,
+                screen_type=lr.screen or "UNKNOWN",
+                user_guidance=lr.user_response,
+            )
+            if result:
+                # Get signature hash for storage
+                sig_hash = ""
+                try:
+                    match_result = match_screen(tree, config)
+                    sig_hash = match_result.get("sig_hash", "")
+                except Exception:
+                    pass
+                return _store_and_return_bt(result, platform, tree, sig_hash)
+
+            # Gemini couldn't build BT from user guidance — fall back to consultation
+            logger.warning("Step 3: Gemini couldn't build BT from user guidance, trying consultation")
             consult_result = request_consultation(
                 platform=platform,
                 tree=tree,
@@ -328,77 +514,111 @@ def next_action(request: NextActionRequest):
             )
             return _consultation_or_wait(consult_result)
 
-        if not request.screenshot_b64:
-            return {
-                "directive": "need_screenshot",
-                "directive_id": _make_directive_id(),
-                "reason": "failure_needs_consultation",
-            }
-        consult_result = request_consultation(
-            platform=platform,
-            tree=tree,
-            screenshot_b64=request.screenshot_b64,
-            context={
-                "failed_screen": lr.screen,
-                "failure_action": lr.action,
-                "reconsultation": True,
-            },
-        )
-        return _consultation_or_wait(consult_result)
+        # If Mac sent the failed BT, try ONE Gemini call with failure context
+        if lr.failed_bt and request.screenshot_b64:
+            logger.info(
+                f"Step 3: BT failed for {lr.screen} — retrying with failure context"
+            )
+            from spark.tasks.classify_screen import build_bt_from_tree
+            result = build_bt_from_tree(
+                tree=tree,
+                screenshot_b64=request.screenshot_b64,
+                platform=platform,
+                screen_type=lr.screen or "UNKNOWN",
+                failed_bt=lr.failed_bt,
+                failed_bt_debug=lr.bt_debug_tail,
+            )
+            if result:
+                retry_sig_hash = ""
+                try:
+                    retry_match = match_screen(tree, config)
+                    retry_sig_hash = retry_match.get("sig_hash", "")
+                except Exception:
+                    pass
+                return _store_and_return_bt(result, platform, tree, retry_sig_hash)
+            logger.error("Step 3: Gemini retry with failure context also failed — stopping")
 
-    # ── Step 4: Match screen (Weaviate vector search) ──
-    logger.info("  Step 4: Vector matching against Weaviate...")
+        # BT execution failed, no human guidance, no successful retry. STOP.
+        bt_diag = ""
+        if lr.bt_debug_tail:
+            bt_diag = f"\nBT debug log:\n{lr.bt_debug_tail}"
+            logger.error(
+                f"Step 3: BT execution failed for {lr.screen}, action={lr.action}. "
+                f"Stopping.{bt_diag}"
+            )
+        else:
+            logger.error(
+                f"Step 3: BT execution failed for {lr.screen}, action={lr.action}. "
+                f"Stopping. (no bt_debug_tail)"
+            )
+        from spark.tasks.classify_screen import _describe_screen
+        _reason = (f"Action '{lr.action}' failed on screen '{lr.screen}'. "
+                   f"Tell me what to do on this screen.")
+        return _with_chat({
+            "directive": "user_input_needed",
+            "directive_id": _make_directive_id(),
+            "reason": _reason,
+            "screen_type": lr.screen or "UNKNOWN",
+            "screen_description": _describe_screen(tree),
+            "bt_debug_tail": lr.bt_debug_tail or "",
+        }, platform, [
+            build_status(f"Action failed on {lr.screen}"),
+            build_question(_reason),
+        ])
+
+    # ── Step 4: Match screen (set-difference signatures) ──
+    logger.info("  Step 4: Signature matching...")
     match_result = match_screen(tree, config)
     logger.info(
         f"    match_result: matched={match_result.get('matched')} "
         f"screen={match_result.get('screen', 'none')} "
         f"screen_type={match_result.get('screen_type', 'none')} "
         f"has_tree={'yes' if match_result.get('tree') else 'no'} "
-        f"has_embedding={'yes' if match_result.get('embedding') else 'no'}"
+        f"score={match_result.get('match_score', 'n/a')}"
     )
 
-    if match_result.get("matched") and match_result.get("tree"):
-        logger.info(f"  <<< RETURNING: execute_tree for {match_result.get('screen', 'UNKNOWN')}")
-        return {
-            "directive": "execute_tree",
-            "directive_id": _make_directive_id(),
-            "tree": match_result["tree"],
-            "screen": match_result.get("screen", "UNKNOWN"),
-            "extract": match_result.get("extract"),
-            "course_id": match_result.get("course_id", cs.course_id),
-            "lesson": match_result.get("lesson", ""),
-            "expected_next": match_result.get("expected_next", []),
-            "skeleton_hash": match_result.get("skeleton_hash", ""),
-        }
-
-    # ── Step 4B: Matched screen but no BT — previously classified ──
-    if match_result.get("matched") and not match_result.get("tree"):
+    # Step 4: Signature matched — check for stored BT first, then templates
+    if match_result.get("matched"):
         known_type = match_result.get("screen_type", "")
+        sig_hash = match_result.get("sig_hash", "")
+        stored_bt = match_result.get("tree")
+
+        # Only reuse stored BTs for deterministic screen types (VIDEO, ARTICLE).
+        # All other types get fresh Gemini analysis since content changes.
+        from spark.tasks.screen_type_util import is_deterministic
+        if stored_bt and isinstance(stored_bt, dict) and stored_bt.get("type") and is_deterministic(known_type):
+            logger.info(
+                f"  Step 4: REUSING deterministic BT for {known_type} "
+                f"(hash={sig_hash[:12]}, score={match_result.get('match_score', 0):.2f})"
+            )
+            bt_json = json.dumps(stored_bt, indent=2)
+            logger.info(f"  Stored BT:\n{bt_json}")
+            return _with_chat({
+                "directive": "execute_tree",
+                "directive_id": _make_directive_id(),
+                "tree": stored_bt,
+                "screen": known_type,
+                "skeleton_hash": sig_hash,
+                "extract": {"text": [{"role": "AXStaticText"}], "images": [{"source": "window"}]},
+                "expected_next": [],
+            }, platform, [build_status(f"Executing {known_type} automation")])
+
+        # Non-deterministic type or no stored BT — build fresh via Gemini
         logger.info(
             f"  Step 4B: Screen recognized as {known_type} "
-            f"(hash={match_result.get('skeleton_hash', '')[:12]}, "
-            f"d={match_result.get('match_distance', 0):.4f}) — no BT stored"
+            f"(hash={sig_hash[:12]}, "
+            f"score={match_result.get('match_score', 0):.2f}) — building fresh BT via Gemini"
         )
-        # Screen type is known — consult with type context for BT generation
         if not request.screenshot_b64:
             return {
                 "directive": "need_screenshot",
                 "directive_id": _make_directive_id(),
-                "reason": f"bt_generation_for_{known_type}",
+                "reason": f"click_target_for_{known_type}",
             }
-        consult_result = request_consultation(
-            platform=platform,
-            tree=tree,
-            screenshot_b64=request.screenshot_b64,
-            context={
-                "screen_type": known_type,
-                "reason": f"Screen classified as {known_type} but no behavior tree stored yet.",
-            },
-        )
-        return _consultation_or_wait(consult_result)
+        return _build_screen_directive(request, platform, tree, known_type, sig_hash)
 
     # ── Step 5: No match — classify and store ──
-    logger.info("  Step 5: No Weaviate match — classifying and storing")
+    logger.info("  Step 5: No signature match — classifying via Gemini")
 
     # Step 5A: Need screenshot for classification
     if not request.screenshot_b64:
@@ -423,67 +643,65 @@ def next_action(request: NextActionRequest):
         f"note={classification.get('confidence_note', '')}"
     )
 
-    # ── Step 5B: Store classification in Weaviate ──
+    # ── Step 5B: Store classification as signature ──
     # Store immediately so this screen is recognized on next encounter.
-    # skeleton_hash and embedding come from match_screen() Step 4 (pre-computed).
     if screen_type != "UNKNOWN":
-        skel_hash = match_result.get("skeleton_hash", "")
-        embedding = match_result.get("embedding")
-        skeleton_text = match_result.get("skeleton_text", "")
-
-        if skel_hash and embedding:
-            try:
-                from spark.tasks.screen_memory import store_screen
-                store_screen(
-                    vector=embedding,
-                    skeleton_hash=skel_hash,
-                    platform=platform,
-                    behavior_tree={},
-                    skeleton_text=skeleton_text,
-                    screen_type=screen_type,
-                    validated=False,
-                    source="classification",
-                )
-                logger.info(
-                    f"  Step 5B: Stored {screen_type} in Weaviate "
-                    f"(hash={skel_hash[:12]})"
-                )
-            except Exception as e:
-                logger.error(f"  Step 5B: Failed to store classification: {e}")
-        else:
-            logger.warning(
-                "  Step 5B: No skeleton/embedding from Step 4 — cannot store. "
-                "This screen will need re-classification next time."
+        try:
+            from spark.tasks.screen_signatures import learn_screen
+            sig_hash = learn_screen(
+                platform=platform,
+                tree=tree,
+                screen_type=screen_type,
+                source="classification",
             )
+            logger.info(f"  Step 5B: Stored {screen_type} signature ({sig_hash})")
+        except Exception as e:
+            logger.error(f"  Step 5B: Failed to store classification: {e}")
 
     # ── Step 5C: Return directive based on classification ──
     if screen_type == "UNKNOWN":
-        logger.warning("  Step 5C: UNKNOWN screen — escalating to consultation")
-        consult_result = request_consultation(
-            platform=platform,
+        logger.warning("  Step 5C: UNKNOWN screen — trying Gemini BT builder first")
+        from spark.tasks.classify_screen import build_bt_from_tree, _describe_screen
+        result = build_bt_from_tree(
             tree=tree,
             screenshot_b64=request.screenshot_b64,
-            context={
-                "classification_failed": True,
-                "confidence_note": classification.get("confidence_note", ""),
-            },
+            platform=platform,
+            screen_type="UNKNOWN",
         )
-        return _consultation_or_wait(consult_result)
+        if result:
+            logger.info(f"  Step 5C: Gemini built BT for UNKNOWN → {result.get('screen_type')}")
+            # Store signature with the Gemini-determined type
+            try:
+                from spark.tasks.screen_signatures import learn_screen
+                sig_hash = learn_screen(
+                    platform=platform,
+                    tree=tree,
+                    screen_type=result["screen_type"],
+                    behavior_tree=result["tree"],
+                    source="gemini_bt",
+                )
+            except Exception as e:
+                sig_hash = ""
+                logger.warning(f"  Step 5C: Signature storage failed: {e}")
+            return _store_and_return_bt(result, platform, tree, sig_hash)
 
-    # Known type — consult with screen_type context for BT generation
-    logger.info(
-        f"  Step 5C: {screen_type} classified and stored — "
-        f"consulting for BT generation"
-    )
-    consult_result = request_consultation(
-        platform=platform,
-        tree=tree,
-        screenshot_b64=request.screenshot_b64,
-        context={
-            "screen_type": screen_type,
-            "platform_variant": classification.get("platform_variant", ""),
+        # Gemini BT builder failed — describe screen and ask for user input
+        logger.warning("  Step 5C: Gemini BT builder failed — requesting user input")
+        _reason = ("Unknown screen type. Gemini could not build a behavior tree. "
+                   "Tell me what to do on this screen.")
+        return _with_chat({
+            "directive": "user_input_needed",
+            "directive_id": _make_directive_id(),
+            "reason": _reason,
+            "screen_type": "UNKNOWN",
+            "screen_description": _describe_screen(tree),
             "confidence_note": classification.get("confidence_note", ""),
-            "reason": f"First encounter of {screen_type} screen. Generate behavior tree.",
-        },
-    )
-    return _consultation_or_wait(consult_result)
+        }, platform, [
+            build_status("Unknown screen — could not build automation"),
+            build_question(_reason),
+        ])
+
+    # Known type — identified via classification, now build BT
+    logger.info(f"  Step 5C: {screen_type} — building BT")
+    store_message(platform, build_status(f"Identified screen as {screen_type}"))
+    return _build_screen_directive(request, platform, tree, screen_type, sig_hash if screen_type != "UNKNOWN" else "")

@@ -1,4 +1,3 @@
-# STATUS: FROZEN - Proven in v7. Verified 2026-02-19. Do not modify.
 """
 HTTP client to call Spark API.
 Single function. No fallbacks. Supports GET and POST.

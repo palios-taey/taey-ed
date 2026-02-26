@@ -1,0 +1,16 @@
+# Taey-Ed V7 Dependencies
+# py2app for building macOS .app bundle
+py2app
+setuptools==70.0.0
+
+# PyObjC for macOS accessibility APIs
+pyobjc-framework-Cocoa
+pyobjc-framework-Quartz
+pyobjc-framework-ApplicationServices
+
+# HTTP client for Spark API calls
+httpx
+
+# Phase 5: Content extraction and storage
+Pillow                  # Image cropping for VLM
+numpy                   # Embedding array handling (for future vector search)

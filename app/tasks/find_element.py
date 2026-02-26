@@ -1,4 +1,3 @@
-# STATUS: FROZEN - Proven in v7. Verified 2026-02-19. Do not modify.
 """
 Find element in accessibility tree by text.
 Returns element with raw AXUIElement reference for clicking.

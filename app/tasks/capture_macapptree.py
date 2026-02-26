@@ -1,4 +1,3 @@
-# STATUS: FROZEN - Proven in v7. Verified 2026-02-19. Do not modify.
 """
 Capture macapptree format: accessibility tree + screenshot with bounding boxes.
 This is for Spark Claude visual reference - element IDs + visible_bbox.

@@ -264,6 +264,9 @@ def request_consultation(
 
     logger.info(f"Consultation created: {consultation_id} at {consult_path}")
 
+    # Rolling cleanup: keep only 2 most recent completed consultations
+    _cleanup_old_consultations(keep=2)
+
     return {
         "consultation_id": consultation_id,
         "status": "pending",
@@ -336,3 +339,36 @@ def get_pending_consultations() -> List[dict]:
                     logger.error(f"Error reading metadata for {path.name}: {e}")
 
     return sorted(pending, key=lambda x: x.get("timestamp", ""))
+
+
+def _cleanup_old_consultations(keep: int = 2):
+    """Remove old completed consultations, keeping the most recent `keep` per platform."""
+    import shutil
+
+    if not CONSULT_DIR.exists():
+        return
+
+    # Collect completed consultations with timestamps
+    completed = []
+    for path in CONSULT_DIR.iterdir():
+        if not path.is_dir() or not path.name.startswith("consult_"):
+            continue
+        if not (path / "response.json").exists():
+            continue  # Keep pending consultations
+        meta_file = path / "metadata.json"
+        ts = ""
+        if meta_file.exists():
+            try:
+                ts = json.loads(meta_file.read_text()).get("timestamp", "")
+            except Exception:
+                pass
+        completed.append((ts, path))
+
+    # Sort newest first, remove everything beyond `keep`
+    completed.sort(key=lambda x: x[0], reverse=True)
+    for _, path in completed[keep:]:
+        try:
+            shutil.rmtree(path)
+            logger.info(f"Cleaned up old consultation: {path.name}")
+        except Exception as e:
+            logger.warning(f"Failed to clean up {path.name}: {e}")

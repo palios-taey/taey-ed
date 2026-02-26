@@ -1,4 +1,3 @@
-# STATUS: FROZEN - Proven in v7. Verified 2026-02-19. Do not modify.
 """
 Compute hash of accessibility tree for change detection.
 Used to detect if screen changed after an action.

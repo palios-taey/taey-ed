@@ -125,6 +125,7 @@ from spark.routes.compute import router as compute_router
 from spark.routes.review import router as review_router
 from spark.routes.spinal_cord import router as spinal_cord_router
 from spark.routes.validation import router as validation_router
+from spark.routes.chat import router as chat_router
 
 app.include_router(health_router)
 app.include_router(next_action_router)
@@ -133,10 +134,11 @@ app.include_router(compute_router)
 app.include_router(review_router)
 app.include_router(spinal_cord_router)
 app.include_router(validation_router)
+app.include_router(chat_router)
 
 
 # ── Entry Point ──
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=5003)
+    uvicorn.run(app, host="0.0.0.0", port=5002)

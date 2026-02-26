@@ -1,25 +1,16 @@
 """
 Match accessibility tree against screen definitions.
 
-V16: Vector-only. No YAML.
+V17: Set-difference discriminative matching. No Weaviate.
 
-Skeleton → Qwen3 embedding → Weaviate ScreenEmbedding search
-  d < 0.05  → KNOWN (execute stored behavior tree directly)
-  d < 0.191 → ISOMORPHIC (same structure, execute stored BT)
-  d >= 0.191 → UNCHARTED → navigation auto-detect or consultation
-
-Vector store grows organically through consultations. First encounter
-of any screen type → consultation → BT stored in Weaviate → matches
-automatically on subsequent visits. No YAML markers anywhere.
+Extract (role, text) signatures → subtract common chrome → match on
+discriminative markers. JSON file storage per platform.
 """
 
 import logging
 from collections import Counter
 
 logger = logging.getLogger(__name__)
-
-# Lazy imports for vector matching (avoid import errors if deps missing)
-_vector_available = None
 
 
 def extract_tree_index(tree: dict) -> tuple[set, list, Counter]:
@@ -99,174 +90,16 @@ def check_marker_indexed(marker: dict, exact_texts: set, all_texts: list, role_c
     return True
 
 
-
-def _check_vector_available() -> bool:
-    """Check if spinal cord (ScreenEmbedding) collection exists.
-
-    Only checks existence, not entry count. Empty collections are valid —
-    route_screen() handles empty results gracefully and we still need the
-    skeleton + embedding computation for storage on first encounter.
-    """
-    try:
-        from spark.tasks.screen_memory import get_stats
-        stats = get_stats()
-        return stats.get("exists", False)
-    except Exception as e:
-        logger.debug(f"Spinal cord unavailable: {e}")
-        return False
-
-
-def _try_vector_match(tree: dict, platform: str, config: dict = None) -> dict:
-    """
-    Try to match screen via spinal cord (skeleton → embed → Weaviate).
-
-    Uses the Phase 8 spinal cord architecture:
-      skeleton.py → extract structure
-      screen_memory.py → embed + query ScreenEmbedding
-
-    Always returns a dict. On UNCHARTED, returns matched=False but includes
-    skeleton_hash, embedding, and skeleton_text so callers can store without
-    recomputing.
-    """
-    try:
-        from spark.tasks.screen_router import route_screen, KNOWN_THRESHOLD, ISOMORPHIC_THRESHOLD
-        import json as _json
-
-        route_result = route_screen(tree, platform)
-
-        if route_result.category == "UNCHARTED":
-            logger.info(
-                f"Spinal cord: UNCHARTED (d={route_result.distance:.3f}), "
-                f"no match"
-            )
-            return {
-                "matched": False,
-                "needs_consultation": True,
-                "skeleton_hash": route_result.skeleton_hash,
-                "embedding": route_result.embedding,
-                "skeleton_text": route_result.skeleton,
-            }
-
-        # KNOWN or ISOMORPHIC — we have a match
-        logger.info(
-            f"Spinal cord: {route_result.category} "
-            f"(d={route_result.distance:.4f}, hash={route_result.skeleton_hash})"
-        )
-
-        result = {
-            "matched": True,
-            "screen": route_result.screen_type or f"spinal_{route_result.skeleton_hash[:8]}",
-            "screen_type": route_result.screen_type,
-            "match_type": route_result.category,
-            "match_distance": route_result.distance,
-            "match_source": "spinal_cord",
-            "skeleton_hash": route_result.skeleton_hash,
-            "embedding": route_result.embedding,
-            "validated": route_result.match_data.get("validated", False) if route_result.match_data else False,
-        }
-
-        # Include behavior tree from Weaviate
-        if route_result.behavior_tree:
-            result["tree"] = route_result.behavior_tree
-
-        # Include expected_next from Weaviate match data
-        if route_result.match_data:
-            en_raw = route_result.match_data.get("expected_next", "[]")
-            try:
-                result["expected_next"] = _json.loads(en_raw) if isinstance(en_raw, str) else (en_raw or [])
-            except Exception:
-                result["expected_next"] = []
-
-            # Include extract config from Weaviate if stored
-            extract_raw = route_result.match_data.get("extract")
-            if extract_raw:
-                try:
-                    result["extract"] = _json.loads(extract_raw) if isinstance(extract_raw, str) else extract_raw
-                except Exception:
-                    pass
-
-        # Include dynamic text for ISOMORPHIC screens
-        if route_result.category == "ISOMORPHIC" and route_result.dynamic_text:
-            result["dynamic_text"] = route_result.dynamic_text
-
-        return result
-
-    except Exception as e:
-        logger.warning(f"Spinal cord error: {e}")
-        return {"matched": False, "needs_consultation": True}
-
-
-def _match_yaml(tree: dict, config: dict, exact_texts: set, all_texts: list, role_counts: Counter) -> dict | None:
-    """
-    YAML marker-based matching (V9 logic, kept as fallback).
-
-    Returns match result dict or None if no match.
-    """
-    best_match = None
-    best_score = -1.0
-
-    for screen_name, screen_def in config.get("screens", {}).items():
-        markers = screen_def.get("markers", [])
-
-        all_found = all(
-            check_marker_indexed(m, exact_texts, all_texts, role_counts)
-            for m in markers
-        )
-
-        if all_found:
-            score = 0.0
-            for m in markers:
-                if not m.get("present", True):
-                    score += 1.5
-                elif m.get("match") == "contains":
-                    score += 1.0
-                else:
-                    score += 1.1
-
-            if score > best_score:
-                best_score = score
-                best_match = (screen_name, screen_def)
-
-    if best_match is None:
-        return None
-
-    screen_name, screen_def = best_match
-    result = {
-        "matched": True,
-        "screen": screen_name,
-        "match_source": "yaml",
-    }
-
-    if "tree" in screen_def:
-        result["tree"] = screen_def["tree"]
-    if "extract" in screen_def:
-        result["extract"] = screen_def["extract"]
-    if "description" in screen_def:
-        result["description"] = screen_def["description"]
-    if "expected_next" in screen_def:
-        result["expected_next"] = screen_def["expected_next"]
-    if "validation" in screen_def:
-        result["validation"] = screen_def["validation"]
-
-    return result
-
-
-
 def match_screen(tree: dict, config: dict) -> dict:
     """
-    Match tree against screen definitions.
-
-    V16: Vector-only. No YAML.
-
-    1. Vector search via skeleton embedding + Weaviate ScreenEmbedding
-    2. No match → needs consultation or navigation auto-detect (handled by next_action.py)
+    Match tree against known screen signatures using set-difference.
 
     Args:
         tree: Accessibility tree dict from Mac
-        config: Platform config dict with screens
+        config: Platform config dict (must have 'platform' key)
 
     Returns:
-        {"matched": True, "screen": name, "tree": {...}, ...} or
+        {"matched": True, "screen": name, "screen_type": ..., "tree": {...}, ...} or
         {"matched": False, "needs_consultation": True}
     """
     platform = config.get("platform", "")
@@ -274,24 +107,22 @@ def match_screen(tree: dict, config: dict) -> dict:
         logger.error("match_screen: config missing 'platform' key — cannot route")
         return {"matched": False, "needs_consultation": True, "error": "missing_platform"}
 
-    if _check_vector_available():
-        return _try_vector_match(tree, platform, config)
+    from spark.tasks.screen_signatures import match_signature
+    result = match_signature(platform, tree)
 
-    # Collection doesn't exist — compute skeleton/embedding anyway for storage
-    try:
-        from spark.tasks.skeleton import extract_skeleton, skeleton_hash as _skel_hash
-        from spark.tasks.screen_memory import embed_text, ensure_schema
-        ensure_schema()  # Create collection if missing
-        skel = extract_skeleton(tree)
-        shash = _skel_hash(skel)
-        vec = embed_text(skel)
+    if result.get("matched"):
+        logger.info(f"Signature match: {result['screen_type']} "
+                     f"(score={result['match_score']:.2f}, hash={result['sig_hash']})")
         return {
-            "matched": False,
-            "needs_consultation": True,
-            "skeleton_hash": shash,
-            "embedding": vec,
-            "skeleton_text": skel,
+            "matched": True,
+            "screen": result["screen_type"],
+            "screen_type": result["screen_type"],
+            "match_source": "signature",
+            "sig_hash": result["sig_hash"],
+            "match_score": result["match_score"],
+            "validated": result.get("validated", False),
+            "tree": result.get("tree"),
         }
-    except Exception as e:
-        logger.warning(f"Skeleton/embedding computation failed: {e}")
-        return {"matched": False, "needs_consultation": True}
+
+    logger.info(f"No signature match for {platform}")
+    return {"matched": False, "needs_consultation": True}

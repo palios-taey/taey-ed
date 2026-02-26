@@ -119,6 +119,9 @@ def save_action_review(
 
     logger.info(f"Action review saved: {review_id} ({failure_reason})")
 
+    # Rolling cleanup: keep only 2 most recent completed reviews per platform
+    _cleanup_old_reviews(platform, keep=2)
+
     return {"review_id": review_id, "status": "pending"}
 
 
@@ -283,3 +286,38 @@ def _build_escalation_notification(
         f"Response format: {{\\\"resolution\\\": \\\"yaml_updated|acknowledged\\\", \\\"retry\\\": true|false, \\\"message\\\": \\\"...\\\"}}\""
     )
     return diag
+
+
+def _cleanup_old_reviews(platform: str, keep: int = 2):
+    """Remove old completed reviews for a platform, keeping the most recent `keep`."""
+    import shutil
+
+    platform_dir = os.path.join(REVIEWS_DIR, platform)
+    if not os.path.isdir(platform_dir):
+        return
+
+    completed = []
+    for name in os.listdir(platform_dir):
+        review_path = os.path.join(platform_dir, name)
+        if not os.path.isdir(review_path):
+            continue
+        response_file = os.path.join(review_path, "response.json")
+        if not os.path.exists(response_file):
+            continue  # Keep pending reviews
+        meta_file = os.path.join(review_path, "metadata.json")
+        ts = 0.0
+        if os.path.exists(meta_file):
+            try:
+                with open(meta_file) as f:
+                    ts = json.load(f).get("created_at", 0.0)
+            except Exception:
+                pass
+        completed.append((ts, review_path))
+
+    completed.sort(key=lambda x: x[0], reverse=True)
+    for _, path in completed[keep:]:
+        try:
+            shutil.rmtree(path)
+            logger.info(f"Cleaned up old review: {os.path.basename(path)}")
+        except Exception as e:
+            logger.warning(f"Failed to clean up {path}: {e}")

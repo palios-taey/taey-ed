@@ -1,4 +1,3 @@
-# STATUS: FROZEN - Proven in v7. Verified 2026-02-19. Do not modify.
 """
 Behavior tree - split into bt_core.py, bt_helpers.py, bt_handlers.py.
 This file re-exports for backward compatibility.

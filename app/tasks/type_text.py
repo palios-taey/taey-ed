@@ -1,4 +1,3 @@
-# STATUS: FROZEN - Proven in v7. Verified 2026-02-19. Do not modify.
 """
 Type text into element using AXValue attribute setting.
 No keyboard simulation. Direct accessibility API.

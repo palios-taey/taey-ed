@@ -1,4 +1,3 @@
-# STATUS: FROZEN - Proven in v7. Verified 2026-02-19. Do not modify.
 """
 Capture accessibility tree from a Mac application.
 Single function. No filtering. Returns full tree as dict.

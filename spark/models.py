@@ -150,6 +150,8 @@ class LastResult(BaseModel):
     after_tree: Optional[dict] = None
     directive_skeleton_hash: Optional[str] = None
     directive_expected_next: Optional[list] = None
+    bt_debug_tail: Optional[str] = None  # Last N lines of /tmp/behavior_tree_debug.log
+    failed_bt: Optional[dict] = None  # BT that failed on Mac, sent for Gemini context
 
 
 class NextActionRequest(BaseModel):
@@ -159,3 +161,4 @@ class NextActionRequest(BaseModel):
     screenshot_b64: Optional[str] = None
     client_state: Optional[ClientState] = None
     last_result: Optional[LastResult] = None
+    chat_message: Optional[str] = None  # Proactive user message from chat panel

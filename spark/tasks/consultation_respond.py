@@ -1,8 +1,8 @@
 """
 Consultation response handling.
 
-V10: Now embeds screen into Weaviate ScreenEmbedding after response.
-Every consultation response teaches the vector store for future recognition.
+V11: Stores screen signatures (set-difference) after response.
+Every consultation response teaches the signature store for future recognition.
 
 Post-V8 fix (2026-02-20):
   - Updates metadata.json status to "complete" after writing response.json
@@ -22,32 +22,31 @@ logger = logging.getLogger(__name__)
 CONSULT_DIR = Path("/tmp/taey-ed-consult")
 
 
-def _embed_screen_to_weaviate(
+def _update_screen_bt(
     consultation_id: str,
-    screen_type: str,
     tree: dict,
     consult_path: Path,
-    expected_next: list = None,
 ):
     """
-    Embed the consultation's accessibility tree into Weaviate ScreenEmbedding.
+    Update an existing screen signature with BT from consultation.
 
-    Stores as PROVISIONAL (validated=False). The BT is not yet proven by Mac.
-    Promotion to validated=True happens in /next_action after Mac executes
-    the BT and Spark confirms the screen transitioned correctly.
+    Does NOT create new entries or change screen_type — Gemini classification
+    owns the screen_type. Consultation only provides behavior trees.
 
     Non-fatal — failure here doesn't block the consultation response.
     """
+    if not tree:
+        return
+
     try:
         tree_file = consult_path / "tree.json"
         if not tree_file.exists():
-            logger.warning(f"No tree.json for {consultation_id}, skipping embed")
+            logger.warning(f"No tree.json for {consultation_id}, skipping BT update")
             return
 
         with open(tree_file) as f:
             ax_tree = json.load(f)
 
-        # Read platform from metadata
         meta_file = consult_path / "metadata.json"
         platform = "unknown"
         if meta_file.exists():
@@ -55,43 +54,30 @@ def _embed_screen_to_weaviate(
                 meta = json.load(f)
                 platform = meta.get("platform", "unknown")
 
-        from .skeleton import extract_skeleton, skeleton_hash
-        from .screen_memory import embed_text, store_screen, get_client
+        from .screen_signatures import extract_signature, _sig_hash, _load_platform, _save_platform
 
-        # Layer 1: Extract skeleton (structure only, no content)
-        skel = extract_skeleton(ax_tree)
-        shash = skeleton_hash(skel)
+        sig = extract_signature(ax_tree)
+        sig_hash = _sig_hash(sig)
+        data = _load_platform(platform)
 
-        # Layer 2: Embed skeleton
-        vec = embed_text(skel)
+        if sig_hash not in data["screens"]:
+            logger.info(f"No existing signature {sig_hash[:12]} — skipping BT update")
+            return
 
-        # Layer 3: Store in Weaviate — PROVISIONAL (validated=False)
-        bt = tree if tree else {}
-        en_json = json.dumps(expected_next) if expected_next else "[]"
-        client = get_client()
-        try:
-            store_screen(
-                vector=vec,
-                skeleton_hash=shash,
-                platform=platform,
-                behavior_tree=bt,
-                skeleton_text=skel,
-                screen_type=screen_type,
-                client=client,
-                validated=False,
-                expected_next=en_json,
-                source="consultation",
+        existing = data["screens"][sig_hash]
+        if not existing.get("behavior_tree"):
+            existing["behavior_tree"] = tree
+            existing["source"] = "consultation"
+            _save_platform(platform, data)
+            logger.info(
+                f"Updated BT for {existing['screen_type']} ({sig_hash[:12]}) "
+                f"from consultation {consultation_id}"
             )
-        finally:
-            client.close()
-
-        logger.info(
-            f"Embedded screen (PROVISIONAL) into Weaviate: {consultation_id} → "
-            f"{screen_type} (hash={shash}, platform={platform})"
-        )
+        else:
+            logger.info(f"Signature {sig_hash[:12]} already has BT — skipping")
 
     except Exception as e:
-        logger.warning(f"Failed to embed screen (non-fatal): {e}")
+        logger.warning(f"Failed to update screen BT (non-fatal): {e}")
 
 
 def respond_to_consultation(
@@ -169,9 +155,8 @@ def respond_to_consultation(
         state.spark_attempts += 1
         state.add_attempt("spark_claude", {"screen_type": screen_type, "action": action})
 
-    # Embed screen into Weaviate as PROVISIONAL (validated=False).
-    # Will be promoted to validated=True after Mac proves the BT works.
-    _embed_screen_to_weaviate(consultation_id, screen_type, tree, consult_path, expected_next)
+    # Update existing signature with BT (does not create new entries or change screen_type).
+    _update_screen_bt(consultation_id, tree, consult_path)
 
     logger.info(f"Consultation responded: {consultation_id} → {screen_type}")
 

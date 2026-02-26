@@ -1,4 +1,3 @@
-# STATUS: FROZEN - Bug-fixed from v7. Verified 2026-02-20. Do not modify.
 """
 Pipeline V8 - Directive-based execution loop.
 
@@ -11,7 +10,7 @@ Directives from Spark:
   wait            - Sleep and re-poll (consulting, page loading)
   need_screenshot - Capture screenshot, send immediately
   consulting      - Consultation started, poll via next call
-  user_input_needed - Show dialog, collect user text
+  user_input_needed - Show in chat panel, collect user text
   stop            - Pipeline done
 """
 
@@ -171,6 +170,9 @@ def run_continuous(
     max_screens: int = 0,
     screen_callback=None,
     user_escalation_callback=None,
+    chat_message_callback=None,
+    user_input_callback=None,
+    pending_chat_messages=None,
 ) -> dict:
     """
     Run automation continuously via /next_action directive loop.
@@ -188,7 +190,10 @@ def run_continuous(
         platform_type: "app" or "browser"
         max_screens: Stop after N screens (0 = unlimited)
         screen_callback: Called after each screen completes (for UI progress)
-        user_escalation_callback: Called when Spark needs user input
+        user_escalation_callback: LEGACY — Called when Spark needs user input (modal dialog)
+        chat_message_callback: Called with list of chat messages from Spark
+        user_input_callback: Called with directive when user input needed (chat-based)
+        pending_chat_messages: Object with get_pending_chat_message() method
     """
     if stop_event is None:
         stop_event = threading.Event()
@@ -239,12 +244,29 @@ def run_continuous(
             }
             pending_screenshot = None  # Clear after sending
 
+            # Include pending chat message from user (proactive)
+            if pending_chat_messages:
+                try:
+                    chat_msg = pending_chat_messages.get_pending_chat_message()
+                    if chat_msg:
+                        payload["chat_message"] = chat_msg
+                except Exception:
+                    pass
+
             # ── Ask Spark what to do ──
             directive = call_spark("/next_action", payload)
             dtype = directive.get("directive", "stop")
             directive_id = directive.get("directive_id", "")
             prev_directive_type = last_directive_type
             last_directive_type = dtype
+
+            # Deliver chat messages from Spark response
+            chat_messages = directive.get("chat_messages")
+            if chat_messages and chat_message_callback:
+                try:
+                    chat_message_callback(chat_messages)
+                except Exception as e:
+                    logger.warning(f"Chat message delivery failed: {e}")
 
             # ══════════════════════════════════════════════════════════
             # EXECUTE_TREE: Match found, execute behavior tree
@@ -317,8 +339,16 @@ def run_continuous(
                     after_tree = capture_tree(app_name)
                     after_hash = compute_tree_hash(after_tree)
 
+                # If BT reported success but tree didn't change after waiting,
+                # report as failure so Spark gets an honest signal.
+                if bt_result.get('success') and not bt_result.get('continue_loop') and before_hash == after_hash:
+                    logger.warning(
+                        f'BT reported success but tree unchanged after {PAGE_CHANGE_TIMEOUT}s — marking failure'
+                    )
+                    bt_result['success'] = False
+                    bt_result['action'] = f"{bt_result.get('action', 'behavior_tree')} (tree_unchanged)"
+
                 # Build result for next call
-                # Mac reports true hash state; Spark handles stuck detection.
                 last_result = {
                     "directive_id": directive_id,
                     "success": bt_result.get("success", False),
@@ -329,10 +359,21 @@ def run_continuous(
                     "continue_loop": bt_result.get("continue_loop", False),
                 }
 
+                # Send failed BT so Spark/Gemini knows what was tried
+                if not bt_result.get("success", False):
+                    last_result["failed_bt"] = tree_def
+
                 # Validation chain: ALWAYS send after_tree so Spark can analyze
                 # what screen we landed on — especially important when BT fails,
                 # so Spark can diagnose the failure and consult accurately.
                 last_result["after_tree"] = _strip_tree_for_validation(after_tree)
+                # Send BT debug log tail for Spark-side diagnostics
+                try:
+                    with open("/tmp/behavior_tree_debug.log") as _btf:
+                        _bt_lines = _btf.readlines()
+                        last_result["bt_debug_tail"] = "".join(_bt_lines[-20:])
+                except Exception:
+                    pass
                 if bt_result.get("success") and not bt_result.get("continue_loop"):
                     last_result["directive_skeleton_hash"] = directive.get("skeleton_hash", "")
                     last_result["directive_expected_next"] = directive.get("expected_next", [])
@@ -404,7 +445,7 @@ def run_continuous(
                 last_result = None
 
             # ══════════════════════════════════════════════════════════
-            # USER_INPUT_NEEDED: Show dialog, collect user text
+            # USER_INPUT_NEEDED: Show in chat panel, collect user text
             # ══════════════════════════════════════════════════════════
             elif dtype == "user_input_needed":
                 screen_type = directive.get("screen_type", "UNKNOWN")
@@ -412,7 +453,15 @@ def run_continuous(
                 logger.info(f"User input needed for {screen_type}")
 
                 user_text = ""
-                if user_escalation_callback:
+
+                # Prefer chat-based input (new)
+                if user_input_callback:
+                    try:
+                        user_text = user_input_callback(directive)
+                    except Exception as e:
+                        logger.error(f"Chat user input error: {e}")
+                # Fall back to legacy modal dialog
+                elif user_escalation_callback:
                     try:
                         user_text = user_escalation_callback(
                             screen_type, tree_hash_for_dialog

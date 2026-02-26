@@ -1,4 +1,3 @@
-# STATUS: FROZEN - Proven in v7. Verified 2026-02-19. Do not modify.
 """
 Extract text from accessibility tree based on YAML criteria.
 Single function. No fallbacks. Returns list of text strings.

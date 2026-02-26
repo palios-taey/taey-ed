@@ -1,4 +1,3 @@
-# STATUS: FROZEN - Bug-fixed from v7. Verified 2026-02-20. Do not modify.
 """
 Behavior Tree Engine Core - Node execution and entry point.
 
