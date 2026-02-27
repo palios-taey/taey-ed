@@ -112,7 +112,10 @@ def learn_screen(platform: str, tree: dict, screen_type: str,
     Store a new screen signature. Returns signature hash.
 
     Recomputes common elements after every addition.
+    Stores knowledge_version for deterministic BT cache invalidation.
     """
+    from spark.tasks.knowledge_loader import get_knowledge_version
+
     sig = extract_signature(tree)
     sig_hash = _sig_hash(sig)
     data = _load_platform(platform)
@@ -123,6 +126,7 @@ def learn_screen(platform: str, tree: dict, screen_type: str,
         if behavior_tree and not existing.get("behavior_tree"):
             existing["behavior_tree"] = behavior_tree
             existing["source"] = source
+            existing["knowledge_version"] = get_knowledge_version(platform)
             updated = True
         if extract and not existing.get("extract"):
             existing["extract"] = extract
@@ -139,12 +143,43 @@ def learn_screen(platform: str, tree: dict, screen_type: str,
         "extract": extract,
         "validated": False,
         "source": source,
+        "knowledge_version": get_knowledge_version(platform),
     }
     data["common"] = _recompute_common(data)
     _save_platform(platform, data)
     logger.info(f"learn_screen: stored {screen_type} ({sig_hash}), "
                 f"{len(sig)} pairs, {len(data['common'])} common")
     return sig_hash
+
+
+def _check_knowledge_invalidation(platform: str, screen: dict, sig_hash: str,
+                                   data: dict) -> bool:
+    """
+    Check if a stored BT should be invalidated due to knowledge.json changes.
+    Returns True if the stored BT was invalidated (caller should skip it).
+    """
+    stored_version = screen.get("knowledge_version")
+    if not stored_version:
+        return False
+    if not screen.get("behavior_tree"):
+        return False
+
+    from spark.tasks.knowledge_loader import get_knowledge_version
+    current_version = get_knowledge_version(platform)
+    if not current_version:
+        return False
+
+    if stored_version != current_version:
+        logger.info(
+            f"Invalidating cached BT for {sig_hash[:12]}: "
+            f"knowledge changed ({stored_version} → {current_version})"
+        )
+        screen["behavior_tree"] = None
+        screen["knowledge_version"] = None
+        _save_platform(platform, data)
+        return True
+
+    return False
 
 
 def match_signature(platform: str, tree: dict) -> dict:
@@ -181,6 +216,8 @@ def match_signature(platform: str, tree: dict) -> dict:
         query_hash = _sig_hash(query_sig)
         if query_hash in data["screens"]:
             screen = data["screens"][query_hash]
+            # Invalidate cached BT if knowledge changed
+            _check_knowledge_invalidation(platform, screen, query_hash, data)
             result = {
                 "matched": True,
                 "screen_type": screen["screen_type"],
@@ -197,24 +234,16 @@ def match_signature(platform: str, tree: dict) -> dict:
 
     query_markers = query_sig - common
 
-    # V20: Import removed — no category filtering needed
-
     best_score = 0.0
     best_hash = None
     best_screen = None
 
     for sig_hash, screen in data["screens"].items():
-        # V20: No category filtering — match against all signatures.
-        # Structural elements (radio buttons, checkboxes) are in the signature
-        # set, so different screen types naturally have different markers.
-
         known_sig = frozenset(tuple(p) for p in screen["signature"])
         known_markers = known_sig - common
         if not known_markers:
             continue
         # Jaccard similarity: intersection / union
-        # Penalizes BOTH missing markers AND extra markers.
-        # A different screen with extra unique elements won't match.
         intersection = len(query_markers & known_markers)
         union = len(query_markers | known_markers)
         score = intersection / union if union > 0 else 0.0
@@ -225,6 +254,8 @@ def match_signature(platform: str, tree: dict) -> dict:
             best_screen = screen
 
     if best_score >= 0.7 and best_screen:
+        # Invalidate cached BT if knowledge changed
+        _check_knowledge_invalidation(platform, best_screen, best_hash, data)
         result = {
             "matched": True,
             "screen_type": best_screen["screen_type"],
