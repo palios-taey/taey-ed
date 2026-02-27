@@ -2,9 +2,16 @@
 Match accessibility tree against screen definitions.
 
 V17: Set-difference discriminative matching. No Weaviate.
+V19: Structural pre-classification before Jaccard matching.
 
-Extract (role, text) signatures → subtract common chrome → match on
+Extract (role, text) signatures -> subtract common chrome -> match on
 discriminative markers. JSON file storage per platform.
+
+V19 change: Before running Jaccard, use structural_classify() to determine
+the master category from structural features (radio buttons = EXERCISE,
+video player = VIDEO, etc.). Then constrain Jaccard matching to only compare
+against signatures in the same category. This eliminates false positives
+between categories (e.g., EXERCISE matching as TRANSITION at 0.91+ Jaccard).
 """
 
 import logging
@@ -94,6 +101,12 @@ def match_screen(tree: dict, config: dict) -> dict:
     """
     Match tree against known screen signatures using set-difference.
 
+    V19: Uses structural pre-classification to constrain matching.
+    Before running Jaccard similarity, we determine the master category
+    from structural features (HAS_RADIO -> EXERCISE, HAS_VIDEO -> VIDEO, etc.)
+    and only match against signatures in that category. This prevents
+    EXERCISE<->TRANSITION false positives entirely.
+
     Args:
         tree: Accessibility tree dict from Mac
         config: Platform config dict (must have 'platform' key)
@@ -104,15 +117,21 @@ def match_screen(tree: dict, config: dict) -> dict:
     """
     platform = config.get("platform", "")
     if not platform:
-        logger.error("match_screen: config missing 'platform' key — cannot route")
+        logger.error("match_screen: config missing 'platform' key -- cannot route")
         return {"matched": False, "needs_consultation": True, "error": "missing_platform"}
 
-    from spark.tasks.screen_signatures import match_signature
-    result = match_signature(platform, tree)
+    # V19: Structural pre-classification
+    from spark.tasks.screen_signatures import match_signature, structural_classify
+    category = structural_classify(tree)
+    logger.info(f"V19 structural_classify: {category} (platform={platform})")
+
+    # Pass category filter to constrain Jaccard matching
+    result = match_signature(platform, tree, category_filter=category)
 
     if result.get("matched"):
         logger.info(f"Signature match: {result['screen_type']} "
-                     f"(score={result['match_score']:.2f}, hash={result['sig_hash']})")
+                     f"(score={result['match_score']:.2f}, hash={result['sig_hash']}, "
+                     f"category_filter={category})")
         return {
             "matched": True,
             "screen": result["screen_type"],
@@ -122,7 +141,12 @@ def match_screen(tree: dict, config: dict) -> dict:
             "match_score": result["match_score"],
             "validated": result.get("validated", False),
             "tree": result.get("tree"),
+            "structural_category": category,
         }
 
-    logger.info(f"No signature match for {platform}")
-    return {"matched": False, "needs_consultation": True}
+    logger.info(f"No signature match for {platform} (structural_category={category})")
+    return {
+        "matched": False,
+        "needs_consultation": True,
+        "structural_category": category,
+    }

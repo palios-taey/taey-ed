@@ -9,12 +9,17 @@ Walk accessibility tree, extract (role, text) pairs based on role type:
 Screen signature = frozenset of these tuples.
 Common elements = intersection of ALL known signatures (platform chrome).
 Discriminative markers = signature - common.
-Matching = Jaccard similarity on discriminative markers + structural constraint penalty.
+Matching = Jaccard similarity on discriminative markers.
 
-V18 fix (2026-02-27): Added structural hard constraints to prevent false positives
-between EXERCISE and TRANSITION screens. Structural roles (AXRadioButton, AXCheckBox,
-AXTextField, AXTextArea) are the key differentiators -- if one screen has them and
-another doesn't, the match is penalized regardless of Jaccard score.
+V19 fix (2026-02-27): Replaced V18 structural penalty with category-constrained
+matching. Instead of penalizing structural mismatches after Jaccard scoring, we now
+use structural_classify() to determine the master category FIRST, then only match
+against signatures in the same category. This eliminates EXERCISE<->TRANSITION false
+positives entirely rather than trying to adjust scores after the fact.
+
+The structural pre-classifier uses analyze_tree() from prompt_codex.py which already
+extracts HAS_RADIO, HAS_CHECKBOX, HAS_VIDEO, etc. These signals deterministically
+map to master categories (VIDEO, EXERCISE, NAVIGATION, TRANSITION).
 """
 
 import hashlib
@@ -39,16 +44,8 @@ STRUCTURAL_PRESENCE_ROLES = {
     "AXTextArea", "AXForm", "AXSlider",
 }
 
-# Structural roles that are hard differentiators between screen types.
-# If query has these and known screen doesn't (or vice versa), it's a different screen.
-# These are the roles that distinguish EXERCISE from TRANSITION/ARTICLE.
-HARD_DIFFERENTIATOR_ROLES = {
-    "AXRadioButton", "AXCheckBox", "AXTextField", "AXTextArea",
-}
-
-# Penalty applied to Jaccard score when structural mismatch detected.
-# 0.35 penalty means a 0.91 Jaccard drops to 0.56 -- below the 0.70 threshold.
-STRUCTURAL_MISMATCH_PENALTY = 0.35
+# V19: Structural penalty removed. Category-constrained matching makes it unnecessary.
+# See structural_classify() for the replacement approach.
 
 
 def extract_signature(tree: dict) -> frozenset:
@@ -72,27 +69,48 @@ def extract_signature(tree: dict) -> frozenset:
     return frozenset(pairs)
 
 
-def _extract_structural_roles(sig: frozenset) -> set:
-    """Extract hard-differentiator structural roles present in a signature."""
-    return {role for role, text in sig if text == "*" and role in HARD_DIFFERENTIATOR_ROLES}
+def structural_classify(tree: dict) -> str:
+    """Deterministic pre-classification from structural features.
 
+    Uses analyze_tree() from prompt_codex.py which already extracts structural
+    signals (HAS_RADIO, HAS_CHECKBOX, HAS_VIDEO, etc.) and maps them to master
+    categories.
 
-def _structural_mismatch(query_structural: set, known_structural: set) -> bool:
-    """Check if structural roles disagree between query and known screen.
+    Returns:
+        Master category string: VIDEO, EXERCISE, NAVIGATION, TRANSITION,
+        or UNCLASSIFIED if no structural signal is definitive.
 
-    Returns True if one has exercise-like structural elements and the other doesn't.
-    This catches EXERCISE vs TRANSITION false positives where Jaccard is 0.91+
-    but the real difference is radio buttons / checkboxes.
+    The key insight: structural elements (radio buttons, checkboxes, video players)
+    are the TRUE differentiators between screen types. Jaccard similarity on
+    button labels cannot distinguish screens that share 95%+ of their UI chrome.
+    But the PRESENCE of radio buttons is a hard signal for EXERCISE, and the
+    PRESENCE of a video player is a hard signal for VIDEO.
+
+    UNCLASSIFIED screens fall through to Gemini classification -- this is correct
+    behavior. ARTICLE screens often lack distinctive structural elements and
+    need Gemini's visual analysis to identify.
     """
-    if not query_structural and not known_structural:
-        return False  # Neither has structural -- no conflict
-    if query_structural and not known_structural:
-        return True   # Query has radio/checkbox, known doesn't -- different screen
-    if not query_structural and known_structural:
-        return True   # Known has radio/checkbox, query doesn't -- different screen
-    # Both have structural elements but different ones (e.g., radio vs checkbox)
-    # This is a softer signal -- they're both exercises, just different types
-    return False
+    from spark.tasks.prompt_codex import analyze_tree
+    tags = analyze_tree(tree)
+
+    # VIDEO is highest priority -- video player is unambiguous
+    if "HAS_VIDEO" in tags:
+        return "VIDEO"
+
+    # Assessment signals -> EXERCISE (radio, checkbox, text input, dropdown)
+    if any(t in tags for t in ["HAS_RADIO", "HAS_CHECKBOX", "HAS_TEXT_INPUT", "HAS_COMBOBOX"]):
+        return "EXERCISE"
+
+    # Many links with no assessment signals -> NAVIGATION
+    if "HAS_MANY_LINKS" in tags:
+        return "NAVIGATION"
+
+    # Post-answer or generic transition signals
+    if "TRANSITION" in tags:
+        return "TRANSITION"
+
+    # No definitive structural signal -- needs Gemini
+    return "UNCLASSIFIED"
 
 
 def _sig_hash(sig: frozenset) -> str:
@@ -164,9 +182,18 @@ def learn_screen(platform: str, tree: dict, screen_type: str,
     return sig_hash
 
 
-def match_signature(platform: str, tree: dict) -> dict:
+def match_signature(platform: str, tree: dict, category_filter: str = None) -> dict:
     """
     Match a screen against known signatures.
+
+    Args:
+        platform: Platform name (e.g., "coursera")
+        tree: Accessibility tree dict
+        category_filter: If provided, only match against signatures whose master
+            category matches this value. Pass "UNCLASSIFIED" or None to match all.
+            This is the V19 fix: structural_classify() determines category first,
+            then Jaccard only runs within that category. Prevents EXERCISE<->TRANSITION
+            false positives entirely.
 
     Returns:
         {"matched": True, "screen_type": ..., "sig_hash": ..., ...} or
@@ -202,14 +229,24 @@ def match_signature(platform: str, tree: dict) -> dict:
 
     query_markers = query_sig - common
 
-    # Extract structural roles from query for hard-constraint checking
-    query_structural = _extract_structural_roles(query_sig)
+    # V19: Import category helper for filtering
+    from spark.tasks.screen_type_util import get_master_category
 
     best_score = 0.0
     best_hash = None
     best_screen = None
+    skipped_cross_category = 0
 
     for sig_hash, screen in data["screens"].items():
+        # V19: Category-constrained matching.
+        # If we have a structural pre-classification, only match within that category.
+        # This replaces the V18 structural penalty with a hard filter.
+        if category_filter and category_filter != "UNCLASSIFIED":
+            known_master = get_master_category(screen["screen_type"])
+            if known_master != category_filter:
+                skipped_cross_category += 1
+                continue
+
         known_sig = frozenset(tuple(p) for p in screen["signature"])
         known_markers = known_sig - common
         if not known_markers:
@@ -221,24 +258,16 @@ def match_signature(platform: str, tree: dict) -> dict:
         union = len(query_markers | known_markers)
         score = intersection / union if union > 0 else 0.0
 
-        # V18: Structural hard constraint penalty.
-        # If query has exercise-like structural elements (radio, checkbox, text input)
-        # but the known screen doesn't (or vice versa), penalize the score.
-        # This prevents EXERCISE matching as TRANSITION at 0.91+.
-        known_structural = _extract_structural_roles(known_sig)
-        if _structural_mismatch(query_structural, known_structural):
-            score -= STRUCTURAL_MISMATCH_PENALTY
-            logger.info(
-                f"  Structural mismatch: query_structural={query_structural} "
-                f"vs known_structural={known_structural} for {screen['screen_type']} "
-                f"({sig_hash[:12]}). Score {score + STRUCTURAL_MISMATCH_PENALTY:.2f} "
-                f"-> {score:.2f}"
-            )
-
         if score > best_score:
             best_score = score
             best_hash = sig_hash
             best_screen = screen
+
+    if skipped_cross_category > 0:
+        logger.info(
+            f"  V19: Skipped {skipped_cross_category} cross-category signatures "
+            f"(filter={category_filter})"
+        )
 
     if best_score >= 0.7 and best_screen:
         result = {
