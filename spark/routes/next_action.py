@@ -59,10 +59,18 @@ def _make_directive_id() -> str:
     return f"d-{uuid.uuid4().hex[:8]}"
 
 
-def _get_extract_for_type(screen_type: str):
-    """Get per-type extract default for signatures missing stored extract."""
-    from spark.tasks.classify_screen import _get_extract_default
-    return _get_extract_default(screen_type)
+def _get_extract_for_type(screen_type: str, tree: dict = None,
+                          screenshot_b64: str = None, platform: str = None):
+    """Build extract config for signatures missing stored extract.
+
+    Uses dedicated Gemini call if screenshot available, otherwise returns None.
+    """
+    from spark.tasks.classify_screen import _should_extract, build_extract_config
+    if not _should_extract(screen_type):
+        return None
+    if screenshot_b64 and tree and platform:
+        return build_extract_config(tree, screenshot_b64, platform, screen_type)
+    return None
 
 
 def _with_chat(response: dict, platform: str, messages: list[dict]) -> dict:
@@ -658,7 +666,8 @@ def next_action(request: NextActionRequest):
                 "tree": stored_bt,
                 "screen": known_type,
                 "skeleton_hash": sig_hash,
-                "extract": match_result.get("extract") or _get_extract_for_type(known_type),
+                "extract": match_result.get("extract") or _get_extract_for_type(
+                    known_type, tree=tree, screenshot_b64=request.screenshot_b64, platform=platform),
                 "expected_next": [],
             }, platform, [build_status(f"Executing {known_type} automation")])
 

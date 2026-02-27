@@ -329,48 +329,150 @@ def get_click_target(
     return target
 
 
-# Screen-type-aware extract defaults — used when Gemini doesn't return one.
-# Each screen type has appropriate filtering to capture content, not chrome.
-_EXTRACT_BY_TYPE = {
-    # Articles: long-form text content. min_length filters sidebar nav items.
-    "ARTICLE": {
-        "text": [{"role": "AXStaticText", "min_length": 80}],
-        "images": [{"source": "window", "purpose": "Describe any educational diagrams, charts, or figures. Ignore decorative images and stock photos."}],
-    },
-    # Video: transcript text if available, VLM describes video content.
-    "VIDEO": {
-        "text": [{"role": "AXStaticText", "min_length": 30}],
-        "images": [{"source": "window", "purpose": "Describe the educational video content being shown. What topic is being taught?"}],
-    },
-    # Exercise: question text and options. Lower min_length to keep answer choices.
-    "EXERCISE": {
-        "text": [{"role": "AXStaticText", "min_length": 15}],
-        "images": [{"source": "window", "purpose": "Describe any diagrams, equations, or visual content in this exercise."}],
-    },
-    # Navigation/Transition: no unique content to extract.
-    "NAVIGATION": None,
-    "TRANSITION": None,
-    # Unknown: conservative extraction with moderate filtering.
-    "UNKNOWN": {
-        "text": [{"role": "AXStaticText", "min_length": 40}],
-        "images": [{"source": "window", "purpose": "Describe the educational content on this screen."}],
-    },
-}
+# Screen types that should NEVER have extraction (no unique content).
+_NO_EXTRACT_TYPES = {"NAVIGATION", "TRANSITION"}
+
+
+def _should_extract(screen_type: str) -> bool:
+    """Return False for screen types that have no unique content to extract."""
+    if screen_type in _NO_EXTRACT_TYPES:
+        return False
+    from spark.tasks.screen_type_util import get_master_category
+    master = get_master_category(screen_type)
+    return master not in _NO_EXTRACT_TYPES
 
 
 def _get_extract_default(screen_type: str):
-    """Get the default extract config for a screen type.
+    """Get extract config for a screen type. Returns None for non-content screens."""
+    if not _should_extract(screen_type):
+        return None
+    # No hardcoded fallback — caller should use build_extract_config() instead
+    return None
 
-    Maps platform-specific variants (ARTICLE_READING, VIDEO_PLAYING, etc.)
-    to their master category for lookup.
+
+# ── Dedicated Gemini extraction call ──
+# Separate from BT building so Gemini can focus on one thing.
+
+_EXTRACT_PROMPT = """\
+You are analyzing an educational platform screen to determine what UNIQUE CONTENT
+should be extracted for the student's learning records.
+
+PLATFORM: {platform}
+SCREEN TYPE: {screen_type}
+
+=== WHAT TO EXTRACT ===
+Capture the educational content that a student would want to review later.
+NOT page chrome, sidebars, navigation menus, or UI labels.
+
+For each screen type:
+- ARTICLE/READING: The lesson text, headings, and key paragraphs in the main content area
+- VIDEO: The transcript text (if a transcript panel exists), video title, lesson context
+- EXERCISE: The question text, answer options, instructions, reference material
+- DISCUSSION: The prompt text, any peer responses shown
+- Other content screens: Whatever the primary educational content is
+
+=== ACCESSIBILITY TREE ===
+{tree_json}
+
+=== YOUR TASK ===
+1. Look at the screenshot and tree to find the MAIN CONTENT AREA
+2. Identify the parent container that holds the unique content
+   (look for containers named things like: "lesson", "content", "reading",
+   "transcript", "question", "article", "main", etc.)
+3. Build an extraction config that targets ONLY that content area
+
+=== EXTRACTION CONFIG FORMAT ===
+Return ONLY valid JSON:
+{{
+  "text": [
+    {{
+      "role": "AXStaticText",
+      "parent_contains": "<name of the content container you found>"
+    }}
+  ],
+  "images": [
+    {{
+      "source": "window",
+      "purpose": "<what educational content to describe — ignore stock photos>"
+    }}
+  ]
+}}
+
+CRITICAL RULES:
+- Use "parent_contains" to scope to the content area. This is the MOST IMPORTANT filter.
+  Look at the tree structure to find the right container name.
+- If you cannot find a specific content container, use "parent_contains" with the
+  broadest content-area parent you can identify (e.g., "main", "content", "body").
+- For images: only describe educational content (diagrams, equations, charts, figures).
+  Say "Ignore decorative and stock photos" in the purpose if the page has non-educational images.
+- Return null (not an empty object) if there is genuinely no content to extract
+  (e.g., a loading screen, error page, or empty state).
+"""
+
+
+def build_extract_config(
+    tree: dict,
+    screenshot_b64: str,
+    platform: str,
+    screen_type: str,
+):
     """
-    # Direct match first
-    if screen_type in _EXTRACT_BY_TYPE:
-        return _EXTRACT_BY_TYPE[screen_type]
-    # Map variants to master category
-    from spark.tasks.screen_type_util import get_master_category
-    master = get_master_category(screen_type)
-    return _EXTRACT_BY_TYPE.get(master, _EXTRACT_BY_TYPE["UNKNOWN"])
+    Dedicated Gemini call to build an extraction config for a screen.
+
+    Separate from BT building so Gemini focuses entirely on identifying
+    what content exists and where it lives in the tree.
+
+    Returns:
+        Extract config dict, or None if Gemini can't identify content.
+    """
+    import json
+
+    if not _should_extract(screen_type):
+        return None
+
+    tree_json = json.dumps(tree, indent=None, ensure_ascii=False)
+    prompt = _EXTRACT_PROMPT.format(
+        platform=platform,
+        screen_type=screen_type,
+        tree_json=tree_json,
+    )
+
+    logger.info(f"build_extract_config: asking Gemini for {screen_type} extraction config")
+    raw = _gemini_api_call(prompt, screenshot_b64, model_name="gemini-2.5-flash")
+
+    if not raw:
+        logger.warning("build_extract_config: Gemini returned nothing")
+        return None
+
+    try:
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
+            if raw.endswith("```"):
+                raw = raw[:-3]
+            raw = raw.strip()
+
+        if raw.lower() == "null":
+            return None
+
+        result = json.loads(raw)
+        if not isinstance(result, dict):
+            return None
+
+        # Validate it has at least text criteria
+        if "text" not in result or not result["text"]:
+            logger.warning("build_extract_config: Gemini returned extract without text criteria")
+            return None
+
+        logger.info(
+            f"build_extract_config: got config with "
+            f"{len(result.get('text', []))} text criteria, "
+            f"{len(result.get('images', []))} image criteria"
+        )
+        return result
+
+    except json.JSONDecodeError as e:
+        logger.error(f"build_extract_config: JSON parse error: {e}, raw={raw[:200]}")
+        return None
 
 
 # ── Gemini 3 Pro BT Builder ──
@@ -754,9 +856,15 @@ def build_bt_from_tree(
         f"reason={result.get('reason', '')}"
     )
 
+    # Extract: use Gemini BT builder's extract if provided.
+    # Otherwise, make a separate focused Gemini call for extraction.
+    extract = result.get("extract")
+    if not extract and _should_extract(bt_screen_type) and screenshot_b64:
+        extract = build_extract_config(tree, screenshot_b64, platform, bt_screen_type)
+
     return {
         "tree": bt,
         "screen_type": bt_screen_type,
-        "extract": result.get("extract") or _get_extract_default(bt_screen_type),
+        "extract": extract,
         "expected_next": result.get("expected_next", []),
     }
