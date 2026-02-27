@@ -9,7 +9,12 @@ Walk accessibility tree, extract (role, text) pairs based on role type:
 Screen signature = frozenset of these tuples.
 Common elements = intersection of ALL known signatures (platform chrome).
 Discriminative markers = signature - common.
-Matching = |query_markers & known_markers| / |known_markers|
+Matching = Jaccard similarity on discriminative markers + structural constraint penalty.
+
+V18 fix (2026-02-27): Added structural hard constraints to prevent false positives
+between EXERCISE and TRANSITION screens. Structural roles (AXRadioButton, AXCheckBox,
+AXTextField, AXTextArea) are the key differentiators -- if one screen has them and
+another doesn't, the match is penalized regardless of Jaccard score.
 """
 
 import hashlib
@@ -34,6 +39,17 @@ STRUCTURAL_PRESENCE_ROLES = {
     "AXTextArea", "AXForm", "AXSlider",
 }
 
+# Structural roles that are hard differentiators between screen types.
+# If query has these and known screen doesn't (or vice versa), it's a different screen.
+# These are the roles that distinguish EXERCISE from TRANSITION/ARTICLE.
+HARD_DIFFERENTIATOR_ROLES = {
+    "AXRadioButton", "AXCheckBox", "AXTextField", "AXTextArea",
+}
+
+# Penalty applied to Jaccard score when structural mismatch detected.
+# 0.35 penalty means a 0.91 Jaccard drops to 0.56 -- below the 0.70 threshold.
+STRUCTURAL_MISMATCH_PENALTY = 0.35
+
 
 def extract_signature(tree: dict) -> frozenset:
     """Walk tree, extract (role, text) pairs for discriminative matching."""
@@ -54,6 +70,29 @@ def extract_signature(tree: dict) -> frozenset:
             stack.extend(children)
 
     return frozenset(pairs)
+
+
+def _extract_structural_roles(sig: frozenset) -> set:
+    """Extract hard-differentiator structural roles present in a signature."""
+    return {role for role, text in sig if text == "*" and role in HARD_DIFFERENTIATOR_ROLES}
+
+
+def _structural_mismatch(query_structural: set, known_structural: set) -> bool:
+    """Check if structural roles disagree between query and known screen.
+
+    Returns True if one has exercise-like structural elements and the other doesn't.
+    This catches EXERCISE vs TRANSITION false positives where Jaccard is 0.91+
+    but the real difference is radio buttons / checkboxes.
+    """
+    if not query_structural and not known_structural:
+        return False  # Neither has structural -- no conflict
+    if query_structural and not known_structural:
+        return True   # Query has radio/checkbox, known doesn't -- different screen
+    if not query_structural and known_structural:
+        return True   # Known has radio/checkbox, query doesn't -- different screen
+    # Both have structural elements but different ones (e.g., radio vs checkbox)
+    # This is a softer signal -- they're both exercises, just different types
+    return False
 
 
 def _sig_hash(sig: frozenset) -> str:
@@ -114,7 +153,7 @@ def learn_screen(platform: str, tree: dict, screen_type: str,
     data["screens"][sig_hash] = {
         "screen_type": screen_type,
         "signature": [list(p) for p in sorted(sig)],
-        "behavior_tree": behavior_tree or {},
+        "behavior_tree": behavior_tree,
         "validated": False,
         "source": source,
     }
@@ -141,7 +180,7 @@ def match_signature(platform: str, tree: dict) -> dict:
 
     common = frozenset(tuple(p) for p in data["common"])
 
-    # With fewer than 2 signatures, common is empty — every element looks
+    # With fewer than 2 signatures, common is empty -- every element looks
     # "discriminative" even though most are shared chrome. In this state,
     # only match on exact signature hash. Fuzzy matching is meaningless
     # until we have enough signatures to know what's common vs unique.
@@ -163,6 +202,9 @@ def match_signature(platform: str, tree: dict) -> dict:
 
     query_markers = query_sig - common
 
+    # Extract structural roles from query for hard-constraint checking
+    query_structural = _extract_structural_roles(query_sig)
+
     best_score = 0.0
     best_hash = None
     best_screen = None
@@ -178,6 +220,21 @@ def match_signature(platform: str, tree: dict) -> dict:
         intersection = len(query_markers & known_markers)
         union = len(query_markers | known_markers)
         score = intersection / union if union > 0 else 0.0
+
+        # V18: Structural hard constraint penalty.
+        # If query has exercise-like structural elements (radio, checkbox, text input)
+        # but the known screen doesn't (or vice versa), penalize the score.
+        # This prevents EXERCISE matching as TRANSITION at 0.91+.
+        known_structural = _extract_structural_roles(known_sig)
+        if _structural_mismatch(query_structural, known_structural):
+            score -= STRUCTURAL_MISMATCH_PENALTY
+            logger.info(
+                f"  Structural mismatch: query_structural={query_structural} "
+                f"vs known_structural={known_structural} for {screen['screen_type']} "
+                f"({sig_hash[:12]}). Score {score + STRUCTURAL_MISMATCH_PENALTY:.2f} "
+                f"-> {score:.2f}"
+            )
+
         if score > best_score:
             best_score = score
             best_hash = sig_hash

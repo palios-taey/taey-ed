@@ -103,18 +103,18 @@ def test_screen_router_imports():
     print("  screen_router.py: PASS (imports clean)")
 
 
-def test_call_ollama_imports():
-    """call_ollama.py: imports cleanly."""
-    # call_ollama.py may need google.generativeai - check if it's available
+def test_call_gemini_imports():
+    """call_gemini.py: imports cleanly."""
+    # call_gemini.py may need google.generativeai - check if it's available
     try:
         # Try importing the module
         import importlib
-        spec = importlib.util.find_spec("spark.tasks.call_ollama")
+        spec = importlib.util.find_spec("spark.tasks.call_gemini")
         assert spec is not None, "Module should be findable"
-        print("  call_ollama.py: PASS (module findable)")
+        print("  call_gemini.py: PASS (module findable)")
     except ImportError as e:
         # May fail due to google.generativeai - that's ok for unit test
-        print(f"  call_ollama.py: SKIP (dependency: {e})")
+        print(f"  call_gemini.py: SKIP (dependency: {e})")
 
 
 if __name__ == "__main__":
@@ -126,7 +126,7 @@ if __name__ == "__main__":
         test_match_screen_platform_guard,
         test_match_screen_marker_matching,
         test_screen_router_imports,
-        test_call_ollama_imports,
+        test_call_gemini_imports,
     ]
     failures = []
     for t in tests:

@@ -39,7 +39,7 @@ async def embed_text(request: EmbedRequest):
 @router.post("/generate")
 async def generate(request: GenerateRequest):
     """Generate answer for educational quiz question."""
-    from spark.tasks.call_ollama import generate_answer
+    from spark.tasks.call_gemini import generate_answer
 
     if request.items:
         for i, item in enumerate(request.items[:5]):

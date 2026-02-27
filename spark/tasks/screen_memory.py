@@ -1,4 +1,12 @@
-# STATUS: FROZEN - Bug-fixed from v7. Verified 2026-02-20. Do not modify.
+# STATUS: DEPRECATED (2026-02-27)
+# This module was the Weaviate-based screen memory system.
+# V17 replaced it with JSON file-based signatures (screen_signatures.py).
+# The main flow (next_action.py) no longer imports from this module.
+# Remaining imports: server.py (ensure_schema at startup) and validation.py (embed_text).
+# These are legacy and can be removed once the Weaviate dependency is fully cut.
+# See REQUIREMENTS.md for current architecture.
+#
+# Original status: FROZEN - Bug-fixed from v7. Verified 2026-02-20.
 """
 Layer 3: Weaviate Screen Memory
 
