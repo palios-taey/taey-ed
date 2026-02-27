@@ -38,8 +38,7 @@ def _mock_notify(msg):
 
 # Patch tmux + Weaviate before importing the app
 with patch("spark.tasks.notify_tmux.notify_spark_claude", _mock_notify):
-    with patch("spark.tasks.match_screen._check_vector_available", return_value=False):
-        from spark.server import app
+    from spark.server import app
 
 from fastapi.testclient import TestClient
 
@@ -107,8 +106,7 @@ def test_a_known_screen_returns_execute_tree(client):
         "platform": "test",
         "tree": tree,
     }
-    with patch("spark.tasks.match_screen._check_vector_available", return_value=False):
-        r = client.post("/next_action", json=payload, headers=HEADERS)
+    r = client.post("/next_action", json=payload, headers=HEADERS)
 
     assert r.status_code == 200
     data = r.json()
@@ -128,8 +126,7 @@ def test_a2_known_screen_next(client):
         "platform": "test",
         "tree": tree,
     }
-    with patch("spark.tasks.match_screen._check_vector_available", return_value=False):
-        r = client.post("/next_action", json=payload, headers=HEADERS)
+    r = client.post("/next_action", json=payload, headers=HEADERS)
 
     assert r.status_code == 200
     data = r.json()
@@ -156,8 +153,7 @@ def test_b_consultation_flow(client):
         "platform": "test",
         "tree": tree,
     }
-    with patch("spark.tasks.match_screen._check_vector_available", return_value=False):
-        r = client.post("/next_action", json=payload, headers=HEADERS)
+    r = client.post("/next_action", json=payload, headers=HEADERS)
 
     assert r.status_code == 200
     data = r.json()
@@ -166,8 +162,7 @@ def test_b_consultation_flow(client):
 
     # Step 2: POST with screenshot → consulting
     payload["screenshot_b64"] = TINY_PNG_B64
-    with patch("spark.tasks.match_screen._check_vector_available", return_value=False):
-        with patch("spark.tasks.notify_tmux.notify_spark_claude", _mock_notify):
+    with patch("spark.tasks.notify_tmux.notify_spark_claude", _mock_notify):
             r = client.post("/next_action", json=payload, headers=HEADERS)
 
     assert r.status_code == 200
@@ -191,8 +186,7 @@ def test_b_consultation_flow(client):
         "tree": tree,
         "client_state": {"active_consultation_id": consultation_id},
     }
-    with patch("spark.tasks.match_screen._check_vector_available", return_value=False):
-        r = client.post("/next_action", json=payload_poll, headers=HEADERS)
+    r = client.post("/next_action", json=payload_poll, headers=HEADERS)
 
     assert r.status_code == 200
     data = r.json()
@@ -223,8 +217,7 @@ def test_b_consultation_flow(client):
     print("  B5. Consultation responded: PASS")
 
     # Step 5: Poll again → execute_tree with consultation BT
-    with patch("spark.tasks.match_screen._check_vector_available", return_value=False):
-        r = client.post("/next_action", json=payload_poll, headers=HEADERS)
+    r = client.post("/next_action", json=payload_poll, headers=HEADERS)
 
     assert r.status_code == 200
     data = r.json()
@@ -259,8 +252,7 @@ def test_c_stuck_detection(client):
             "continue_loop": False,
         },
     }
-    with patch("spark.tasks.match_screen._check_vector_available", return_value=False):
-        r = client.post("/next_action", json=payload, headers=HEADERS)
+    r = client.post("/next_action", json=payload, headers=HEADERS)
 
     assert r.status_code == 200
     data = r.json()
@@ -289,8 +281,7 @@ def test_c2_stuck_with_screenshot_escalates(client):
             "continue_loop": False,
         },
     }
-    with patch("spark.tasks.match_screen._check_vector_available", return_value=False):
-        with patch("spark.tasks.notify_tmux.notify_spark_claude", _mock_notify):
+    with patch("spark.tasks.notify_tmux.notify_spark_claude", _mock_notify):
             r = client.post("/next_action", json=payload, headers=HEADERS)
 
     assert r.status_code == 200
@@ -346,8 +337,7 @@ def test_d_wrong_answer_detection(client):
         },
     }
 
-    with patch("spark.tasks.match_screen._check_vector_available", return_value=False):
-        with patch("spark.routes.next_action.match_screen", mock_match):
+    with patch("spark.routes.next_action.match_screen", mock_match):
             r = client.post("/next_action", json=payload, headers=HEADERS)
 
     assert r.status_code == 200
@@ -388,8 +378,7 @@ def test_f_one_at_a_time(client):
     }
 
     # First request → creates consultation
-    with patch("spark.tasks.match_screen._check_vector_available", return_value=False):
-        with patch("spark.tasks.notify_tmux.notify_spark_claude", _mock_notify):
+    with patch("spark.tasks.notify_tmux.notify_spark_claude", _mock_notify):
             r1 = client.post("/next_action", json=payload, headers=HEADERS)
     data1 = r1.json()
     assert data1["directive"] == "consulting"
@@ -403,8 +392,7 @@ def test_f_one_at_a_time(client):
         "tree": tree2,
         "screenshot_b64": TINY_PNG_B64,
     }
-    with patch("spark.tasks.match_screen._check_vector_available", return_value=False):
-        with patch("spark.tasks.notify_tmux.notify_spark_claude", _mock_notify):
+    with patch("spark.tasks.notify_tmux.notify_spark_claude", _mock_notify):
             r2 = client.post("/next_action", json=payload2, headers=HEADERS)
     data2 = r2.json()
     assert data2["directive"] == "consulting"
@@ -441,8 +429,7 @@ def test_g_polling_completion(client):
             "continue_loop": True,  # This is the key flag
         },
     }
-    with patch("spark.tasks.match_screen._check_vector_available", return_value=False):
-        r = client.post("/next_action", json=payload, headers=HEADERS)
+    r = client.post("/next_action", json=payload, headers=HEADERS)
 
     assert r.status_code == 200
     data = r.json()
@@ -497,8 +484,7 @@ def test_h_escalation_to_user(client):
         "action": "click_element",
     }
 
-    with patch("spark.tasks.match_screen._check_vector_available", return_value=False):
-        with patch("spark.tasks.notify_tmux.notify_spark_claude", _mock_notify):
+    with patch("spark.tasks.notify_tmux.notify_spark_claude", _mock_notify):
             r = client.post("/next_action", json=payload, headers=HEADERS)
 
     assert r.status_code == 200

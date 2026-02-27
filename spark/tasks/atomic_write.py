@@ -10,9 +10,10 @@ import json
 import os
 import tempfile
 from pathlib import Path
+from typing import Union
 
 
-def atomic_write_text(path: Path | str, content: str) -> None:
+def atomic_write_text(path: Union[Path, str], content: str) -> None:
     """Write text atomically via temp file + rename."""
     path = Path(path)
     fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
@@ -27,6 +28,6 @@ def atomic_write_text(path: Path | str, content: str) -> None:
         raise
 
 
-def atomic_write_json(path: Path | str, data: dict, indent: int = 2) -> None:
+def atomic_write_json(path: Union[Path, str], data: dict, indent: int = 2) -> None:
     """Write JSON atomically."""
     atomic_write_text(path, json.dumps(data, indent=indent))
