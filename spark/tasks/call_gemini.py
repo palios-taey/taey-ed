@@ -821,13 +821,7 @@ async def generate_answer(
     if gemini_response:
         raw_answer = gemini_response
         model_used = "gemini-2.5-pro"
-
-    # Claude CLI fallback when Gemini fails
-    if not raw_answer:
-        claude_response = await _solve_with_claude_cli(prompt)
-        if claude_response:
-            raw_answer = claude_response
-            model_used = f"claude-{CLAUDE_CLI_MODEL}"
+    # No fallback — if Gemini fails, return error. Caller decides.
 
     try:
         if not raw_answer:
@@ -1113,25 +1107,6 @@ def match_to_option(raw_answer: str, options: List[str]) -> str:
         if opt.lower().strip() == raw_lower:
             return opt
 
-    # Substring match - option contained in answer or vice versa
-    for opt in options:
-        opt_lower = opt.lower().strip()
-        if opt_lower in raw_lower or raw_lower in opt_lower:
-            return opt
-
-    # Word overlap - pick option with most shared words
-    raw_words = set(raw_lower.split())
-    best_opt = None
-    best_overlap = 0
-    for opt in options:
-        opt_words = set(opt.lower().strip().split())
-        overlap = len(raw_words & opt_words)
-        if overlap > best_overlap:
-            best_overlap = overlap
-            best_opt = opt
-    if best_opt and best_overlap > 0:
-        return best_opt
-
-    # No match - return raw answer, Mac will handle mismatch
-    logger.warning(f"Could not match '{raw_answer}' to options: {options}")
+    # No match — return raw answer with warning. No fuzzy matching.
+    logger.warning(f"Could not match '{raw_answer}' to options (letter and exact match failed): {options}")
     return raw_answer

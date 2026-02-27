@@ -200,6 +200,7 @@ def run_continuous(
 
     session_id = str(uuid.uuid4())
     screens_completed = 0
+    consecutive_errors = 0
     last_result = None
     pending_screenshot = None
     active_consultation_id = None
@@ -259,6 +260,7 @@ def run_continuous(
             directive_id = directive.get("directive_id", "")
             prev_directive_type = last_directive_type
             last_directive_type = dtype
+            consecutive_errors = 0  # Reset on successful /next_action call
 
             # Deliver chat messages from Spark response
             chat_messages = directive.get("chat_messages")
@@ -511,9 +513,17 @@ def run_continuous(
             continue
 
         except Exception as e:
-            # Connection errors (API restart), HTTP errors, JSON decode errors —
-            # all recoverable. Wait and retry. Never stop the pipeline.
-            logger.error(f"Pipeline error (retrying in 5s): {e}", exc_info=True)
+            consecutive_errors += 1
+            logger.error(f"Pipeline error #{consecutive_errors}: {e}", exc_info=True)
+            if consecutive_errors >= 2:
+                logger.error(f"PIPELINE FAILED: {consecutive_errors} consecutive errors. Stopping.")
+                clear_checkpoint(platform, course_id, app_name)
+                return {
+                    "success": False,
+                    "reason": "consecutive_errors",
+                    "screens_completed": screens_completed,
+                    "message": f"Pipeline stopped after {consecutive_errors} consecutive errors: {e}",
+                }
             last_result = None
             time.sleep(5.0)
             continue

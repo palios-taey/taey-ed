@@ -149,75 +149,59 @@ async def extract_image_content(
     else:
         mime_type = "image/jpeg"
 
-    # Try model cascade
-    models_to_try = ["primary", "fallback"]  # Gemini 2.5 Pro
+    # Single model call — no cascade. Rate limit = fail loudly.
+    try:
+        model = genai.GenerativeModel(MODELS["primary"])
 
-    for model_key in models_to_try:
+        response = model.generate_content(
+            [
+                prompt,
+                {"mime_type": mime_type, "data": image_data}
+            ],
+            generation_config={"response_mime_type": "application/json"}
+        )
+
+        # Parse JSON response
         try:
-            model = genai.GenerativeModel(MODELS[model_key])
+            extracted = json.loads(response.text)
+        except json.JSONDecodeError:
+            extracted = {"text_content": response.text}
 
-            response = model.generate_content(
-                [
-                    prompt,
-                    {"mime_type": mime_type, "data": image_data}
-                ],
-                generation_config={"response_mime_type": "application/json"}
-            )
+        # Build description from extracted content
+        description_parts = []
+        if extracted.get("text_content"):
+            description_parts.append(f"Text: {extracted['text_content']}")
+        if extracted.get("question"):
+            description_parts.append(f"Question: {extracted['question']}")
+        if extracted.get("diagrams"):
+            description_parts.append(f"Visual: {extracted['diagrams']}")
+        if extracted.get("equations"):
+            description_parts.append(f"Equations: {', '.join(extracted['equations'])}")
 
-            # Parse JSON response
-            try:
-                extracted = json.loads(response.text)
-            except json.JSONDecodeError:
-                extracted = {"text_content": response.text}
+        description = "\n".join(description_parts) if description_parts else response.text
 
-            # Build description from extracted content
-            description_parts = []
-            if extracted.get("text_content"):
-                description_parts.append(f"Text: {extracted['text_content']}")
-            if extracted.get("question"):
-                description_parts.append(f"Question: {extracted['question']}")
-            if extracted.get("diagrams"):
-                description_parts.append(f"Visual: {extracted['diagrams']}")
+        # Classify content type
+        content_type = extracted.get("question_type", "unknown")
+        if content_type == "unknown":
             if extracted.get("equations"):
-                description_parts.append(f"Equations: {', '.join(extracted['equations'])}")
-
-            description = "\n".join(description_parts) if description_parts else response.text
-
-            # Classify content type
-            content_type = extracted.get("question_type", "unknown")
-            if content_type == "unknown":
-                if extracted.get("equations"):
-                    content_type = "equation"
-                elif extracted.get("diagrams"):
-                    content_type = "diagram"
-                else:
-                    content_type = "text"
-
-            return {
-                "success": True,
-                "description": description,
-                "content_type": content_type,
-                "extracted": extracted,
-                "model_used": MODELS[model_key]
-            }
-
-        except Exception as e:
-            error_str = str(e)
-            if "429" in error_str or "quota" in error_str.lower():
-                # Rate limited, try next model
-                continue
+                content_type = "equation"
+            elif extracted.get("diagrams"):
+                content_type = "diagram"
             else:
-                return {
-                    "success": False,
-                    "error": error_str,
-                    "description": "",
-                    "content_type": "unknown"
-                }
+                content_type = "text"
 
-    # All models failed (rate limited)
-    return {
-        "success": False,
-        "error": "All Gemini models rate limited. Try again later.",
-        "description": "",
-        "content_type": "unknown"
-    }
+        return {
+            "success": True,
+            "description": description,
+            "content_type": content_type,
+            "extracted": extracted,
+            "model_used": MODELS["primary"]
+        }
+
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "description": "",
+            "content_type": "unknown"
+        }

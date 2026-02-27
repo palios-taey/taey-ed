@@ -42,9 +42,8 @@ def register_all_handlers(ctx: ExecutionContext):
             element = find_element(ctx.app_name, desc, role="AXPopUpButton",
                                     match_mode="contains")
             if not element:
-                # Fallback: try the stale ref
-                btlog(f"click: re-find failed, trying stale ref")
-                element = params.get("element", {}).get("element")
+                btlog(f"click: re-find by description FAILED — element gone, not using stale ref")
+                return {"success": False, "action": "click", "error": f"Element re-find failed for '{desc[:60]}'"}
 
         # If element is a string, find it
         if element is None or isinstance(element, str):

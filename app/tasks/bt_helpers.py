@@ -223,19 +223,9 @@ def _find_assessment_questions(web_area: dict) -> list:
         })
         btlog(f"  Mode 2: RADIO '{question_text[:60]}' options={len(all_radios)}")
     elif all_checkboxes:
-        questions.append({
-            "type": "checkbox",
-            "question": "Select the correct answers",
-            "options": all_checkboxes,
-        })
-        btlog(f"  Mode 2: CHECKBOX (no question text found) options={len(all_checkboxes)}")
+        btlog(f"  Mode 2: CHECKBOX found {len(all_checkboxes)} options but NO question text — skipping")
     elif all_radios:
-        questions.append({
-            "type": "radio",
-            "question": "Select the correct answer",
-            "options": all_radios,
-        })
-        btlog(f"  Mode 2: RADIO (no question text found) options={len(all_radios)}")
+        btlog(f"  Mode 2: RADIO found {len(all_radios)} options but NO question text — skipping")
 
     if questions:
         btlog(f"  Mode 2 (simple): found {len(questions)} questions")

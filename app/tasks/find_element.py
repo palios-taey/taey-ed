@@ -2,8 +2,8 @@
 Find element in accessibility tree by text.
 Returns element with raw AXUIElement reference for clicking.
 
-Feb 2026: Added retry logic. Chrome's accessibility tree at depth 16+
-may not be immediately stable after page load. One retry after 1s delay.
+No retry logic. If element is not found, returns None.
+Caller decides whether to re-inspect or escalate.
 """
 
 import logging
@@ -97,7 +97,6 @@ def find_element(app_name: str, target_text: str, role: str = None, match_mode: 
                     return result
         return None
 
-    # First attempt
     result = search(root)
     if result:
         # Log what we found for diagnostic
@@ -110,11 +109,9 @@ def find_element(app_name: str, target_text: str, role: str = None, match_mode: 
         logger.info(f"find_element: FOUND role={found_role} title='{found_title}' value='{found_value}' (target='{target_text}', req_role={role})")
         return result
 
-    # Retry once after delay - Chrome deep tree may not be stable yet
-    logger.info(f"find_element: '{target_text}' not found, retrying in 1s...")
-    time.sleep(1.0)
-    root = AXUIElementCreateApplication(target_app.processIdentifier())
-    return search(root)
+    # Not found — return None. No retry. Caller decides what to do.
+    logger.warning(f"find_element: '{target_text}' NOT FOUND (role={role}, match_mode={match_mode})")
+    return None
 
 
 def _find_web_area_element(element):
@@ -208,12 +205,9 @@ def find_all_elements(app_name: str, role: str, description_contains: str = None
 
     search(web_area)
 
-    # Fallback: if web-area search found nothing and we were scoped,
-    # search full app tree. Catches React Portal elements (combobox popups,
-    # dropdown menus) that render OUTSIDE AXWebArea at shallow depth.
-    if not results and web_area is not root:
-        logger.info("find_all_elements: 0 results in AXWebArea, searching full app tree (React Portal fallback)")
-        search(root)
+    # No fallback to full app tree — if not in AXWebArea, it's not web content.
+    if not results:
+        logger.warning(f"find_all_elements: 0 elements with role={role} in AXWebArea")
 
     logger.info(f"find_all_elements: Found {len(results)} elements with role={role}" +
                 (f" containing '{description_contains}'" if description_contains else ""))

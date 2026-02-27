@@ -44,19 +44,8 @@ def build_kb_context(platform: str, course_id: str, question_text: str) -> list:
                     context_texts.append(text)
                     seen.add(text)
 
-    # Strategy 2: Get recent content as fallback
-    if len(context_texts) < 3:
-        recent = storage.get_recent_content(platform, course_id, limit=5)
-        for r in recent:
-            for text in r.get("texts", []):
-                if text not in seen:
-                    context_texts.append(text)
-                    seen.add(text)
-            for img in r.get("images", []):
-                desc = img.get("description", "")
-                if desc and desc not in seen:
-                    context_texts.append(desc)
-                    seen.add(desc)
+    # No fallback to recent content — irrelevant context is worse than no context.
+    # The LLM works better with 0 results than with wrong results.
 
     storage.close()
     return context_texts[:20]

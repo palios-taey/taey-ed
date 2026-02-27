@@ -148,35 +148,9 @@ def _build_screen_directive(request, platform: str, tree: dict, screen_type: str
         )
         if result:
             return _store_and_return_bt(result, platform, tree, sig_hash)
-        logger.warning(f"  Gemini 2.5 Pro BT build failed for {screen_type} — falling back to template")
+        logger.error(f"  Gemini 2.5 Pro BT build failed for {screen_type} — no template fallback")
 
-    # FALLBACK: Deterministic template (no screenshot or Gemini failed)
-    click_target = None
-    if screen_type in ("NAVIGATION", "TRANSITION") and request.screenshot_b64:
-        click_target = get_click_target(
-            tree=tree,
-            screenshot_b64=request.screenshot_b64,
-            platform=platform,
-            screen_type=screen_type,
-        )
-
-    result = build_bt(screen_type, click_target)
-    if result:
-        variant_type = result.get("screen_type", screen_type)
-        logger.info(f"  Template fallback BT for {variant_type}")
-        bt_json = json.dumps(result["tree"], indent=2)
-        logger.info(f"  BT =\n{bt_json}")
-        return _with_chat({
-            "directive": "execute_tree",
-            "directive_id": _make_directive_id(),
-            "tree": result["tree"],
-            "screen": variant_type,
-            "skeleton_hash": sig_hash,
-            "extract": result.get("extract"),
-            "expected_next": result.get("expected_next", []),
-        }, platform, [build_status(f"Executing {variant_type} automation (template)")])
-
-    # NOTHING WORKED — ask user
+    # Gemini failed or no screenshot — escalate, don't use templates
     from spark.tasks.classify_screen import _describe_screen
     _reason = (f"Could not build behavior tree for '{screen_type}'. "
                f"Tell me what to do on this screen.")

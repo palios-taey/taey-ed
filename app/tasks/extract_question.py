@@ -62,21 +62,12 @@ def extract_question(tree: dict, extract_config: dict) -> dict:
     options = []
     reference_texts = []
 
-    # Extract question text
+    # Extract question text — single attempt, no cascade
     q_config = extract_config.get("question")
     if q_config:
         q_role = q_config.get("role", "AXStaticText")
         q_contains = q_config.get("contains", "")
         question_text = _find_question_text(scoped_tree, q_role, q_contains)
-        # Fallback: fill-in-the-blank questions use "___" instead of "?"
-        if not question_text and q_contains == "?":
-            question_text = _find_question_text(scoped_tree, q_role, "___")
-        # Fallback: imperative prompts like "Complete the statement." or "Fill in the blank."
-        if not question_text and q_contains == "?":
-            for pattern in ["Complete the", "Fill in the", "Select the", "Match the"]:
-                question_text = _find_question_text(scoped_tree, q_role, pattern)
-                if question_text:
-                    break
 
     # Extract answer options (for solve_choice)
     opt_config = extract_config.get("options")
@@ -101,30 +92,8 @@ def extract_question(tree: dict, extract_config: dict) -> dict:
     else:
         question_type = "fill_blank"
 
-    # If no explicit question found, try to build from reference texts
-    if not question_text and reference_texts:
-        # Look for any text containing "?" or "___" in reference texts
-        for text in reference_texts:
-            if "?" in text or "___" in text:
-                question_text = text
-                break
-
-    # Fallback: if we have options but no question, compose from reference texts
-    # that look like instructions or incomplete statements (e.g., "Complete the statement."
-    # followed by "An element is defined by the number of ...")
-    if not question_text and reference_texts and options:
-        imperative_patterns = ["complete", "fill in", "select", "match", "choose",
-                               "identify", "determine", "defined by", "is a"]
-        instruction_parts = []
-        for text in reference_texts:
-            text_lower = text.lower()
-            if any(p in text_lower for p in imperative_patterns):
-                instruction_parts.append(text)
-            elif text.rstrip().endswith((" ", "\u2026", "...")):
-                # Trailing space or ellipsis suggests incomplete statement
-                instruction_parts.append(text)
-        if instruction_parts:
-            question_text = " ".join(instruction_parts)
+    # No fabrication of question text from reference texts.
+    # If question not found by configured criteria, raise error.
 
     if not question_text:
         raise RuntimeError("Could not extract question text from tree")
