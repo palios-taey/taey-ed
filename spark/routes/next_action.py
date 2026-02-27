@@ -573,33 +573,49 @@ def next_action(request: NextActionRequest):
                 return _store_and_return_bt(result, platform, tree, retry_sig_hash)
             logger.error("Step 3: Gemini retry with failure context also failed — stopping")
 
-        # BT execution failed, no human guidance, no successful retry. STOP.
-        bt_diag = ""
-        if lr.bt_debug_tail:
-            bt_diag = f"\nBT debug log:\n{lr.bt_debug_tail}"
-            logger.error(
-                f"Step 3: BT execution failed for {lr.screen}, action={lr.action}. "
-                f"Stopping.{bt_diag}"
+        # ── Screen mismatch recovery ──
+        # If the BT came from a signature match and it failed (including Gemini
+        # retry), the signature was likely a false match. Delete it and let
+        # Steps 4/5 re-classify the screen from scratch.
+        if lr.directive_skeleton_hash:
+            logger.info(
+                f"Step 3: BT failed for signature-matched screen {lr.screen} "
+                f"— deleting signature {lr.directive_skeleton_hash[:12]} and re-classifying"
             )
+            try:
+                from spark.tasks.screen_signatures import delete_screen
+                delete_screen(platform=platform, sig_hash=lr.directive_skeleton_hash)
+            except Exception as e:
+                logger.warning(f"Step 3: delete_screen failed: {e}")
+            # Fall through to Step 4/5 for fresh classification
         else:
-            logger.error(
-                f"Step 3: BT execution failed for {lr.screen}, action={lr.action}. "
-                f"Stopping. (no bt_debug_tail)"
-            )
-        from spark.tasks.classify_screen import _describe_screen
-        _reason = (f"Action '{lr.action}' failed on screen '{lr.screen}'. "
-                   f"Tell me what to do on this screen.")
-        return _with_chat({
-            "directive": "user_input_needed",
-            "directive_id": _make_directive_id(),
-            "reason": _reason,
-            "screen_type": lr.screen or "UNKNOWN",
-            "screen_description": _describe_screen(tree),
-            "bt_debug_tail": lr.bt_debug_tail or "",
-        }, platform, [
-            build_status(f"Action failed on {lr.screen}"),
-            build_question(_reason),
-        ])
+            # No signature to invalidate — genuinely stuck. STOP.
+            bt_diag = ""
+            if lr.bt_debug_tail:
+                bt_diag = f"\nBT debug log:\n{lr.bt_debug_tail}"
+                logger.error(
+                    f"Step 3: BT execution failed for {lr.screen}, action={lr.action}. "
+                    f"Stopping.{bt_diag}"
+                )
+            else:
+                logger.error(
+                    f"Step 3: BT execution failed for {lr.screen}, action={lr.action}. "
+                    f"Stopping. (no bt_debug_tail)"
+                )
+            from spark.tasks.classify_screen import _describe_screen
+            _reason = (f"Action '{lr.action}' failed on screen '{lr.screen}'. "
+                       f"Tell me what to do on this screen.")
+            return _with_chat({
+                "directive": "user_input_needed",
+                "directive_id": _make_directive_id(),
+                "reason": _reason,
+                "screen_type": lr.screen or "UNKNOWN",
+                "screen_description": _describe_screen(tree),
+                "bt_debug_tail": lr.bt_debug_tail or "",
+            }, platform, [
+                build_status(f"Action failed on {lr.screen}"),
+                build_question(_reason),
+            ])
 
     # ── Step 4: Match screen (set-difference signatures) ──
     logger.info("  Step 4: Signature matching...")

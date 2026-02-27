@@ -376,8 +376,9 @@ def run_continuous(
                         last_result["bt_debug_tail"] = "".join(_bt_lines[-20:])
                 except Exception:
                     pass
+                # Always send skeleton_hash so Spark can invalidate bad signatures on failure
+                last_result["directive_skeleton_hash"] = directive.get("skeleton_hash", "")
                 if bt_result.get("success") and not bt_result.get("continue_loop"):
-                    last_result["directive_skeleton_hash"] = directive.get("skeleton_hash", "")
                     last_result["directive_expected_next"] = directive.get("expected_next", [])
 
                 # Screen completed: success AND not a polling action
