@@ -1015,6 +1015,226 @@ BLACKBOARD VARIABLE SUBSTITUTION:
 - If a store: action fails (returns None), the key is NEVER written.
   Later $key.field resolves to None. PLAN FOR THIS."""
 
+# Keep original for byte-for-byte fallback when knowledge.json absent
+SECTION_5_HANDLERS_ORIGINAL = SECTION_5_HANDLERS
+
+# Individual handler documentation blocks for JIT assembly
+HANDLER_DOCS = {
+    "find_and_click": """\
+find_and_click:
+  Purpose: Find element by text/role, then click it
+  Params:
+    target (str, required): Text to search for in element name/description
+    role (str, optional): AX role filter (AXButton, AXLink, AXRadioButton, etc.)
+    match_mode (str): "exact" or "contains" (default: exact)
+    strategy (str): "mouse_click" (default, browsers), "focus_space" (radio/checkbox),
+                    "focus_enter" (buttons), "ax_press" (native Mac apps)
+    fallback_roles (list): Alternate roles to try if primary role not found
+    post_delay (float): Seconds to wait after click (default: 0)
+  Returns: {success: true/false, element: {...}}
+  4-tier fallback: exact→contains→alternate roles→no role filter""",
+
+    "find_and_type": """\
+find_and_type:
+  Purpose: Find text field, optionally focus via click, then type text
+  Params:
+    target (str): Text to search for in field name (can be "" for first match)
+    text (str, required): Text to type into the field
+    role (str): AXTextArea, AXTextField, etc.
+    focus_strategy (str): How to focus before typing
+  Returns: {success: true/false}""",
+
+    "find_all": """\
+find_all:
+  Purpose: Find ALL elements matching role/filter. Enriches each with labels
+  Params:
+    role (str): AX role to search for
+    description_contains (str, optional): Filter by description substring
+  Returns: list of [{element, description, popup_desc, label}, ...]
+  The return value IS the list directly (not wrapped in {success, items}).
+  Use "$var" to reference the list, NOT "$var.items".
+  Labels: Preceding text found via _find_preceding_label() in bt_helpers.py
+  Enrichment includes completion indicators ("Completed", "Not started", etc.)""",
+
+    "click": """\
+click:
+  Purpose: Click element from blackboard variable
+  Params:
+    element (ref): Blackboard reference to element dict (e.g., "$_current")
+    target (str): Alternative to element — text to find
+    role (str): Role filter
+    match_mode (str): "exact" or "contains"
+    strategy (str): Click strategy
+  Note: If element is dict from find_all, re-finds fresh by description""",
+
+    "extract_question": """\
+extract_question:
+  Purpose: Parse question text + options from tree using ctx.extract_config
+  Params: None (automatic from ExecutionContext)
+  Returns: {question_text: str, options: [str], reference_texts: [str], question_type: str}
+  Scopes to AXWebArea, skips browser chrome""",
+
+    "send_to_llm": """\
+send_to_llm:
+  Purpose: Call Spark /api/v1/generate for AI-powered decisions
+  Params:
+    question (str): The question text
+    question_type (str): "solve_choice", "solve_checkbox", "solve", "solve_matching",
+                         "solve_assessment", "solve_complex", "navigate"
+    options (list): For solve_choice/checkbox
+    items (list): For navigate (from find_all)
+    context (str): Additional context from KB
+    image_descriptions (list): From VLM
+    has_text_field (bool): For choice + text response variant
+  Returns: Varies by question_type (see LLM Question Types below)""",
+
+    "video_poll": """\
+video_poll:
+  Purpose: Poll for video completion
+  Params: NONE. Handler ignores ALL params. Sleeps 30 seconds (HARDCODED).
+  Returns: {success: true, continue_loop: true} ALWAYS
+  CRITICAL: Must be the ONLY action in its tree. sequence runs ALL children
+  before checking continue_loop.""",
+
+    "wait": """\
+wait:
+  Purpose: Sleep for specified duration
+  Params:
+    seconds (float): Duration. NOT "duration" — code reads params.get("seconds", 1.0)""",
+
+    "press_key": """\
+press_key:
+  Purpose: Send keyboard event via Quartz CGEvent
+  Params:
+    key (str): "return", "enter", "tab", "escape", "space", "backspace",
+               "delete", "up", "down", "left", "right", "home", "end",
+               "pageup", "pagedown"
+    modifiers (list): ["shift", "cmd", "alt", "ctrl"]""",
+
+    "scroll": """\
+scroll:
+  Purpose: Scroll via Quartz scroll wheel event
+  Params:
+    direction (str): "up", "down", "left", "right"
+    amount (int): Lines to scroll (default: 3)""",
+
+    "wait_for_element": """\
+wait_for_element:
+  Purpose: Poll until element appears in tree
+  Params:
+    target (str): Element text to search for
+    role (str): AX role filter
+    max_wait (float): Maximum seconds to wait (default: 60)
+  Checks every 2 seconds""",
+
+    "discover_menu": """\
+discover_menu:
+  Purpose: Capture tree, extract all menu items (scopes to AXWebArea)
+  Params:
+    role (str): Default "AXMenuItem"
+  Filters out system menus (Apple, Window, Help)
+  NOTE: Only works for native menus. FAILS on ARIA comboboxes.""",
+
+    "lookup_match": """\
+lookup_match:
+  Purpose: Dictionary lookup with partial matching fallback
+  Params:
+    matches (dict): Key-value mapping
+    key (str): Key to look up
+  Bidirectional case-insensitive substring check""",
+
+    "store_qa": """\
+store_qa:
+  Purpose: Store Q&A pair in SQLite
+  Params (ALL EXPLICIT — not automatic):
+    question (str, required)
+    answer (str, required)
+    question_type (str, required)
+  platform and course_id come from ExecutionContext (automatic)""",
+
+    "solve_assessment_page": """\
+solve_assessment_page:
+  Purpose: Full multi-question assessment orchestration
+  Params: None (orchestrates internally)
+  Captures tree, finds question containers, iterates each, calls Spark LLM""",
+
+    "press_escape": """\
+press_escape:
+  Purpose: Send Escape key
+  Params: None""",
+
+    "for_each": """\
+for_each:
+  CRITICAL: Parameters go at TOP LEVEL of the node, NOT inside params:
+  {
+    "type": "action",
+    "action": "for_each",
+    "items": "$all_lessons",
+    "variable": "lesson",
+    "do": {
+      "type": "action",
+      "action": "find_and_click",
+      "params": {"target": "$lesson.description"}
+    }
+  }
+  WRONG: putting items/variable/do inside params: (silently reads None)
+  Sets $_current and $_index during iteration.
+  store_to_current: writes into $_current dict.""",
+
+    "conditional": """\
+conditional:
+  CRITICAL: Parameters go at TOP LEVEL:
+  {
+    "type": "action",
+    "action": "conditional",
+    "condition": "$has_text",
+    "then": {...},
+    "else": {...}
+  }
+  String "false" is normalized to boolean False before truthiness check.""",
+}
+
+BLACKBOARD_DOCS = """\
+BLACKBOARD VARIABLE SUBSTITUTION:
+- $var → blackboard["var"]
+- $var.field → blackboard["var"]["field"]
+- $var.0 → blackboard["var"][0] (numeric = list index)
+- $var.field.nested → deep access (any combination)
+- Non-$ strings → returned as-is
+- Lists: ["text", "$var"] → each element resolved independently
+- store: "key" on any action node saves return dict to blackboard["key"]
+- If a store: action fails (returns None), the key is NEVER written.
+  Later $key.field resolves to None. PLAN FOR THIS."""
+
+
+def get_handler_docs(handler_names: list) -> str:
+    """
+    Return handler documentation for only the specified handlers.
+    Always includes blackboard docs and composable node types (for_each, conditional).
+
+    If handler_names is empty, returns the FULL original SECTION_5_HANDLERS
+    for backward compatibility.
+    """
+    if not handler_names:
+        return SECTION_5_HANDLERS_ORIGINAL
+
+    names = set(handler_names)
+    names.add("for_each")
+    names.add("conditional")
+
+    docs = []
+    for name in sorted(names):
+        if name in HANDLER_DOCS:
+            docs.append(HANDLER_DOCS[name])
+        else:
+            logger.warning(f"get_handler_docs: unknown handler '{name}'")
+
+    header = f"=== HANDLER REFERENCE ({len(docs)} handlers for this screen) ===\n\n"
+    header += "REGISTERED HANDLERS — Use as action: value in BT nodes.\n"
+    header += "Any other action name will SILENTLY FAIL (logs error, returns FAILURE).\n\n"
+
+    return header + "\n\n".join(docs) + "\n\n" + BLACKBOARD_DOCS
+
 
 SECTION_6_QUESTION_TYPES = """\
 === LLM QUESTION TYPES (via send_to_llm → /api/v1/generate) ===
@@ -1079,6 +1299,94 @@ navigate:
 UNKNOWN question_type:
   Silently falls through to solve (text) behavior. A typo like "solve_chice"
   will generate a text answer instead of failing. ALWAYS double-check spelling."""
+
+# Keep original for byte-for-byte fallback
+SECTION_6_QUESTION_TYPES_ORIGINAL = SECTION_6_QUESTION_TYPES
+
+# Individual question type documentation blocks for JIT assembly
+QUESTION_TYPE_DOCS = {
+    "solve_choice": """\
+solve_choice:
+  Input: question (str), options (list of str)
+  Output: {success: true, answer: "exact option text from the list"}
+  How: Maps options to A/B/C, asks LLM for letter, maps back via match_to_option()
+  match_to_option() 5-stage fallback: bare letter → letter+punct → exact → substring → word overlap
+  Timeout: 60s, Max tokens: 128
+
+solve_choice (with has_text_field=True):
+  Input: question (str), options (list), has_text_field=True
+  Output: {answer: "option text", text_response: "reflection text"}
+  How: Uses SOLVE_CHOICE_WITH_TEXT_PROMPT. Parsed by parse_choice_with_text()
+  Timeout: 60s, Max tokens: 256""",
+
+    "solve_checkbox": """\
+solve_checkbox:
+  Input: question (str), options (list of str)
+  Output: {success: true, selected: ["opt1", "opt3"]}
+  How: Asks for comma-separated letters. Has own inline letter-to-option mapping.
+  WARNING: 30-char truncation on fallback parsing (known bug — use full text)
+  Timeout: 60s, Max tokens: 128""",
+
+    "solve": """\
+solve:
+  Input: question (str)
+  Output: {success: true, answer: "text answer"}
+  How: Direct text generation for fill-in-blank, short answer
+  Timeout: 60s, Max tokens: 128""",
+
+    "solve_matching": """\
+solve_matching:
+  Input: items (list of dicts with label, popup_desc, options)
+  Output: {matches: {popup_desc: "option", label: "option"}} (dual-keyed)
+  How: Numbered matching format. Parsed by parse_matching_response()
+  Timeout: 60s, Max tokens: 128""",
+
+    "solve_assessment": """\
+solve_assessment:
+  Input: items (list of dicts with type, question, options)
+  Output: {answers: [{type, selected}]}
+  How: Multi-question JSON format
+  WARNING: Currently hardcoded to "ChatGPT for educators" domain context
+  Timeout: 180s, Max tokens: 2048""",
+
+    "solve_complex": """\
+solve_complex:
+  Input: question (str) + screenshot (multimodal)
+  Output: {success: true, answer: "answer text"}
+  How: Sends screenshot to Gemini 2.5 Pro for visual question understanding
+  Use when question has images/diagrams not captured in tree text""",
+
+    "navigate": """\
+navigate:
+  Input: items (list of dicts with label, description/popup_desc from find_all)
+  Output: {success: true, answer: "description text of first incomplete item"}
+  How: NAVIGATE_PROMPT is platform-agnostic. Looks for generic completion indicators:
+    "Completed", "Mastery points", checkmarks, percentage scores,
+    "Not started", empty labels, "Try again", "Practice"
+  Works across platforms without modification.
+  Accepts both popup_desc and description field names (backward compat).
+  Timeout: 60s, Max tokens: 128""",
+}
+
+
+def get_question_type_docs(type_names: list) -> str:
+    """
+    Return question type docs for only the specified types.
+    Empty list = full original docs (fallback).
+    """
+    if not type_names:
+        return SECTION_6_QUESTION_TYPES_ORIGINAL
+
+    docs = [QUESTION_TYPE_DOCS[t] for t in type_names if t in QUESTION_TYPE_DOCS]
+
+    header = f"=== LLM QUESTION TYPES ({len(docs)} types for this screen) ===\n\n"
+    header += "All types route through Gemini 2.5 Pro.\n\n"
+
+    unknown_note = ("\n\nUNKNOWN question_type:\n"
+                    "  Silently falls through to solve (text) behavior. "
+                    "ALWAYS double-check spelling.")
+
+    return header + "\n\n".join(docs) + unknown_note
 
 
 SECTION_7_STRATEGIES = """\
@@ -1255,26 +1563,53 @@ def compile_prompt(
         if tag in SCREEN_PATTERNS:
             sections.append(SCREEN_PATTERNS[tag])
 
-    # Section 4: Platform Knowledge (relevant RESEARCH.md sections)
-    research_text = load_research_sections(platform, tags)
-    if research_text:
-        sections.append(
-            f"=== PLATFORM KNOWLEDGE ({platform}) ===\n\n{research_text}"
-        )
+    # Section 4: Platform Knowledge
+    # Use knowledge-driven assembly when available, else RESEARCH.md fallback
+    from spark.tasks.knowledge_loader import (
+        load_knowledge, load_learned,
+        get_handlers_for_screen, get_quirks_for_screen,
+        get_question_types_for_screen,
+    )
+    knowledge = load_knowledge(platform)
+    screen_type = context.get("screen_type", "UNKNOWN")
+
+    if knowledge and knowledge.get("screen_types"):
+        # JIT: Structured knowledge context
+        from spark.tasks.classify_screen import _build_knowledge_context
+        quirks = get_quirks_for_screen(knowledge, screen_type)
+        learned = load_learned(platform, screen_type)
+        knowledge_ctx = _build_knowledge_context(knowledge, screen_type, quirks, learned)
+        if knowledge_ctx:
+            sections.append(knowledge_ctx)
+
+        # Also include relevant RESEARCH.md sections (bridge period)
+        research_text = load_research_sections(platform, tags)
+        if research_text:
+            sections.append(f"=== PLATFORM KNOWLEDGE ({platform}) ===\n\n{research_text}")
+
+        # JIT: Selective handler/question type docs
+        handler_names = get_handlers_for_screen(knowledge, screen_type, tags)
+        question_types = get_question_types_for_screen(knowledge, screen_type, tags)
+        sections.append(get_handler_docs(handler_names))
+        sections.append(get_question_type_docs(question_types))
     else:
-        sections.append(
-            f"=== PLATFORM KNOWLEDGE ===\n\n"
-            f"No RESEARCH.md exists for {platform}. Use the screenshot and "
-            f"tree to determine screen type. After resolving this consultation, "
-            f"a RESEARCH.md should be created via Perplexity Deep Research "
-            f"before mapping additional screens."
-        )
+        # Fallback: exact original behavior
+        research_text = load_research_sections(platform, tags)
+        if research_text:
+            sections.append(
+                f"=== PLATFORM KNOWLEDGE ({platform}) ===\n\n{research_text}"
+            )
+        else:
+            sections.append(
+                f"=== PLATFORM KNOWLEDGE ===\n\n"
+                f"No RESEARCH.md exists for {platform}. Use the screenshot and "
+                f"tree to determine screen type. After resolving this consultation, "
+                f"a RESEARCH.md should be created via Perplexity Deep Research "
+                f"before mapping additional screens."
+            )
 
-    # Section 5: Handler Reference (always)
-    sections.append(SECTION_5_HANDLERS)
-
-    # Section 6: LLM Question Types (always)
-    sections.append(SECTION_6_QUESTION_TYPES)
+        sections.append(SECTION_5_HANDLERS_ORIGINAL)
+        sections.append(SECTION_6_QUESTION_TYPES_ORIGINAL)
 
     # Section 7: Click Strategies & Timing (always)
     sections.append(SECTION_7_STRATEGIES)
