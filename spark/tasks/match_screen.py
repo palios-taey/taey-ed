@@ -2,110 +2,31 @@
 Match accessibility tree against screen definitions.
 
 V17: Set-difference discriminative matching. No Weaviate.
-V19: Structural pre-classification before Jaccard matching.
+V20: Removed structural pre-classification. Gemini classifies unmatched screens.
 
 Extract (role, text) signatures -> subtract common chrome -> match on
 discriminative markers. JSON file storage per platform.
 
-V19 change: Before running Jaccard, use structural_classify() to determine
-the master category from structural features (radio buttons = EXERCISE,
-video player = VIDEO, etc.). Then constrain Jaccard matching to only compare
-against signatures in the same category. This eliminates false positives
-between categories (e.g., EXERCISE matching as TRANSITION at 0.91+ Jaccard).
+V20 change: Removed structural_classify() and category_filter entirely.
+structural_classify() used hardcoded count thresholds in analyze_tree()
+(radio >= 3, checkbox >= 3, links >= 15) that misclassified screens like
+true/false questions. Per REQUIREMENTS.md: "Gemini sees the screen.
+Gemini decides. The code just routes." Jaccard matching now runs against
+ALL known signatures without filtering.
 """
 
 import logging
-from collections import Counter
 
 logger = logging.getLogger(__name__)
-
-
-def extract_tree_index(tree: dict) -> tuple[set, list, Counter]:
-    """
-    Walk tree ONCE, extract all text values and role counts.
-
-    Returns:
-        exact_texts: set of all exact text values (for O(1) lookup)
-        all_texts: list of all text values (for substring search)
-        role_counts: Counter of role -> count
-    """
-    exact_texts = set()
-    all_texts = []
-    role_counts = Counter()
-
-    stack = [tree]
-    while stack:
-        node = stack.pop()
-
-        # Collect text from all text fields
-        for field in ("name", "value", "title", "description"):
-            val = node.get(field)
-            if val is not None:
-                s = str(val)
-                exact_texts.add(s)
-                all_texts.append(s)
-
-        # Count roles
-        role = node.get("role")
-        if role:
-            role_counts[role] += 1
-
-        # Push children (iterate in reverse to maintain order, though order doesn't matter here)
-        children = node.get("children")
-        if children:
-            stack.extend(children)
-
-    return exact_texts, all_texts, role_counts
-
-
-def check_marker_indexed(marker: dict, exact_texts: set, all_texts: list, role_counts: Counter) -> bool:
-    """
-    Check if a single marker matches using pre-indexed tree data.
-
-    Marker types:
-    - {"text": "exact string"} - O(1) set lookup
-    - {"text": "partial", "match": "contains"} - O(T) substring scan
-    - {"text": "X", "present": false} - NEGATIVE marker: true only if X is NOT found
-    - {"role": "AXButton", "count_min": 3} - O(1) counter lookup
-    """
-    # Guard: if marker is a plain string (legacy format), convert to dict
-    if isinstance(marker, str):
-        marker = {"text": marker}
-
-    # Determine if this is a negative marker (present: false)
-    want_present = marker.get("present", True)
-
-    if "text" in marker:
-        text = marker["text"]
-        mode = marker.get("match", "exact")
-        if mode == "contains":
-            found = any(text in s for s in all_texts)
-        else:
-            found = text in exact_texts
-        return found if want_present else not found
-
-    elif "role" in marker:
-        role = marker["role"]
-        count = role_counts.get(role, 0)
-        if "count_min" in marker:
-            found = count >= marker["count_min"]
-        else:
-            found = count > 0
-        return found if want_present else not found
-
-    # Unknown marker type - skip (don't fail)
-    return True
 
 
 def match_screen(tree: dict, config: dict) -> dict:
     """
     Match tree against known screen signatures using set-difference.
 
-    V19: Uses structural pre-classification to constrain matching.
-    Before running Jaccard similarity, we determine the master category
-    from structural features (HAS_RADIO -> EXERCISE, HAS_VIDEO -> VIDEO, etc.)
-    and only match against signatures in that category. This prevents
-    EXERCISE<->TRANSITION false positives entirely.
+    V20: No structural pre-classification. Jaccard matching runs against
+    ALL known signatures. Classification of unmatched screens is always
+    done by Gemini via classify_screen().
 
     Args:
         tree: Accessibility tree dict from Mac
@@ -120,18 +41,12 @@ def match_screen(tree: dict, config: dict) -> dict:
         logger.error("match_screen: config missing 'platform' key -- cannot route")
         return {"matched": False, "needs_consultation": True, "error": "missing_platform"}
 
-    # V19: Structural pre-classification
-    from spark.tasks.screen_signatures import match_signature, structural_classify
-    category = structural_classify(tree)
-    logger.info(f"V19 structural_classify: {category} (platform={platform})")
-
-    # Pass category filter to constrain Jaccard matching
-    result = match_signature(platform, tree, category_filter=category)
+    from spark.tasks.screen_signatures import match_signature
+    result = match_signature(platform, tree)
 
     if result.get("matched"):
         logger.info(f"Signature match: {result['screen_type']} "
-                     f"(score={result['match_score']:.2f}, hash={result['sig_hash']}, "
-                     f"category_filter={category})")
+                     f"(score={result['match_score']:.2f}, hash={result['sig_hash']})")
         return {
             "matched": True,
             "screen": result["screen_type"],
@@ -141,12 +56,10 @@ def match_screen(tree: dict, config: dict) -> dict:
             "match_score": result["match_score"],
             "validated": result.get("validated", False),
             "tree": result.get("tree"),
-            "structural_category": category,
         }
 
-    logger.info(f"No signature match for {platform} (structural_category={category})")
+    logger.info(f"No signature match for {platform}")
     return {
         "matched": False,
         "needs_consultation": True,
-        "structural_category": category,
     }

@@ -134,7 +134,7 @@ def _build_screen_directive(request, platform: str, tree: dict, screen_type: str
     2. No screenshot? → deterministic template as last resort
     3. Both fail? → user_input_needed
     """
-    from spark.tasks.classify_screen import build_bt, get_click_target, build_bt_from_tree
+    from spark.tasks.classify_screen import get_click_target, build_bt_from_tree
 
     # PRIMARY PATH: Gemini 2.5 Pro builds a BT specific to THIS screen
     if request.screenshot_b64:
@@ -201,8 +201,10 @@ def _validate_last_action(platform: str, config: dict, lr, current_tree: dict) -
     # Wrong answer detection
     wrong_answer = False
     if new_screen and new_screen == lr.screen:
-        screen_upper = (new_screen or "").upper()
-        if any(kw in screen_upper for kw in ["QUIZ", "ASSESSMENT", "EXERCISE"]):
+        # V20: Use get_master_category() instead of hardcoded keyword list
+        from spark.tasks.screen_type_util import get_master_category
+        screen_master = get_master_category(new_screen)
+        if screen_master == "EXERCISE":
             after_skeleton_hash = match_result.get("skeleton_hash", "")
             directive_hash = lr.directive_skeleton_hash or ""
             if after_skeleton_hash and directive_hash and after_skeleton_hash != directive_hash:
@@ -460,6 +462,8 @@ def next_action(request: NextActionRequest):
             # (timestamps, progress bar). Check if video is actually done
             # by looking for video signals in the current tree.
             is_video = lr.screen and "VIDEO" in (lr.screen or "").upper()
+            # TODO(V20): Consider using get_master_category() here for robustness.
+            # Currently works because all video screen types contain "VIDEO".
             if is_video:
                 from spark.tasks.prompt_codex import analyze_tree as _analyze
                 current_tags = _analyze(tree)
@@ -597,16 +601,15 @@ def next_action(request: NextActionRequest):
             build_question(_reason),
         ])
 
-    # ── Step 4: Match screen (set-difference signatures + V19 structural filter) ──
-    logger.info("  Step 4: Signature matching (V19: with structural pre-classification)...")
+    # ── Step 4: Match screen (set-difference signatures) ──
+    logger.info("  Step 4: Signature matching...")
     match_result = match_screen(tree, config)
     logger.info(
         f"    match_result: matched={match_result.get('matched')} "
         f"screen={match_result.get('screen', 'none')} "
         f"screen_type={match_result.get('screen_type', 'none')} "
         f"has_tree={'yes' if match_result.get('tree') else 'no'} "
-        f"score={match_result.get('match_score', 'n/a')} "
-        f"structural_category={match_result.get('structural_category', 'n/a')}"
+        f"score={match_result.get('match_score', 'n/a')}"
     )
 
     # Step 4: Signature matched — check for stored BT first, then templates
@@ -649,16 +652,12 @@ def next_action(request: NextActionRequest):
             }
         return _build_screen_directive(request, platform, tree, known_type, sig_hash)
 
-    # ── Step 5: No match — classify and store ──
-    # V19: Check if structural pre-classification already gave us a category.
-    # If so, skip Gemini classification (saves an API call) and go straight
-    # to BT building with the structural category as the screen type.
-    structural_category = match_result.get("structural_category", "UNCLASSIFIED")
-    logger.info(
-        f"  Step 5: No signature match — structural_category={structural_category}"
-    )
+    # ── Step 5: No match — classify via Gemini and store ──
+    # V20: Always use Gemini for classification. No structural shortcutting.
+    # Per REQUIREMENTS.md: "Gemini sees the screen. Gemini decides."
+    logger.info("  Step 5: No signature match — classifying via Gemini")
 
-    # Step 5A: Need screenshot for BT building
+    # Step 5A: Need screenshot for classification + BT building
     if not request.screenshot_b64:
         logger.info("  Step 5A: Requesting screenshot for classification/BT building")
         return {
@@ -667,34 +666,19 @@ def next_action(request: NextActionRequest):
             "reason": "classification_needed",
         }
 
-    # V19: If structural pre-classification is definitive, use it directly.
-    # This avoids a Gemini classify_screen() call for screens with clear
-    # structural signals (radio buttons = EXERCISE, video player = VIDEO, etc.).
-    if structural_category != "UNCLASSIFIED":
-        screen_type = structural_category
-        logger.info(
-            f"  Step 5A (V19): Using structural category '{screen_type}' "
-            f"— skipping Gemini classification (saves API call)"
-        )
-        classification = {
-            "screen_type": screen_type,
-            "confidence_note": f"Structural pre-classification: {screen_type}",
-            "platform_variant": "",
-        }
-    else:
-        # UNCLASSIFIED — no definitive structural signals. Need Gemini.
-        from spark.tasks.classify_screen import classify_screen
-        classification = classify_screen(
-            tree=tree,
-            screenshot_b64=request.screenshot_b64,
-            platform=platform,
-        )
-        screen_type = classification.get("screen_type", "UNKNOWN")
-        logger.info(
-            f"  Step 5A: Gemini classification result: type={screen_type} "
-            f"variant={classification.get('platform_variant', '')} "
-            f"note={classification.get('confidence_note', '')}"
-        )
+    # V20: Always classify via Gemini — no structural shortcuts
+    from spark.tasks.classify_screen import classify_screen
+    classification = classify_screen(
+        tree=tree,
+        screenshot_b64=request.screenshot_b64,
+        platform=platform,
+    )
+    screen_type = classification.get("screen_type", "UNKNOWN")
+    logger.info(
+        f"  Step 5A: Gemini classification result: type={screen_type} "
+        f"variant={classification.get('platform_variant', '')} "
+        f"note={classification.get('confidence_note', '')}"
+    )
 
     # ── Step 5B: Store classification as signature ──
     # Store immediately so this screen is recognized on next encounter.

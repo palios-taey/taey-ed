@@ -37,13 +37,9 @@ def test_screen_memory_validated_only_param():
 
 
 def test_match_screen_imports():
-    """match_screen.py: imports cleanly with fixed paths."""
-    from spark.tasks.match_screen import (
-        match_screen, extract_tree_index, check_marker_indexed,
-    )
+    """match_screen.py: imports cleanly (V20: simplified API)."""
+    from spark.tasks.match_screen import match_screen
     assert callable(match_screen)
-    assert callable(extract_tree_index)
-    assert callable(check_marker_indexed)
     print("  match_screen.py: PASS (imports clean)")
 
 
@@ -62,8 +58,9 @@ def test_match_screen_platform_guard():
 
 
 def test_match_screen_marker_matching():
-    """YAML marker matching with indexed tree."""
-    from spark.tasks.match_screen import extract_tree_index, check_marker_indexed
+    """V20: match_screen uses Jaccard signature matching, not YAML markers.
+    Tests basic match_screen call returns expected format."""
+    from spark.tasks.match_screen import match_screen
 
     tree = {
         "role": "AXWebArea", "name": "", "children": [
@@ -73,22 +70,11 @@ def test_match_screen_marker_matching():
             {"role": "AXRadioButton", "name": "Option C", "children": []},
         ]
     }
-    exact, all_texts, roles = extract_tree_index(tree)
-
-    # Exact text match
-    assert check_marker_indexed({"text": "Check"}, exact, all_texts, roles)
-    assert not check_marker_indexed({"text": "Submit"}, exact, all_texts, roles)
-
-    # Contains match
-    assert check_marker_indexed({"text": "Option", "match": "contains"}, exact, all_texts, roles)
-
-    # Role count
-    assert check_marker_indexed({"role": "AXRadioButton", "count_min": 3}, exact, all_texts, roles)
-    assert not check_marker_indexed({"role": "AXRadioButton", "count_min": 5}, exact, all_texts, roles)
-
-    # Negative marker
-    assert check_marker_indexed({"text": "NotHere", "present": False}, exact, all_texts, roles)
-    print("  match_screen.py: PASS (marker matching)")
+    # No stored signatures, so should return no match
+    result = match_screen(tree, {"platform": "test_platform_nonexistent"})
+    assert result["matched"] is False
+    assert result.get("needs_consultation") is True
+    print("  match_screen.py: PASS (no match returns needs_consultation)")
 
 
 def test_screen_router_imports():

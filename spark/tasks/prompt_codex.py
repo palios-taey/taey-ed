@@ -90,77 +90,56 @@ def _has_video_signals(node: dict) -> bool:
     return False
 
 
-def _has_post_answer_signals(node: dict) -> bool:
-    """Check for post-answer keywords that indicate transition, not assessment."""
-    keywords = {"next question", "show summary", "keep going"}
-    if not isinstance(node, dict):
-        return False
-    for field in ("name", "title", "value"):
-        text = node.get(field, "")
-        if text and isinstance(text, str):
-            lower = text.lower()
-            if any(kw in lower for kw in keywords):
-                return True
-    for child in node.get("children", []):
-        if _has_post_answer_signals(child):
-            return True
-    return False
+# _has_post_answer_signals REMOVED (V20): This function hardcoded keyword
+# detection ("next question", "show summary", "keep going") that would
+# short-circuit analyze_tree() and force TRANSITION classification regardless
+# of what else was on screen. Gemini handles this correctly via classification.
 
 
 def analyze_tree(tree: dict) -> list:
     """
-    Analyze accessibility tree and return detected signal tags.
+    Analyze accessibility tree and return detected PRESENCE tags.
+
+    V20: No count thresholds. Detects WHAT element types are present,
+    not HOW MANY. A true/false question with 2 radio buttons is just as
+    much an exercise as one with 5 radio buttons. Gemini classifies;
+    this function just reports what's on screen.
 
     Returns list of tags like ["HAS_RADIO", "HAS_TEXT_INPUT"].
     Multiple tags can be present for a single tree.
 
     Tags:
-      HAS_RADIO      — 3+ AXRadioButton elements
-      HAS_CHECKBOX   — 3+ AXCheckBox elements
-      HAS_TEXT_INPUT  — AXTextArea or AXTextField present
-      HAS_MANY_LINKS — 15+ AXLink elements
-      HAS_VIDEO      — Video player detected
-      HAS_COMBOBOX   — AXComboBox or AXPopUpButton elements
-      TRANSITION     — Button/link present, no assessment signals
+      HAS_RADIO      — Any AXRadioButton elements present
+      HAS_CHECKBOX   — Any AXCheckBox elements present
+      HAS_TEXT_INPUT  — Any AXTextArea or AXTextField present
+      HAS_LINKS      — Any AXLink elements present
+      HAS_VIDEO      — Video player detected (roles or keywords)
+      HAS_COMBOBOX   — Any AXComboBox or AXPopUpButton present
+      HAS_BUTTONS    — Any AXButton elements present
     """
     web_area = _find_web_area(tree)
     counts = _count_roles(web_area)
     tags = []
 
-    # Video detection (keywords + role)
+    # Video detection (keywords + role) — still checked first because
+    # video players are unambiguous structural signals
     video_roles = counts.get("AXVideo", 0) + counts.get("AXMediaTimeline", 0)
     if video_roles > 0 or _has_video_signals(web_area):
         tags.append("HAS_VIDEO")
-        return tags  # Video screens are single-purpose
 
-    # Post-answer override: skip assessment rules
-    if _has_post_answer_signals(web_area):
-        tags.append("TRANSITION")
-        return tags
-
-    # Assessment signals (can combine)
-    radio_count = counts.get("AXRadioButton", 0)
-    checkbox_count = counts.get("AXCheckBox", 0)
-    textarea_count = counts.get("AXTextArea", 0) + counts.get("AXTextField", 0)
-    combo_count = counts.get("AXComboBox", 0) + counts.get("AXPopUpButton", 0)
-    link_count = counts.get("AXLink", 0)
-    button_count = counts.get("AXButton", 0)
-
-    if combo_count >= 2:
-        tags.append("HAS_COMBOBOX")
-    if radio_count >= 3:
+    # Presence checks — ANY count > 0, no thresholds
+    if counts.get("AXRadioButton", 0) > 0:
         tags.append("HAS_RADIO")
-    if checkbox_count >= 3:
+    if counts.get("AXCheckBox", 0) > 0:
         tags.append("HAS_CHECKBOX")
-    if textarea_count >= 1:
+    if counts.get("AXTextArea", 0) + counts.get("AXTextField", 0) > 0:
         tags.append("HAS_TEXT_INPUT")
-    if link_count >= 15:
-        tags.append("HAS_MANY_LINKS")
-
-    # If no specific signals, check for generic transition
-    if not tags:
-        if button_count >= 1 or link_count >= 1:
-            tags.append("TRANSITION")
+    if counts.get("AXComboBox", 0) + counts.get("AXPopUpButton", 0) > 0:
+        tags.append("HAS_COMBOBOX")
+    if counts.get("AXLink", 0) > 0:
+        tags.append("HAS_LINKS")
+    if counts.get("AXButton", 0) > 0:
+        tags.append("HAS_BUTTONS")
 
     return tags
 
@@ -208,14 +187,16 @@ def parse_research_sections(text: str) -> dict:
 
 
 # Which RESEARCH.md sections to include for each detected tag
+# V20: HAS_MANY_LINKS renamed to HAS_LINKS, TRANSITION tag removed
+# (Gemini classifies transitions, not code)
 ARCHETYPE_TO_RESEARCH_SECTIONS = {
     "HAS_RADIO":      [3, 5, 6, 7, 8],
     "HAS_CHECKBOX":   [3, 5, 6, 7, 8],
     "HAS_TEXT_INPUT":  [3, 5, 7, 8],
-    "HAS_MANY_LINKS": [2, 3, 4, 6, 7],
+    "HAS_LINKS":      [2, 3, 4, 6, 7],
     "HAS_VIDEO":      [3, 5, 7, 8],
     "HAS_COMBOBOX":   [7, 8, 10, 11, 12],
-    "TRANSITION":     [2, 4, 5, 7],
+    "HAS_BUTTONS":    [2, 4, 5, 7],
 }
 
 
@@ -847,14 +828,16 @@ For "Start quiz" → EXERCISE_RADIO or EXERCISE_CHECKBOX."""
 
 
 # Map tag names to pattern strings
+# V20: HAS_MANY_LINKS -> HAS_LINKS, TRANSITION removed (no longer a tag)
 SCREEN_PATTERNS = {
     "HAS_RADIO":      PATTERN_HAS_RADIO,
     "HAS_CHECKBOX":   PATTERN_HAS_CHECKBOX,
     "HAS_TEXT_INPUT":  PATTERN_HAS_TEXT_INPUT,
-    "HAS_MANY_LINKS": PATTERN_HAS_MANY_LINKS,
+    "HAS_LINKS":      PATTERN_HAS_MANY_LINKS,
     "HAS_VIDEO":      PATTERN_HAS_VIDEO,
     "HAS_COMBOBOX":   PATTERN_HAS_COMBOBOX,
-    "TRANSITION":     PATTERN_TRANSITION,
+    # TRANSITION pattern still available but not tag-triggered
+    # Gemini can reference PATTERN_TRANSITION via classify_screen prompt
 }
 
 
@@ -1183,7 +1166,7 @@ RULES FOR expected_next:
 - Empty list is allowed for terminal screens
 
 SIGNATURE STORAGE:
-Screen signatures are stored in JSON files at /var/spark/taey-ed/signatures/{platform}.json.
+Screen signatures are stored in JSON files at /var/spark/taey-ed/signatures/{{platform}}.json.
 Deterministic types (VIDEO, ARTICLE) store the BT with the signature for instant reuse.
 Dynamic types (EXERCISE, NAVIGATION, TRANSITION) store the signature for recognition
 but always rebuild the BT via Gemini since content changes between encounters.

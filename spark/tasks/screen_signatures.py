@@ -11,15 +11,13 @@ Common elements = intersection of ALL known signatures (platform chrome).
 Discriminative markers = signature - common.
 Matching = Jaccard similarity on discriminative markers.
 
-V19 fix (2026-02-27): Replaced V18 structural penalty with category-constrained
-matching. Instead of penalizing structural mismatches after Jaccard scoring, we now
-use structural_classify() to determine the master category FIRST, then only match
-against signatures in the same category. This eliminates EXERCISE<->TRANSITION false
-positives entirely rather than trying to adjust scores after the fact.
-
-The structural pre-classifier uses analyze_tree() from prompt_codex.py which already
-extracts HAS_RADIO, HAS_CHECKBOX, HAS_VIDEO, etc. These signals deterministically
-map to master categories (VIDEO, EXERCISE, NAVIGATION, TRANSITION).
+V20 fix (2026-02-27): Removed structural_classify() and category_filter.
+structural_classify() used analyze_tree() which had hardcoded count thresholds
+(radio >= 3, checkbox >= 3, links >= 15) that caused misclassification of
+true/false questions and other edge cases. Per REQUIREMENTS.md: "Gemini sees
+the screen. Gemini decides. The code just routes." Jaccard matching now runs
+against ALL signatures without category filtering. Classification of unmatched
+screens is always done by Gemini.
 """
 
 import hashlib
@@ -44,8 +42,10 @@ STRUCTURAL_PRESENCE_ROLES = {
     "AXTextArea", "AXForm", "AXSlider",
 }
 
-# V19: Structural penalty removed. Category-constrained matching makes it unnecessary.
-# See structural_classify() for the replacement approach.
+# V20: structural_classify() REMOVED. It used analyze_tree() which had
+# hardcoded count thresholds that misclassified screens (e.g., true/false
+# questions with 2 radio buttons). All classification of unmatched screens
+# is now done by Gemini. The code just routes.
 
 
 def extract_signature(tree: dict) -> frozenset:
@@ -68,49 +68,6 @@ def extract_signature(tree: dict) -> frozenset:
 
     return frozenset(pairs)
 
-
-def structural_classify(tree: dict) -> str:
-    """Deterministic pre-classification from structural features.
-
-    Uses analyze_tree() from prompt_codex.py which already extracts structural
-    signals (HAS_RADIO, HAS_CHECKBOX, HAS_VIDEO, etc.) and maps them to master
-    categories.
-
-    Returns:
-        Master category string: VIDEO, EXERCISE, NAVIGATION, TRANSITION,
-        or UNCLASSIFIED if no structural signal is definitive.
-
-    The key insight: structural elements (radio buttons, checkboxes, video players)
-    are the TRUE differentiators between screen types. Jaccard similarity on
-    button labels cannot distinguish screens that share 95%+ of their UI chrome.
-    But the PRESENCE of radio buttons is a hard signal for EXERCISE, and the
-    PRESENCE of a video player is a hard signal for VIDEO.
-
-    UNCLASSIFIED screens fall through to Gemini classification -- this is correct
-    behavior. ARTICLE screens often lack distinctive structural elements and
-    need Gemini's visual analysis to identify.
-    """
-    from spark.tasks.prompt_codex import analyze_tree
-    tags = analyze_tree(tree)
-
-    # VIDEO is highest priority -- video player is unambiguous
-    if "HAS_VIDEO" in tags:
-        return "VIDEO"
-
-    # Assessment signals -> EXERCISE (radio, checkbox, text input, dropdown)
-    if any(t in tags for t in ["HAS_RADIO", "HAS_CHECKBOX", "HAS_TEXT_INPUT", "HAS_COMBOBOX"]):
-        return "EXERCISE"
-
-    # Many links with no assessment signals -> NAVIGATION
-    if "HAS_MANY_LINKS" in tags:
-        return "NAVIGATION"
-
-    # Post-answer or generic transition signals
-    if "TRANSITION" in tags:
-        return "TRANSITION"
-
-    # No definitive structural signal -- needs Gemini
-    return "UNCLASSIFIED"
 
 
 def _sig_hash(sig: frozenset) -> str:
@@ -182,18 +139,19 @@ def learn_screen(platform: str, tree: dict, screen_type: str,
     return sig_hash
 
 
-def match_signature(platform: str, tree: dict, category_filter: str = None) -> dict:
+def match_signature(platform: str, tree: dict) -> dict:
     """
     Match a screen against known signatures.
+
+    V20: Removed category_filter. Jaccard matching runs against ALL known
+    signatures. The structural elements (radio buttons, checkboxes) are
+    already part of the signature set and contribute to Jaccard scoring,
+    so screens with different structural elements naturally score lower.
+    Classification of unmatched screens is done by Gemini, not code.
 
     Args:
         platform: Platform name (e.g., "coursera")
         tree: Accessibility tree dict
-        category_filter: If provided, only match against signatures whose master
-            category matches this value. Pass "UNCLASSIFIED" or None to match all.
-            This is the V19 fix: structural_classify() determines category first,
-            then Jaccard only runs within that category. Prevents EXERCISE<->TRANSITION
-            false positives entirely.
 
     Returns:
         {"matched": True, "screen_type": ..., "sig_hash": ..., ...} or
@@ -229,23 +187,16 @@ def match_signature(platform: str, tree: dict, category_filter: str = None) -> d
 
     query_markers = query_sig - common
 
-    # V19: Import category helper for filtering
-    from spark.tasks.screen_type_util import get_master_category
+    # V20: Import removed — no category filtering needed
 
     best_score = 0.0
     best_hash = None
     best_screen = None
-    skipped_cross_category = 0
 
     for sig_hash, screen in data["screens"].items():
-        # V19: Category-constrained matching.
-        # If we have a structural pre-classification, only match within that category.
-        # This replaces the V18 structural penalty with a hard filter.
-        if category_filter and category_filter != "UNCLASSIFIED":
-            known_master = get_master_category(screen["screen_type"])
-            if known_master != category_filter:
-                skipped_cross_category += 1
-                continue
+        # V20: No category filtering — match against all signatures.
+        # Structural elements (radio buttons, checkboxes) are in the signature
+        # set, so different screen types naturally have different markers.
 
         known_sig = frozenset(tuple(p) for p in screen["signature"])
         known_markers = known_sig - common
@@ -262,12 +213,6 @@ def match_signature(platform: str, tree: dict, category_filter: str = None) -> d
             best_score = score
             best_hash = sig_hash
             best_screen = screen
-
-    if skipped_cross_category > 0:
-        logger.info(
-            f"  V19: Skipped {skipped_cross_category} cross-category signatures "
-            f"(filter={category_filter})"
-        )
 
     if best_score >= 0.7 and best_screen:
         result = {

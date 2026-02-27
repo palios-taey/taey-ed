@@ -3,11 +3,11 @@
 Tests:
   1. analyze_tree returns HAS_RADIO for 3+ radio buttons
   2. analyze_tree returns HAS_VIDEO for video signals
-  3. analyze_tree returns HAS_MANY_LINKS for 15+ links
+  3. analyze_tree returns HAS_LINKS for any links (V20: no count threshold)
   4. analyze_tree returns HAS_CHECKBOX for 3+ checkboxes
   5. analyze_tree returns HAS_TEXT_INPUT for text areas
   6. analyze_tree returns HAS_COMBOBOX for combo boxes
-  7. analyze_tree returns TRANSITION for generic button screen
+  7. V20: TRANSITION tag no longer exists. Buttons produce HAS_BUTTONS.
   8. compile_prompt output is 30K-50K chars
   9. Output includes all 16 handler names
   10. Output includes detected pattern (RADIO for radio tree)
@@ -113,10 +113,10 @@ def test_analyze_video():
 
 
 def test_analyze_many_links():
-    """3. analyze_tree returns HAS_MANY_LINKS for 15+ links."""
+    """3. analyze_tree returns HAS_LINKS for any links (V20: no count threshold)."""
     tags = analyze_tree(MANY_LINKS_TREE)
-    assert "HAS_MANY_LINKS" in tags, f"Expected HAS_MANY_LINKS, got {tags}"
-    print("  3. HAS_MANY_LINKS detected: PASS")
+    assert "HAS_LINKS" in tags, f"Expected HAS_LINKS, got {tags}"
+    print("  3. HAS_LINKS detected: PASS")
 
 
 def test_analyze_checkbox():
@@ -141,10 +141,11 @@ def test_analyze_combobox():
 
 
 def test_analyze_transition():
-    """7. analyze_tree returns TRANSITION for generic button screen."""
+    """7. V20: TRANSITION tag no longer exists. Buttons produce HAS_BUTTONS."""
     tags = analyze_tree(BUTTON_ONLY_TREE)
-    assert "TRANSITION" in tags, f"Expected TRANSITION, got {tags}"
-    print("  7. TRANSITION detected: PASS")
+    assert "HAS_BUTTONS" in tags, f"Expected HAS_BUTTONS, got {tags}"
+    assert "TRANSITION" not in tags, f"TRANSITION tag should not exist in V20. Got: {tags}"
+    print("  7. HAS_BUTTONS detected (no TRANSITION): PASS")
 
 
 def test_compile_prompt_size():
