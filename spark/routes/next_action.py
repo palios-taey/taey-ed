@@ -31,6 +31,7 @@ Post-V8 fixes (2026-02-21):
 
 import json
 import logging
+import time
 import uuid
 from pathlib import Path
 
@@ -82,6 +83,83 @@ def _with_chat(response: dict, platform: str, messages: list[dict]) -> dict:
 
 
 
+def _find_submit_in_bt(bt_def: dict) -> dict:
+    """Walk BT to find submit/check button click."""
+    if not isinstance(bt_def, dict):
+        return {}
+
+    if bt_def.get("type") == "action" and bt_def.get("action") == "find_and_click":
+        params = bt_def.get("params", {})
+        target = params.get("target", "")
+        if target and isinstance(target, str) and not target.startswith("$"):
+            role = params.get("role", "")
+            if role in ("AXButton", "") and any(
+                kw in target.lower() for kw in ["check", "submit", "next", "continue", "done"]
+            ):
+                return {
+                    "text": target,
+                    "role": role or "AXButton",
+                    "strategy": params.get("strategy", "mouse_click"),
+                }
+
+    for child in bt_def.get("children", []):
+        result = _find_submit_in_bt(child)
+        if result:
+            return result
+
+    for key in ("do", "then", "else"):
+        if key in bt_def:
+            result = _find_submit_in_bt(bt_def[key])
+            if result:
+                return result
+
+    return {}
+
+
+def learn_from_bt_result(
+    platform: str,
+    screen_type: str,
+    bt_result: dict,
+    bt_definition: dict,
+    skeleton_hash: str,
+):
+    """
+    Extract observations from BT execution and save to learned data.
+    Called after every execute_tree completion (success or interesting failure).
+    Non-blocking: failures logged but don't stop pipeline.
+    """
+    try:
+        from spark.tasks.knowledge_loader import save_learned_observation
+
+        observation = {
+            "observed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "bt_success": bt_result.get("success", False),
+            "skeleton_hash": skeleton_hash,
+            "variant": bt_result.get("screen_type", screen_type),
+            "details": {},
+        }
+
+        submit = _find_submit_in_bt(bt_definition)
+        if submit:
+            observation["details"]["submit_button"] = submit
+
+        extract = bt_result.get("extract", {})
+        if extract and isinstance(extract, dict):
+            text_configs = extract.get("text", [])
+            containers = [tc.get("parent_contains") for tc in text_configs if tc.get("parent_contains")]
+            if containers:
+                observation["details"]["content_containers"] = containers
+
+        if not bt_result.get("success"):
+            observation["failure_reason"] = bt_result.get("action", "unknown")
+            if "tree_unchanged" in str(observation.get("failure_reason", "")):
+                return
+
+        save_learned_observation(platform, screen_type, observation)
+    except Exception as e:
+        logger.warning(f"Learning failed (non-blocking): {e}")
+
+
 def _store_and_return_bt(result: dict, platform: str, tree: dict, sig_hash: str) -> dict:
     """Store a Gemini-built BT with the signature and return execute_tree directive."""
     variant_type = result.get("screen_type", "UNKNOWN")
@@ -109,6 +187,16 @@ def _store_and_return_bt(result: dict, platform: str, tree: dict, sig_hash: str)
 
     bt_json = json.dumps(result["tree"], indent=2)
     logger.info(f"  Gemini BT for {variant_type}:\n{bt_json}")
+
+    # Pre-record BT definition for learning (actual success/failure recorded in Step 2)
+    learn_from_bt_result(
+        platform=platform,
+        screen_type=variant_type,
+        bt_result={"success": True, "screen_type": variant_type,
+                   "extract": result.get("extract", {})},
+        bt_definition=result.get("tree", {}),
+        skeleton_hash=sig_hash,
+    )
 
     return _with_chat({
         "directive": "execute_tree",
@@ -403,6 +491,17 @@ def next_action(request: NextActionRequest):
                     )
                 except Exception as e:
                     logger.warning(f"Step 2: mark_validated failed (non-fatal): {e}")
+
+            # Learn from successful BT execution
+            # Note: lr doesn't carry the BT definition — pass empty dict.
+            # submit_button detection won't fire but screen_type + success is recorded.
+            learn_from_bt_result(
+                platform=platform,
+                screen_type=lr.screen or "UNKNOWN",
+                bt_result={"success": True, "screen_type": lr.screen},
+                bt_definition={},
+                skeleton_hash=lr.directive_skeleton_hash or "",
+            )
 
         elif vr["wrong_answer"]:
             # ONE TRY ONLY: Wrong answer means the action was wrong. STOP.
