@@ -151,6 +151,18 @@ def classify_screen(
         # Load platform-specific context
         platform_context = _load_platform_context(platform)
 
+        # Inject completion indicators from knowledge.json if available
+        from spark.tasks.knowledge_loader import load_knowledge
+        knowledge = load_knowledge(platform)
+        if knowledge:
+            tree_guide = knowledge.get("accessibility_tree_guide", {})
+            indicators = tree_guide.get("completion_indicators_in_tree", {})
+            if indicators:
+                indicator_text = "\n".join(f"- {k}: {v}" for k, v in indicators.items())
+                platform_context += (
+                    f"\n\n=== COMPLETION INDICATORS IN TREE ===\n{indicator_text}"
+                )
+
         # Full tree as JSON (user requirement: send everything, we don't know what's important)
         tree_json = json.dumps(tree, indent=None, ensure_ascii=False)
 
