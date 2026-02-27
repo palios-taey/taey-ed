@@ -8,16 +8,13 @@ Tests:
   5. analyze_tree returns HAS_TEXT_INPUT for text areas
   6. analyze_tree returns HAS_COMBOBOX for combo boxes
   7. V20: TRANSITION tag no longer exists. Buttons produce HAS_BUTTONS.
-  8. compile_prompt output is 30K-50K chars
+  8. compile_prompt output is 20K-60K chars
   9. Output includes all 16 handler names
   10. Output includes detected pattern (RADIO for radio tree)
-  11. Output includes RESEARCH.md content for khan_academy
+  11. Output includes platform knowledge section
   12. Output includes cardinal rules (NEVER, fallback)
   13. Reconsultation context appears when spark_attempts > 0
-  14. load_research_sections returns content for khan_academy
-  15. load_research_sections returns empty for nonexistent platform
-  16. parse_research_sections parses numbered headers
-  17. Multiple signals detected (radio + text input)
+  14. Multiple signals detected (radio + text input)
 """
 import sys
 import os
@@ -27,8 +24,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from spark.tasks.prompt_codex import (
     analyze_tree,
     compile_prompt,
-    load_research_sections,
-    parse_research_sections,
     SCREEN_PATTERNS,
     SECTION_5_HANDLERS,
 )
@@ -149,7 +144,7 @@ def test_analyze_transition():
 
 
 def test_compile_prompt_size():
-    """8. compile_prompt output is 30K-50K chars."""
+    """8. compile_prompt output is 20K-60K chars."""
     prompt = compile_prompt(
         tree=RADIO_TREE,
         platform="khan_academy",
@@ -158,8 +153,6 @@ def test_compile_prompt_size():
         spark_attempts=0,
     )
     length = len(prompt)
-    # With RESEARCH.md included, should be ~30K-50K
-    # Without RESEARCH.md, minimum is ~25K (all fixed sections)
     assert length > 20000, f"Prompt too short: {length} chars (need >20K)"
     assert length < 60000, f"Prompt too long: {length} chars (need <60K)"
     print(f"  8. Prompt size: {length} chars: PASS")
@@ -197,20 +190,16 @@ def test_compile_prompt_pattern():
     print("  10. Detected pattern included: PASS")
 
 
-def test_compile_prompt_research():
-    """11. Output includes RESEARCH.md content for khan_academy."""
+def test_compile_prompt_knowledge():
+    """11. Output includes platform knowledge section."""
     prompt = compile_prompt(
         tree=RADIO_TREE,
         platform="khan_academy",
         consultation_id="test-123",
         context={},
     )
-    # Khan Academy RESEARCH.md should be included
     assert "PLATFORM KNOWLEDGE" in prompt, "Missing platform knowledge section"
-    # Should include actual KA content (section 7 always included)
-    assert "khan_academy" in prompt.lower() or "Khan" in prompt, \
-        "No Khan Academy content in prompt"
-    print("  11. RESEARCH.md content included: PASS")
+    print("  11. Platform knowledge section included: PASS")
 
 
 def test_compile_prompt_cardinal_rules():
@@ -244,45 +233,12 @@ def test_reconsultation_context():
     print("  13. Reconsultation context: PASS")
 
 
-def test_load_research_khan():
-    """14. load_research_sections returns content for khan_academy."""
-    content = load_research_sections("khan_academy", ["HAS_RADIO"])
-    assert len(content) > 100, f"Research content too short: {len(content)} chars"
-    print(f"  14. KA research: {len(content)} chars: PASS")
-
-
-def test_load_research_nonexistent():
-    """15. load_research_sections returns empty for nonexistent platform."""
-    content = load_research_sections("nonexistent_platform_xyz", ["HAS_RADIO"])
-    assert content == "", f"Expected empty, got {len(content)} chars"
-    print("  15. Nonexistent platform: empty: PASS")
-
-
-def test_parse_research_sections():
-    """16. parse_research_sections parses numbered headers."""
-    text = """## 1. Overview
-Content for section 1.
-
-## 2. Navigation
-Content for section 2.
-
-## 7. Accessibility
-Content for section 7.
-"""
-    sections = parse_research_sections(text)
-    assert 1 in sections, "Missing section 1"
-    assert 2 in sections, "Missing section 2"
-    assert 7 in sections, "Missing section 7"
-    assert "section 1" in sections[1].lower(), f"Section 1 content wrong: {sections[1][:50]}"
-    print("  16. Research section parsing: PASS")
-
-
 def test_multiple_signals():
-    """17. Multiple signals detected (radio + text input)."""
+    """14. Multiple signals detected (radio + text input)."""
     tags = analyze_tree(RADIO_WITH_TEXT_TREE)
     assert "HAS_RADIO" in tags, f"Expected HAS_RADIO in {tags}"
     assert "HAS_TEXT_INPUT" in tags, f"Expected HAS_TEXT_INPUT in {tags}"
-    print(f"  17. Multiple signals {tags}: PASS")
+    print(f"  14. Multiple signals {tags}: PASS")
 
 
 if __name__ == "__main__":
@@ -298,12 +254,9 @@ if __name__ == "__main__":
         test_compile_prompt_size,
         test_compile_prompt_handlers,
         test_compile_prompt_pattern,
-        test_compile_prompt_research,
+        test_compile_prompt_knowledge,
         test_compile_prompt_cardinal_rules,
         test_reconsultation_context,
-        test_load_research_khan,
-        test_load_research_nonexistent,
-        test_parse_research_sections,
         test_multiple_signals,
     ]
     failures = []

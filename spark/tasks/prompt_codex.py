@@ -22,7 +22,6 @@ The prompt has 9 sections:
 
 import logging
 import os
-import re
 from collections import Counter
 from pathlib import Path
 
@@ -142,102 +141,6 @@ def analyze_tree(tree: dict) -> list:
         tags.append("HAS_BUTTONS")
 
     return tags
-
-
-# =========================================================================
-# RESEARCH.md Parser
-# =========================================================================
-
-def parse_research_sections(text: str) -> dict:
-    """
-    Parse RESEARCH.md into numbered sections by ## headers.
-
-    Returns dict mapping section number -> section content.
-    Headers like "## 3. Completion / Progress Model" map to key 3.
-    Headers without numbers (appendices, updates) are assigned 10+.
-    """
-    sections = {}
-    current_num = None
-    current_lines = []
-    next_unnumbered = 10
-
-    for line in text.split("\n"):
-        if line.startswith("## "):
-            # Save previous section
-            if current_num is not None:
-                sections[current_num] = "\n".join(current_lines).strip()
-
-            # Parse section number from header
-            header = line[3:].strip()
-            match = re.match(r"(\d+)\.", header)
-            if match:
-                current_num = int(match.group(1))
-            else:
-                current_num = next_unnumbered
-                next_unnumbered += 1
-            current_lines = [line]
-        else:
-            current_lines.append(line)
-
-    # Save last section
-    if current_num is not None:
-        sections[current_num] = "\n".join(current_lines).strip()
-
-    return sections
-
-
-# Which RESEARCH.md sections to include for each detected tag
-# V20: HAS_MANY_LINKS renamed to HAS_LINKS, TRANSITION tag removed
-# (Gemini classifies transitions, not code)
-ARCHETYPE_TO_RESEARCH_SECTIONS = {
-    "HAS_RADIO":      [3, 5, 6, 7, 8],
-    "HAS_CHECKBOX":   [3, 5, 6, 7, 8],
-    "HAS_TEXT_INPUT":  [3, 5, 7, 8],
-    "HAS_LINKS":      [2, 3, 4, 6, 7],
-    "HAS_VIDEO":      [3, 5, 7, 8],
-    "HAS_COMBOBOX":   [7, 8, 10, 11, 12],
-    "HAS_BUTTONS":    [2, 4, 5, 7],
-}
-
-
-def load_research_sections(platform: str, tags: list) -> str:
-    """Load relevant RESEARCH.md sections based on detected tree signals."""
-    # Try relative to spark/ directory first, then absolute
-    candidates = [
-        Path(__file__).parent.parent / "platforms" / platform / "RESEARCH.md",
-        Path(f"spark/platforms/{platform}/RESEARCH.md"),
-    ]
-
-    research_path = None
-    for p in candidates:
-        if p.exists():
-            research_path = p
-            break
-
-    if research_path is None:
-        return ""
-
-    full_text = research_path.read_text()
-    sections = parse_research_sections(full_text)
-
-    # Determine which sections to include based on tags
-    needed = set()
-    for tag in tags:
-        for section_num in ARCHETYPE_TO_RESEARCH_SECTIONS.get(tag, []):
-            needed.add(section_num)
-
-    # Always include sections 7 (AX tree) and 8 (Edge cases)
-    needed.add(7)
-    needed.add(8)
-
-    # Include appendices if relevant tags present
-    if "HAS_COMBOBOX" in tags:
-        needed.update([10, 11, 12])
-
-    result = "\n\n".join(
-        sections[n] for n in sorted(needed) if n in sections
-    )
-    return result
 
 
 # =========================================================================
