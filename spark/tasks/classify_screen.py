@@ -329,12 +329,48 @@ def get_click_target(
     return target
 
 
-# Minimal fallback extract config — ONLY used when Gemini doesn't return one.
-# Gemini builds targeted extraction configs dynamically by analyzing the actual tree.
-_CONTENT_EXTRACT = {
-    "text": [{"role": "AXStaticText"}],
-    "images": [{"source": "window"}],
+# Screen-type-aware extract defaults — used when Gemini doesn't return one.
+# Each screen type has appropriate filtering to capture content, not chrome.
+_EXTRACT_BY_TYPE = {
+    # Articles: long-form text content. min_length filters sidebar nav items.
+    "ARTICLE": {
+        "text": [{"role": "AXStaticText", "min_length": 80}],
+        "images": [{"source": "window", "purpose": "Describe any educational diagrams, charts, or figures. Ignore decorative images and stock photos."}],
+    },
+    # Video: transcript text if available, VLM describes video content.
+    "VIDEO": {
+        "text": [{"role": "AXStaticText", "min_length": 30}],
+        "images": [{"source": "window", "purpose": "Describe the educational video content being shown. What topic is being taught?"}],
+    },
+    # Exercise: question text and options. Lower min_length to keep answer choices.
+    "EXERCISE": {
+        "text": [{"role": "AXStaticText", "min_length": 15}],
+        "images": [{"source": "window", "purpose": "Describe any diagrams, equations, or visual content in this exercise."}],
+    },
+    # Navigation/Transition: no unique content to extract.
+    "NAVIGATION": None,
+    "TRANSITION": None,
+    # Unknown: conservative extraction with moderate filtering.
+    "UNKNOWN": {
+        "text": [{"role": "AXStaticText", "min_length": 40}],
+        "images": [{"source": "window", "purpose": "Describe the educational content on this screen."}],
+    },
 }
+
+
+def _get_extract_default(screen_type: str):
+    """Get the default extract config for a screen type.
+
+    Maps platform-specific variants (ARTICLE_READING, VIDEO_PLAYING, etc.)
+    to their master category for lookup.
+    """
+    # Direct match first
+    if screen_type in _EXTRACT_BY_TYPE:
+        return _EXTRACT_BY_TYPE[screen_type]
+    # Map variants to master category
+    from spark.tasks.screen_type_util import get_master_category
+    master = get_master_category(screen_type)
+    return _EXTRACT_BY_TYPE.get(master, _EXTRACT_BY_TYPE["UNKNOWN"])
 
 
 # ── Gemini 3 Pro BT Builder ──
@@ -721,6 +757,6 @@ def build_bt_from_tree(
     return {
         "tree": bt,
         "screen_type": bt_screen_type,
-        "extract": result.get("extract", _CONTENT_EXTRACT),
+        "extract": result.get("extract") or _get_extract_default(bt_screen_type),
         "expected_next": result.get("expected_next", []),
     }

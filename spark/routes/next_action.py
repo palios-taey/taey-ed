@@ -78,6 +78,7 @@ def _store_and_return_bt(result: dict, platform: str, tree: dict, sig_hash: str)
     from spark.tasks.screen_type_util import is_deterministic
     bt_to_store = result["tree"] if is_deterministic(variant_type) else None
 
+    extract_config = result.get("extract")
     try:
         from spark.tasks.screen_signatures import learn_screen
         stored_hash = learn_screen(
@@ -85,6 +86,7 @@ def _store_and_return_bt(result: dict, platform: str, tree: dict, sig_hash: str)
             tree=tree,
             screen_type=variant_type,
             behavior_tree=bt_to_store,
+            extract=extract_config,
             source="gemini_bt",
         )
         logger.info(f"  Stored {'BT + ' if bt_to_store else ''}signature for {variant_type} (hash={stored_hash[:12]})")

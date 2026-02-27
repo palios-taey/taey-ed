@@ -106,7 +106,8 @@ def _recompute_common(data: dict) -> list:
 
 
 def learn_screen(platform: str, tree: dict, screen_type: str,
-                 behavior_tree: dict = None, source: str = "classification") -> str:
+                 behavior_tree: dict = None, extract: dict = None,
+                 source: str = "classification") -> str:
     """
     Store a new screen signature. Returns signature hash.
 
@@ -118,17 +119,24 @@ def learn_screen(platform: str, tree: dict, screen_type: str,
 
     if sig_hash in data["screens"]:
         existing = data["screens"][sig_hash]
+        updated = False
         if behavior_tree and not existing.get("behavior_tree"):
             existing["behavior_tree"] = behavior_tree
             existing["source"] = source
+            updated = True
+        if extract and not existing.get("extract"):
+            existing["extract"] = extract
+            updated = True
+        if updated:
             _save_platform(platform, data)
-            logger.info(f"learn_screen: updated BT for {screen_type} ({sig_hash})")
+            logger.info(f"learn_screen: updated entry for {screen_type} ({sig_hash})")
         return sig_hash
 
     data["screens"][sig_hash] = {
         "screen_type": screen_type,
         "signature": [list(p) for p in sorted(sig)],
         "behavior_tree": behavior_tree,
+        "extract": extract,
         "validated": False,
         "source": source,
     }
@@ -182,6 +190,8 @@ def match_signature(platform: str, tree: dict) -> dict:
             }
             if screen.get("behavior_tree"):
                 result["tree"] = screen["behavior_tree"]
+            if screen.get("extract"):
+                result["extract"] = screen["extract"]
             return result
         return {"matched": False, "signature": [list(p) for p in sorted(query_sig)]}
 
@@ -224,6 +234,8 @@ def match_signature(platform: str, tree: dict) -> dict:
         }
         if best_screen.get("behavior_tree"):
             result["tree"] = best_screen["behavior_tree"]
+        if best_screen.get("extract"):
+            result["extract"] = best_screen["extract"]
         return result
 
     return {"matched": False, "signature": [list(p) for p in sorted(query_sig)]}
