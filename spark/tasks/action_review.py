@@ -214,13 +214,13 @@ def _build_user_report_notification(
         f"Look at the screenshot and accessibility tree to understand what the user is seeing.\n"
         f"Then fix the problem — either update an existing screen mapping in the YAML config,\n"
         f"or create a new screen mapping if this screen is not yet recognized.\n\n"
-        f"READ /home/user/taey-ed-v7/spark/CLAUDE.md Sections 1, 4, and 7 FIRST.\n"
-        f"READ /home/user/taey-ed-v7/spark/platforms/{platform}/RESEARCH.md for platform knowledge.\n"
+        f"READ /home/user/taey-ed/CLAUDE.md FIRST.\n"
+        f"READ /home/user/taey-ed/spark/platforms/{platform}/knowledge.json for platform knowledge.\n"
         f"ALL screens use tree: sections (V9 format). See Section 4 for handler names.\n\n"
         f"SCREENSHOT: {review_dir}/screenshot.png (READ THIS WITH Read TOOL — you CAN view images. LOOK at the visual layout to understand what the screen shows.)\n"
         f"Review files (screenshot + tree + bt_debug.log): {review_dir}/\n"
         f"BT DEBUG LOG: {review_dir}/bt_debug.log (READ THIS FIRST — shows exact handler execution trace)\n"
-        f"Platform config: /home/user/taey-ed-v7/spark/platforms/{platform}/config.yaml\n"
+        f"Platform config: /home/user/taey-ed/spark/platforms/{platform}/config.yaml\n"
         f"Respond via API: POST http://localhost:5002/api/v1/action_review/{platform}/{review_id}/respond\n"
         f"Response format: {{\\\"resolution\\\": \\\"yaml_updated|acknowledged\\\", \\\"retry\\\": true, \\\"message\\\": \\\"...\\\"}}\""
     )
@@ -262,7 +262,7 @@ def _build_escalation_notification(
         diag += (
             f"\nThis is a PERPLEXITY ESCALATION. Previous Spark Claude fix failed.\n"
             f"You MUST use Perplexity Deep Research for additional context before responding.\n"
-            f"Follow the escalation prompt template at /home/user/taey-ed-v7/spark/ESCALATION_PROMPT.md\n"
+            f"Follow the escalation prompt template at /home/user/taey-ed/spark/ESCALATION_PROMPT.md\n"
             f"Attach: MASTER_PLAN.md, CLAUDE.md, platform config, screenshots, issue description.\n"
         )
     elif escalation_level == "user":
@@ -272,16 +272,16 @@ def _build_escalation_notification(
             f"Incorporate the user's guidance to fix the YAML config and respond with retry=true.\n"
         )
     diag += (
-        f"\nREAD /home/user/taey-ed-v7/spark/CLAUDE.md Sections 1, 4, 6, and 7 FIRST.\n"
-        f"READ /home/user/taey-ed-v7/spark/platforms/{platform}/RESEARCH.md for platform navigation knowledge.\n"
-        f"ALL screens use tree: sections (V9 format). See Section 4 for handler names and examples.\n"
+        f"\nREAD /home/user/taey-ed/CLAUDE.md FIRST.\n"
+        f"READ /home/user/taey-ed/spark/platforms/{platform}/knowledge.json for platform knowledge.\n"
+        f"ALL screens use tree: sections format. See handler docs for handler names and examples.\n"
         f"Failure: {failure_reason} | Screen: {before_screen} -> {after_screen}\n"
         f"Question: {question_text[:120]}\n"
         f"Answer: {answer_generated} | Options: {options_presented} | Clicked: {click_target}\n"
         f"SCREENSHOT: {review_dir}/screenshot.png (READ THIS WITH Read TOOL — you CAN view images. LOOK at the visual layout to understand what the screen shows.)\n"
         f"Review files: {review_dir}/\n"
         f"BT DEBUG LOG: {review_dir}/bt_debug.log (READ THIS FIRST — shows exact handler execution trace)\n"
-        f"Platform config: /home/user/taey-ed-v7/spark/platforms/{platform}/config.yaml\n"
+        f"Platform config: /home/user/taey-ed/spark/platforms/{platform}/config.yaml\n"
         f"Respond via API: POST http://localhost:5002/api/v1/action_review/{platform}/{review_id}/respond\n"
         f"Response format: {{\\\"resolution\\\": \\\"yaml_updated|acknowledged\\\", \\\"retry\\\": true|false, \\\"message\\\": \\\"...\\\"}}\""
     )

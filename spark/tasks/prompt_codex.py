@@ -12,7 +12,7 @@ The prompt has 9 sections:
   1. Identity & Cardinal Rules (always)
   2. Files to Read (always)
   3. Screen Patterns for detected type (tree-driven)
-  4. Platform Knowledge from RESEARCH.md (tree-driven)
+  4. Platform Knowledge from knowledge.json (JIT) or full docs (fallback)
   5. Complete Handler Reference (always)
   6. LLM Question Types Reference (always)
   7. Click Strategies & Timing (always)
@@ -1511,7 +1511,7 @@ COMMON FAILURE PATTERNS AND FIXES:
   solve_complex (multimodal) or add context from extraction.
 
 IF spark_attempts >= 2: Perplexity Deep Research has been invoked for this
-screen. Check if RESEARCH.md was updated with new platform knowledge."""
+screen. Check if knowledge.json was updated with new platform knowledge."""
 
 
 # =========================================================================
@@ -1564,7 +1564,7 @@ def compile_prompt(
             sections.append(SCREEN_PATTERNS[tag])
 
     # Section 4: Platform Knowledge
-    # Use knowledge-driven assembly when available, else RESEARCH.md fallback
+    # Use knowledge-driven assembly when available, else full docs fallback
     from spark.tasks.knowledge_loader import (
         load_knowledge, load_learned,
         get_handlers_for_screen, get_quirks_for_screen,
@@ -1582,31 +1582,20 @@ def compile_prompt(
         if knowledge_ctx:
             sections.append(knowledge_ctx)
 
-        # Also include relevant RESEARCH.md sections (bridge period)
-        research_text = load_research_sections(platform, tags)
-        if research_text:
-            sections.append(f"=== PLATFORM KNOWLEDGE ({platform}) ===\n\n{research_text}")
-
         # JIT: Selective handler/question type docs
         handler_names = get_handlers_for_screen(knowledge, screen_type, tags)
         question_types = get_question_types_for_screen(knowledge, screen_type, tags)
         sections.append(get_handler_docs(handler_names))
         sections.append(get_question_type_docs(question_types))
     else:
-        # Fallback: exact original behavior
-        research_text = load_research_sections(platform, tags)
-        if research_text:
-            sections.append(
-                f"=== PLATFORM KNOWLEDGE ({platform}) ===\n\n{research_text}"
-            )
-        else:
-            sections.append(
-                f"=== PLATFORM KNOWLEDGE ===\n\n"
-                f"No RESEARCH.md exists for {platform}. Use the screenshot and "
-                f"tree to determine screen type. After resolving this consultation, "
-                f"a RESEARCH.md should be created via Perplexity Deep Research "
-                f"before mapping additional screens."
-            )
+        # Fallback: no knowledge.json — send all docs
+        sections.append(
+            f"=== PLATFORM KNOWLEDGE ===\n\n"
+            f"No knowledge.json exists for {platform}. Use the screenshot and "
+            f"tree to determine screen type. After resolving this consultation, "
+            f"a knowledge.json should be created via Perplexity Deep Research "
+            f"before mapping additional screens."
+        )
 
         sections.append(SECTION_5_HANDLERS_ORIGINAL)
         sections.append(SECTION_6_QUESTION_TYPES_ORIGINAL)

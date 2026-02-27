@@ -64,36 +64,30 @@ Return ONLY valid JSON, no markdown, no explanation outside the JSON:
 
 
 def _load_platform_context(platform: str) -> str:
-    """Load platform-specific screen patterns from RESEARCH.md section 4 if available."""
-    research_paths = [
-        Path(__file__).parent.parent / "platforms" / platform / "RESEARCH.md",
-        Path(f"spark/platforms/{platform}/RESEARCH.md"),
-    ]
+    """Load platform-specific screen context from knowledge.json if available."""
+    from spark.tasks.knowledge_loader import load_knowledge
 
-    for path in research_paths:
-        if not path.exists():
-            continue
-        try:
-            text = path.read_text()
-            # Extract section 4 (Common Screen Patterns) if it exists
-            lines = text.split("\n")
-            in_section = False
-            section_lines = []
-            for line in lines:
-                if line.startswith("## 4."):
-                    in_section = True
-                    section_lines.append(line)
-                elif in_section and line.startswith("## ") and not line.startswith("## 4"):
-                    break
-                elif in_section:
-                    section_lines.append(line)
+    knowledge = load_knowledge(platform)
+    if not knowledge:
+        return ""
 
-            if section_lines:
-                return "=== PLATFORM-SPECIFIC SCREEN PATTERNS ===\n" + "\n".join(section_lines)
-        except Exception as e:
-            logger.warning(f"Failed to load RESEARCH.md for {platform}: {e}")
+    parts = []
 
-    return ""
+    # Screen types summary
+    screen_types = knowledge.get("screen_types", {})
+    if screen_types:
+        type_names = sorted(screen_types.keys())
+        parts.append(f"=== KNOWN SCREEN TYPES ===\n" + ", ".join(type_names))
+
+    # Global platform quirks
+    quirks = knowledge.get("global", {}).get("platform_quirks", [])
+    if quirks:
+        quirk_lines = []
+        for q in quirks:
+            quirk_lines.append(f"- {q.get('quirk', '')}: {q.get('workaround', '')} (affects: {', '.join(q.get('affects', []))})")
+        parts.append("=== PLATFORM QUIRKS ===\n" + "\n".join(quirk_lines))
+
+    return "\n\n".join(parts)
 
 
 def classify_screen(
@@ -892,7 +886,6 @@ def build_bt_from_tree(
         get_handler_docs, get_question_type_docs,
         SECTION_5_HANDLERS_ORIGINAL, SECTION_6_QUESTION_TYPES_ORIGINAL,
         SECTION_7_STRATEGIES,
-        load_research_sections,
     )
     from spark.tasks.knowledge_loader import (
         load_knowledge, load_learned,
@@ -947,20 +940,11 @@ def build_bt_from_tree(
         prompt_parts.append(get_question_type_docs(question_types))
         prompt_parts.append(SECTION_7_STRATEGIES)
 
-        # Platform RESEARCH.md — include during bridge period
-        research = load_research_sections(platform, tags)
-        if research:
-            prompt_parts.append(f"=== PLATFORM KNOWLEDGE ({platform}) ===\n\n{research}")
-
     else:
         # FALLBACK PATH: Exact current behavior
         prompt_parts.append(SECTION_5_HANDLERS_ORIGINAL)
         prompt_parts.append(SECTION_6_QUESTION_TYPES_ORIGINAL)
         prompt_parts.append(SECTION_7_STRATEGIES)
-
-        research = load_research_sections(platform, tags)
-        if research:
-            prompt_parts.append(f"=== PLATFORM KNOWLEDGE ({platform}) ===\n\n{research}")
 
     # User guidance (UNCHANGED)
     if user_guidance:

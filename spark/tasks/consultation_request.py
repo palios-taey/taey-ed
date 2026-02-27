@@ -1,12 +1,11 @@
-# STATUS: FROZEN - V8 rewrite. Verified 2026-02-19. Do not modify.
 """
 Consultation request handling.
 
 Creates and checks consultation requests for unknown screens.
-Includes RESEARCH.md gate: no research = research-first notification.
+Includes knowledge gate: no knowledge.json = research-first notification.
 
-V8 change: Uses prompt_codex.compile_prompt() for comprehensive ~32K char
-prompts instead of V7's empty recipe files.
+V8 change: Uses prompt_codex.compile_prompt() for comprehensive prompts.
+V21 change: Gate checks knowledge.json instead of RESEARCH.md.
 """
 
 import base64
@@ -148,11 +147,11 @@ def request_consultation(
         platform=platform,
     ))
 
-    # Check if RESEARCH.md exists for this platform
-    research_path = (
-        Path(__file__).parent.parent / "platforms" / platform / "RESEARCH.md"
+    # Check if knowledge.json exists for this platform
+    knowledge_path = (
+        Path(__file__).parent.parent / "platforms" / platform / "knowledge.json"
     )
-    needs_research = not research_path.exists()
+    needs_research = not knowledge_path.exists()
 
     if needs_research:
         metadata["research_required"] = True
@@ -162,12 +161,16 @@ def request_consultation(
     research_preamble = ""
     if needs_research:
         research_preamble = (
-            f"RESEARCH REQUIRED FIRST: No RESEARCH.md exists for platform '{platform}'.\n"
+            f"RESEARCH REQUIRED FIRST: No knowledge.json exists for platform '{platform}'.\n"
             f"You MUST use Perplexity Deep Research via taey's hands MCP tools BEFORE mapping any screens.\n"
             f"DO NOT use WebSearch, WebFetch, or any other substitute. Perplexity is the ONLY acceptable method.\n"
             f"DO NOT delegate this to a subagent — subagents cannot use MCP tools.\n"
-            f"Save result to: spark/platforms/{platform}/RESEARCH.md\n"
-            f"ONLY AFTER saving RESEARCH.md, proceed to map the screen below.\n\n"
+            f"Use the Perplexity research to create a knowledge.json file at:\n"
+            f"  spark/platforms/{platform}/knowledge.json\n"
+            f"The knowledge.json must follow the schema: platform, schema_version, global (timing, never_click, platform_quirks),\n"
+            f"screen_types (each with handlers_needed, question_types, submit_button, extraction hints),\n"
+            f"and accessibility_tree_guide. See existing knowledge.json files for reference.\n"
+            f"ONLY AFTER saving knowledge.json, proceed to map the screen below.\n\n"
         )
 
     escalation_preamble = ""
@@ -189,8 +192,10 @@ def request_consultation(
             f"  Call MCP tool: taey_send_message(platform='perplexity', message=<query>)\n\n"
             f"STEP 5: Wait for response (Deep Research takes 2-5 minutes)\n"
             f"  Monitor daemon spawns automatically. Wait for the notification.\n\n"
-            f"STEP 6: Extract research and update RESEARCH.md\n"
-            f"  Call MCP tool: taey_quick_extract(platform='perplexity', complete=True)\n\n"
+            f"STEP 6: Extract research and create/update knowledge.json\n"
+            f"  Call MCP tool: taey_quick_extract(platform='perplexity', complete=True)\n"
+            f"  Parse the research into structured knowledge.json format.\n"
+            f"  Save to: spark/platforms/{platform}/knowledge.json\n\n"
             f"STEP 7: NOW create consultation response using the research findings\n"
             f"  Create a FUNDAMENTALLY DIFFERENT tree based on the research.\n"
             f"  Respond to the consultation as normal.\n\n"
