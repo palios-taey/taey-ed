@@ -788,32 +788,48 @@ def next_action(request: NextActionRequest):
     logger.info("  Step 5: No signature match — checking knowledge gate")
 
     # Knowledge gate: no knowledge.json = research required first
+    # Notify Spark Claude ONCE, then return wait directive on every subsequent call
     from spark.tasks.knowledge_loader import load_knowledge
     knowledge = load_knowledge(platform)
     if not knowledge:
-        from spark.tasks.notify_tmux import notify_spark_claude
         knowledge_path = f"spark/platforms/{platform}/knowledge.json"
         logger.warning(f"  Step 5: KNOWLEDGE GATE — no knowledge.json for {platform}")
-        notify_spark_claude(
-            f"RESEARCH REQUIRED: No knowledge.json exists for platform '{platform}'.\n"
-            f"You MUST use Perplexity Deep Research via taey's hands MCP tools to research this platform.\n"
-            f"DO NOT use WebSearch, WebFetch, or any other substitute. Perplexity is the ONLY acceptable method.\n"
-            f"DO NOT delegate this to a subagent — subagents cannot use MCP tools.\n\n"
-            f"Create a knowledge.json file at: {knowledge_path}\n"
-            f"The knowledge.json must follow the schema:\n"
-            f"  - platform, schema_version, last_researched\n"
-            f"  - global: timing, never_click, platform_quirks\n"
-            f"  - screen_types: each with handlers_needed, question_types, submit_button, extraction hints\n"
-            f"  - accessibility_tree_guide: completion_indicators_in_tree\n\n"
-            f"See existing knowledge.json files for reference schema.\n"
-            f"ONLY AFTER saving knowledge.json, the platform will proceed automatically on next screen."
-        )
+
+        # Only notify once per platform — use a flag file to prevent spam
+        gate_flag = Path(f"/tmp/taey-ed-knowledge-gate-{platform}")
+        if not gate_flag.exists():
+            from spark.tasks.notify_tmux import notify_spark_claude
+            notify_spark_claude(
+                f"RESEARCH REQUIRED: No knowledge.json exists for platform '{platform}'.\n"
+                f"You MUST use Perplexity Deep Research via taey's hands MCP tools to research this platform.\n"
+                f"DO NOT use WebSearch, WebFetch, or any other substitute. Perplexity is the ONLY acceptable method.\n"
+                f"DO NOT delegate this to a subagent — subagents cannot use MCP tools.\n\n"
+                f"Create a knowledge.json file at: {knowledge_path}\n"
+                f"The knowledge.json must follow the schema:\n"
+                f"  - platform, schema_version, last_researched\n"
+                f"  - global: timing, never_click, platform_quirks\n"
+                f"  - screen_types: each with handlers_needed, question_types, submit_button, extraction hints\n"
+                f"  - accessibility_tree_guide: completion_indicators_in_tree\n\n"
+                f"See existing knowledge.json files for reference schema.\n"
+                f"ONLY AFTER saving knowledge.json, the platform will proceed automatically on next screen."
+            )
+            gate_flag.write_text(str(time.time()))
+            logger.info(f"  Step 5: Notified Spark Claude (first time for {platform})")
+        else:
+            logger.info(f"  Step 5: Already notified for {platform}, returning wait")
+
         return {
-            "directive": "wait_for_research",
+            "directive": "wait",
             "directive_id": _make_directive_id(),
-            "reason": f"No knowledge.json for {platform}. Spark Claude notified to run Perplexity Deep Research.",
-            "retry_after_seconds": 60,
+            "seconds": 30.0,
+            "reason": f"Waiting for knowledge.json research for {platform}",
         }
+
+    # Knowledge gate passed — clean up flag file if it exists
+    gate_flag = Path(f"/tmp/taey-ed-knowledge-gate-{platform}")
+    if gate_flag.exists():
+        gate_flag.unlink()
+        logger.info(f"  Step 5: Knowledge gate cleared for {platform}")
 
     # V20: Always use Gemini for classification. No structural shortcutting.
     # Per REQUIREMENTS.md: "Gemini sees the screen. Gemini decides."
