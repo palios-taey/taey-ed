@@ -59,6 +59,12 @@ def _make_directive_id() -> str:
     return f"d-{uuid.uuid4().hex[:8]}"
 
 
+def _get_extract_for_type(screen_type: str):
+    """Get per-type extract default for signatures missing stored extract."""
+    from spark.tasks.classify_screen import _get_extract_default
+    return _get_extract_default(screen_type)
+
+
 def _with_chat(response: dict, platform: str, messages: list[dict]) -> dict:
     """Attach chat_messages to a response and persist them to Redis."""
     for msg in messages:
@@ -652,7 +658,7 @@ def next_action(request: NextActionRequest):
                 "tree": stored_bt,
                 "screen": known_type,
                 "skeleton_hash": sig_hash,
-                "extract": match_result.get("extract"),
+                "extract": match_result.get("extract") or _get_extract_for_type(known_type),
                 "expected_next": [],
             }, platform, [build_status(f"Executing {known_type} automation")])
 
@@ -733,6 +739,7 @@ def next_action(request: NextActionRequest):
                     tree=tree,
                     screen_type=result["screen_type"],
                     behavior_tree=result["tree"],
+                    extract=result.get("extract"),
                     source="gemini_bt",
                 )
             except Exception as e:
