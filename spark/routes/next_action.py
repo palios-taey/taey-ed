@@ -784,10 +784,40 @@ def next_action(request: NextActionRequest):
             }
         return _build_screen_directive(request, platform, tree, known_type, sig_hash)
 
-    # ── Step 5: No match — classify via Gemini and store ──
+    # ── Step 5: No match — check knowledge gate, then classify ──
+    logger.info("  Step 5: No signature match — checking knowledge gate")
+
+    # Knowledge gate: no knowledge.json = research required first
+    from spark.tasks.knowledge_loader import load_knowledge
+    knowledge = load_knowledge(platform)
+    if not knowledge:
+        from spark.tasks.notify_tmux import notify_spark_claude
+        knowledge_path = f"spark/platforms/{platform}/knowledge.json"
+        logger.warning(f"  Step 5: KNOWLEDGE GATE — no knowledge.json for {platform}")
+        notify_spark_claude(
+            f"RESEARCH REQUIRED: No knowledge.json exists for platform '{platform}'.\n"
+            f"You MUST use Perplexity Deep Research via taey's hands MCP tools to research this platform.\n"
+            f"DO NOT use WebSearch, WebFetch, or any other substitute. Perplexity is the ONLY acceptable method.\n"
+            f"DO NOT delegate this to a subagent — subagents cannot use MCP tools.\n\n"
+            f"Create a knowledge.json file at: {knowledge_path}\n"
+            f"The knowledge.json must follow the schema:\n"
+            f"  - platform, schema_version, last_researched\n"
+            f"  - global: timing, never_click, platform_quirks\n"
+            f"  - screen_types: each with handlers_needed, question_types, submit_button, extraction hints\n"
+            f"  - accessibility_tree_guide: completion_indicators_in_tree\n\n"
+            f"See existing knowledge.json files for reference schema.\n"
+            f"ONLY AFTER saving knowledge.json, the platform will proceed automatically on next screen."
+        )
+        return {
+            "directive": "wait_for_research",
+            "directive_id": _make_directive_id(),
+            "reason": f"No knowledge.json for {platform}. Spark Claude notified to run Perplexity Deep Research.",
+            "retry_after_seconds": 60,
+        }
+
     # V20: Always use Gemini for classification. No structural shortcutting.
     # Per REQUIREMENTS.md: "Gemini sees the screen. Gemini decides."
-    logger.info("  Step 5: No signature match — classifying via Gemini")
+    logger.info("  Step 5: Knowledge exists — classifying via Gemini")
 
     # Step 5A: Need screenshot for classification + BT building
     if not request.screenshot_b64:
