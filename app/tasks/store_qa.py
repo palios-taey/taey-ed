@@ -25,4 +25,4 @@ def store_qa(platform: str, course_id: str, question: str, answer: str, q_type: 
         storage.close()
         logger.info(f"Stored Q&A pair: {question[:50]}... -> {answer[:50]}...")
     except Exception as e:
-        logger.error(f"Failed to store Q&A pair: {e}")
+        raise RuntimeError(f"Failed to store Q&A pair: {e}") from e

@@ -103,11 +103,11 @@ def validate_action(
         platform = metadata.get("platform")
     except Exception as e:
         logger.error(f"Failed to read consultation metadata: {e}")
-        # Tree changed but can't determine platform — assume success
+        # Tree changed but can't determine platform — NOT assuming success
         result = {
-            "validated": True,
+            "validated": False,
             "reason": "tree_changed_no_metadata",
-            "message": "Tree changed but could not read platform metadata — assuming success",
+            "message": "Tree changed but could not read platform metadata — re-inspection required",
             "validation_id": validation_id,
         }
         atomic_write_json(validation_path / "response.json", result)

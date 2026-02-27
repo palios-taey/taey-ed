@@ -39,8 +39,8 @@ def save_checkpoint(
         storage.close()
         logger.debug(f"Checkpoint saved: {platform}/{course_id} screens={screens_completed}")
     except Exception as e:
-        # Checkpoint failure must not crash the pipeline
-        logger.error(f"Failed to save checkpoint: {e}")
+        # Checkpoint save failure is a data loss risk — raise it
+        raise RuntimeError(f"Failed to save checkpoint: {e}") from e
 
 
 def load_checkpoint(platform: str, course_id: str, app_name: str) -> dict:
