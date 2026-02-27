@@ -266,15 +266,18 @@ def load_research_sections(platform: str, tags: list) -> str:
 SECTION_1_IDENTITY = """\
 === YOUR ROLE ===
 You are building a behavior tree (BT) for an educational platform screen.
-This BT will be stored permanently in Weaviate and executed on every future
-encounter of this screen structure. It is NOT a one-off instruction.
+For DETERMINISTIC types (VIDEO, ARTICLE), this BT is stored in JSON signature files
+and reused on every future encounter -- zero LLM cost. For DYNAMIC types (EXERCISE,
+NAVIGATION, TRANSITION), the screen type is stored for recognition but the BT is
+rebuilt fresh by Gemini each time because the content changes.
 
 CONSULTATION: {consultation_id}
 PLATFORM: {platform}
 ESCALATION LEVEL: {escalation_level} (attempt {spark_attempts})
 
 === CARDINAL RULES ===
-1. FALLBACK NODES ARE BANNED. API rejects type: fallback. Use type: sequence ONLY.
+1. FALLBACK NODES ARE SUPPORTED. Use type: "fallback" for try-or-skip patterns
+   (try first child, if it fails try next). Use type: "sequence" for must-all-succeed.
 2. Execution uses NAME and ROLE to find elements, NEVER element_id.
    Element IDs in tree.json are for YOUR visual reference only.
 3. NEVER target "Skip" buttons. Exercises must be SOLVED or ESCALATED.
@@ -284,15 +287,16 @@ ESCALATION LEVEL: {escalation_level} (attempt {spark_attempts})
    Pipeline re-match loop handles screen transitions after video completes.
 7. ONE attempt at wrong answers. Wrong answer = escalation, not retry.
 8. Complete BEFORE navigate: answer → submit → wait → next.
-9. Every consultation response is PERMANENT (stored in Weaviate automatically).
-   Do NOT give one-off instructions. Build a reusable tree.
+9. For deterministic types (VIDEO, ARTICLE), the BT is stored with the screen
+   signature and reused. For dynamic types, the BT is rebuilt each time.
+   Always build a complete, correct tree regardless.
 10. If you don't know what to do, respond with escalation rather than guessing.
     A wrong tree wastes more time than an honest "I don't know."
 
 === WHAT NOT TO DO (Anti-Patterns from V4-V9) ===
-- NEVER create fallback mechanisms — fix root cause or halt
+- Use fallback nodes for OPTIONAL steps only (e.g., try Mark Complete, skip if absent)
 - NEVER retry same failing tree — different approach each attempt, max 3 total
-- NEVER use confidence thresholds — vector distance handles routing
+- NEVER use confidence thresholds — signature matching handles routing
 - NEVER hardcode lesson/unit names in targets — use $nav.answer from LLM
 - NEVER use poll_interval param on video_poll — handler ignores it, sleeps 30s
 - NEVER auto-click "Try again" on wrong answers — creates bot detection risk
@@ -1178,11 +1182,12 @@ RULES FOR expected_next:
 - For navigation: include the screen types you'd land on after clicking
 - Empty list is allowed for terminal screens
 
-WEAVIATE STORAGE:
-Your response is automatically embedded in Weaviate ScreenEmbedding.
-Future encounters of this screen structure will match via vector similarity
-and execute YOUR tree directly — zero LLM cost, ~100ms latency.
-This is permanent. Build it right."""
+SIGNATURE STORAGE:
+Screen signatures are stored in JSON files at /var/spark/taey-ed/signatures/{platform}.json.
+Deterministic types (VIDEO, ARTICLE) store the BT with the signature for instant reuse.
+Dynamic types (EXERCISE, NAVIGATION, TRANSITION) store the signature for recognition
+but always rebuild the BT via Gemini since content changes between encounters.
+Build it right -- deterministic BTs are permanent, dynamic BTs set the quality bar."""
 
 
 def build_section_9(consultation_id: str, context: dict,
