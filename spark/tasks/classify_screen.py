@@ -711,6 +711,141 @@ def _describe_screen(tree: dict) -> str:
     return "; ".join(parts) if parts else "No specific signals detected"
 
 
+def _build_knowledge_context(
+    knowledge: dict, screen_type: str, quirks: list, learned: dict
+) -> str:
+    """
+    Build the knowledge context block for Gemini.
+    Ordering is intentional — general → specific → learned (most recent context last).
+    """
+    parts = []
+
+    # 1. Global timing
+    timing = knowledge.get("global", {}).get("timing", {})
+    if timing:
+        timing_text = "\n".join(f"  {k}: {v}s" for k, v in timing.items() if k != "notes")
+        notes = timing.get("notes", "")
+        if notes:
+            timing_text += f"\n  Note: {notes}"
+        parts.append(f"=== PLATFORM TIMING ===\n{timing_text}")
+
+    # 2. Never-click buttons
+    never_click = knowledge.get("global", {}).get("never_click", [])
+    if never_click:
+        nc_text = "\n".join(
+            f"- NEVER click \"{nc['text']}\": {nc['reason']}" for nc in never_click
+        )
+        parts.append(f"=== NEVER CLICK ===\n{nc_text}")
+
+    # 3. Screen-type-specific quirks (filtered)
+    if quirks:
+        q_text = "\n".join(
+            f"- [{q.get('severity', 'important').upper()}] {q['description']}"
+            for q in quirks
+        )
+        parts.append(f"=== PLATFORM QUIRKS (affecting {screen_type}) ===\n{q_text}")
+
+    # 4. Screen type specifics from knowledge
+    screen_info = knowledge.get("screen_types", {}).get(screen_type, {})
+    if screen_info:
+        # Submit button
+        submit = screen_info.get("submit_button")
+        if submit:
+            parts.append(
+                f"=== SUBMIT BUTTON ===\n"
+                f"Text: \"{submit['text']}\", Role: {submit.get('role', 'AXButton')}, "
+                f"Strategy: {submit.get('strategy', 'mouse_click')}, "
+                f"Post-delay: {submit.get('post_delay', 2.0)}s"
+            )
+
+        # Wrong answer behavior
+        wrong = screen_info.get("wrong_answer_behavior") or screen_info.get("wrong_answer_signal")
+        if wrong:
+            parts.append(f"=== WRONG ANSWER BEHAVIOR ===\n{wrong}")
+
+        # Completion mechanism (for ARTICLE)
+        completion = screen_info.get("completion_mechanism")
+        if completion:
+            parts.append(f"=== COMPLETION MECHANISM ===\n{completion}")
+
+        # Video states (for VIDEO)
+        states = screen_info.get("states")
+        if states:
+            state_text = "\n".join(
+                f"  {name}: signal='{s.get('tree_signal', '')}' → action='{s.get('action', '')}'"
+                for name, s in states.items()
+            )
+            parts.append(f"=== VIDEO STATES ===\n{state_text}")
+
+        # Navigation completion indicators
+        indicators = screen_info.get("completion_indicators")
+        if indicators:
+            parts.append(
+                f"=== COMPLETION INDICATORS ===\n"
+                f"Done: {', '.join(indicators.get('done', []))}\n"
+                f"Not done: {', '.join(indicators.get('not_done', []))}"
+            )
+
+    # 5. Learned observations (most recent = highest relevance)
+    summary = learned.get("latest_summary", {})
+    if summary:
+        learned_parts = []
+        patterns = summary.get("successful_patterns", [])
+        if patterns:
+            learned_parts.append(
+                "Successful patterns from previous runs:\n" +
+                "\n".join(f"  - {p}" for p in patterns)
+            )
+        failures = summary.get("known_failures", [])
+        if failures:
+            learned_parts.append(
+                "Known failures (DO NOT repeat these approaches):\n" +
+                "\n".join(f"  - {f}" for f in failures)
+            )
+        button_variants = summary.get("submit_button_variants", [])
+        if button_variants:
+            learned_parts.append(
+                f"Submit button text seen on this platform: {', '.join(button_variants)}"
+            )
+        if learned_parts:
+            parts.append(
+                f"=== LEARNED FROM PREVIOUS RUNS ({summary.get('total_observations', 0)} observations) ===\n" +
+                "\n".join(learned_parts)
+            )
+
+    return "\n\n".join(parts) if parts else ""
+
+
+def _build_response_format(knowledge: dict, screen_type: str) -> str:
+    """
+    Build response format with screen-type-specific extraction hints.
+    Appends to standard _BT_BUILDER_RESPONSE.
+    """
+    screen_info = knowledge.get("screen_types", {}).get(screen_type, {})
+    extraction = screen_info.get("extraction")
+
+    extraction_hint = ""
+    if extraction:
+        extraction_hint = f"""
+
+=== EXTRACTION HINT (from platform knowledge) ===
+Use this as a starting point for the "extract" field in your response.
+Verify these container names exist in the actual accessibility tree above.
+If they don't match, find the correct parent container and adjust.
+
+Suggested extraction config:
+{json.dumps(extraction, indent=2)}"""
+
+    elif extraction is None:
+        extraction_hint = """
+
+=== EXTRACTION NOTE ===
+This screen type typically has no unique educational content to extract.
+Set "extract" to null in your response UNLESS you see content worth capturing."""
+
+    return _BT_BUILDER_RESPONSE + extraction_hint
+
+
 def build_bt_from_tree(
     tree: dict,
     screenshot_b64: Optional[str],
@@ -741,19 +876,31 @@ def build_bt_from_tree(
         or None if Gemini can't build a valid BT.
     """
     from spark.tasks.prompt_codex import (
-        analyze_tree, SCREEN_PATTERNS, SECTION_5_HANDLERS,
-        SECTION_6_QUESTION_TYPES, SECTION_7_STRATEGIES,
+        analyze_tree, SCREEN_PATTERNS,
+        get_handler_docs, get_question_type_docs,
+        SECTION_5_HANDLERS_ORIGINAL, SECTION_6_QUESTION_TYPES_ORIGINAL,
+        SECTION_7_STRATEGIES,
         load_research_sections,
+    )
+    from spark.tasks.knowledge_loader import (
+        load_knowledge, load_learned,
+        get_handlers_for_screen, get_quirks_for_screen,
+        get_question_types_for_screen,
     )
 
     tags = analyze_tree(tree)
+    knowledge = load_knowledge(platform)
+
+    # Explicit branch — knowledge vs. fallback
+    use_knowledge = bool(knowledge and knowledge.get("screen_types"))
+
     logger.info(
         f"build_bt_from_tree: platform={platform} type={screen_type} "
-        f"tags={tags} has_guidance={'yes' if user_guidance else 'no'}"
+        f"tags={tags} knowledge={'JIT' if use_knowledge else 'FALLBACK'} "
+        f"has_guidance={'yes' if user_guidance else 'no'}"
     )
 
-    # Build screen-specific guidance from detected tree signals
-    # These are proven BT patterns with full explanations
+    # Build screen-specific guidance from detected tree signals (UNCHANGED)
     screen_guidance_parts = []
     for tag in tags:
         if tag in SCREEN_PATTERNS:
@@ -762,7 +909,7 @@ def build_bt_from_tree(
     screen_specific_guidance = "\n\n".join(screen_guidance_parts) if screen_guidance_parts else \
         "No specific assessment signals detected in the tree. Use the screenshot and tree to determine the right approach."
 
-    # Assemble the complete prompt
+    # Assemble the prompt
     prompt_parts = [
         _BT_BUILDER_PROMPT.format(
             platform=platform,
@@ -771,17 +918,39 @@ def build_bt_from_tree(
         ),
     ]
 
-    # Handler reference — the complete manual
-    prompt_parts.append(SECTION_5_HANDLERS)
-    prompt_parts.append(SECTION_6_QUESTION_TYPES)
-    prompt_parts.append(SECTION_7_STRATEGIES)
+    if use_knowledge:
+        # JIT PATH: Knowledge-driven assembly
+        learned = load_learned(platform, screen_type)
+        handler_names = get_handlers_for_screen(knowledge, screen_type, tags)
+        question_types = get_question_types_for_screen(knowledge, screen_type, tags)
+        quirks = get_quirks_for_screen(knowledge, screen_type)
 
-    # Platform-specific knowledge from RESEARCH.md
-    research = load_research_sections(platform, tags)
-    if research:
-        prompt_parts.append(f"=== PLATFORM KNOWLEDGE ({platform}) ===\n\n{research}")
+        # Knowledge context block
+        knowledge_ctx = _build_knowledge_context(knowledge, screen_type, quirks, learned)
+        if knowledge_ctx:
+            prompt_parts.append(knowledge_ctx)
 
-    # User guidance — the teaching moment
+        # Selective handler docs
+        prompt_parts.append(get_handler_docs(handler_names))
+        prompt_parts.append(get_question_type_docs(question_types))
+        prompt_parts.append(SECTION_7_STRATEGIES)
+
+        # Platform RESEARCH.md — include during bridge period
+        research = load_research_sections(platform, tags)
+        if research:
+            prompt_parts.append(f"=== PLATFORM KNOWLEDGE ({platform}) ===\n\n{research}")
+
+    else:
+        # FALLBACK PATH: Exact current behavior
+        prompt_parts.append(SECTION_5_HANDLERS_ORIGINAL)
+        prompt_parts.append(SECTION_6_QUESTION_TYPES_ORIGINAL)
+        prompt_parts.append(SECTION_7_STRATEGIES)
+
+        research = load_research_sections(platform, tags)
+        if research:
+            prompt_parts.append(f"=== PLATFORM KNOWLEDGE ({platform}) ===\n\n{research}")
+
+    # User guidance (UNCHANGED)
     if user_guidance:
         prompt_parts.append(
             f"=== USER GUIDANCE ===\n"
@@ -792,7 +961,7 @@ def build_bt_from_tree(
             f"The user's guidance overrides the screen type classification if they conflict."
         )
 
-    # Failed BT context — tell Gemini what was tried and failed
+    # Failed BT context (UNCHANGED)
     if failed_bt:
         failed_bt_json = json.dumps(failed_bt, indent=2)
         failed_section = (
@@ -809,12 +978,15 @@ def build_bt_from_tree(
             )
         prompt_parts.append(failed_section)
 
-    # The actual accessibility tree
+    # The actual accessibility tree (UNCHANGED)
     tree_json = json.dumps(tree, indent=None, ensure_ascii=False)
     prompt_parts.append(f"=== ACCESSIBILITY TREE ===\n{tree_json}")
 
     # Response format
-    prompt_parts.append(_BT_BUILDER_RESPONSE)
+    if use_knowledge:
+        prompt_parts.append(_build_response_format(knowledge, screen_type))
+    else:
+        prompt_parts.append(_BT_BUILDER_RESPONSE)
 
     prompt = "\n\n".join(prompt_parts)
     logger.info(f"build_bt_from_tree: prompt length={len(prompt)} chars")
