@@ -237,6 +237,10 @@ COMPLETE BT PATTERN:
     {
       "type": "action",
       "action": "extract_question",
+      "params": {
+        "question": {"role": "AXStaticText", "parent_contains": "LOOK_AT_TREE"},
+        "options": {"role": "AXRadioButton"}
+      },
       "store": "q"
     },
     {
@@ -284,8 +288,9 @@ COMPLETE BT PATTERN:
 }
 
 HOW IT WORKS:
-1. extract_question scopes to AXWebArea, finds question text (looks for "?"
-   or "___" patterns), finds radio button options by their accessible names.
+1. extract_question scopes to AXWebArea, uses your params to find question text
+   and radio button options. You MUST set parent_contains to the actual container
+   name from the tree where the question lives.
    Returns: {question_text: str, options: [str], reference_texts: [str]}
 2. send_to_llm calls Spark /api/v1/generate which routes to Gemini 2.5 Pro.
    Maps options to A/B/C letters, asks LLM for letter, maps back to exact text.
@@ -335,6 +340,10 @@ COMPLETE BT PATTERN:
     {
       "type": "action",
       "action": "extract_question",
+      "params": {
+        "question": {"role": "AXStaticText", "parent_contains": "LOOK_AT_TREE"},
+        "options": {"role": "AXCheckBox"}
+      },
       "store": "q"
     },
     {
@@ -387,7 +396,7 @@ COMPLETE BT PATTERN:
 }
 
 HOW IT WORKS:
-1. extract_question finds question text and checkbox options by name.
+1. extract_question uses your params to find question text and checkbox options.
 2. send_to_llm with solve_checkbox asks for comma-separated letter selection.
    Returns: {success: true, selected: ["option text 1", "option text 3"]}
 3. for_each iterates $llm.selected, clicking each checkbox via focus_space.
@@ -411,6 +420,10 @@ COMPLETE BT PATTERN:
     {
       "type": "action",
       "action": "extract_question",
+      "params": {
+        "question": {"role": "AXStaticText", "parent_contains": "LOOK_AT_TREE", "min_length": 20},
+        "text": [{"role": "AXStaticText", "parent_contains": "LOOK_AT_TREE", "min_length": 10}]
+      },
       "store": "q"
     },
     {
@@ -455,7 +468,7 @@ COMPLETE BT PATTERN:
 }
 
 HOW IT WORKS:
-1. extract_question finds question text (looks for "?" or "___" patterns).
+1. extract_question uses your params to find question/prompt text in the tree.
 2. send_to_llm with solve generates a text answer.
    Returns: {success: true, answer: "text answer"}
 3. find_and_type finds the text field (empty target matches first field)
@@ -794,10 +807,21 @@ click:
   Note: If element is dict from find_all, re-finds fresh by description
 
 extract_question:
-  Purpose: Parse question text + options from tree using ctx.extract_config
-  Params: None (automatic from ExecutionContext)
+  Purpose: Parse question text + options from accessibility tree
+  Params (all optional — look at the tree to determine appropriate values):
+    question (dict): Criteria for finding the question/prompt text
+      - role (str): AX role to match (default: "AXStaticText")
+      - parent_contains (str): Match only if parent name contains this string
+      - contains (str): Match only if text contains this substring
+      - min_length (int): Minimum text length to qualify
+    options (dict): Criteria for finding answer option elements
+      - role (str): AX role (e.g., "AXRadioButton", "AXCheckBox", "AXButton")
+      - exclude_titles (list[str]): Button names to skip (e.g., ["Back", "Menu"])
+    text (list[dict]): Reference/context text criteria (same format as extract text criteria)
   Returns: {question_text: str, options: [str], reference_texts: [str], question_type: str}
   Scopes to AXWebArea, skips browser chrome
+  IMPORTANT: You MUST provide params. Examine the tree to find the parent container
+  names and roles where the question/prompt content lives.
 
 send_to_llm:
   Purpose: Call Spark /api/v1/generate for AI-powered decisions
@@ -972,10 +996,21 @@ click:
 
     "extract_question": """\
 extract_question:
-  Purpose: Parse question text + options from tree using ctx.extract_config
-  Params: None (automatic from ExecutionContext)
+  Purpose: Parse question text + options from accessibility tree
+  Params (all optional — look at the tree to determine appropriate values):
+    question (dict): Criteria for finding the question/prompt text
+      - role (str): AX role to match (default: "AXStaticText")
+      - parent_contains (str): Match only if parent name contains this string
+      - contains (str): Match only if text contains this substring
+      - min_length (int): Minimum text length to qualify
+    options (dict): Criteria for finding answer option elements
+      - role (str): AX role (e.g., "AXRadioButton", "AXCheckBox", "AXButton")
+      - exclude_titles (list[str]): Button names to skip (e.g., ["Back", "Menu"])
+    text (list[dict]): Reference/context text criteria (same format as extract text criteria)
   Returns: {question_text: str, options: [str], reference_texts: [str], question_type: str}
-  Scopes to AXWebArea, skips browser chrome""",
+  Scopes to AXWebArea, skips browser chrome
+  IMPORTANT: You MUST provide params. Examine the tree to find the parent container
+  names and roles where the question/prompt content lives.""",
 
     "send_to_llm": """\
 send_to_llm:

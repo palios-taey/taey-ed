@@ -12,6 +12,8 @@ import logging
 from pathlib import Path
 from typing import Optional
 
+from spark.tasks.prune_tree import prune_tree_for_prompt
+
 logger = logging.getLogger(__name__)
 
 # Universal screen categories — validated against IMS Caliper Analytics,
@@ -157,8 +159,9 @@ def classify_screen(
                     f"\n\n=== COMPLETION INDICATORS IN TREE ===\n{indicator_text}"
                 )
 
-        # Full tree as JSON (user requirement: send everything, we don't know what's important)
-        tree_json = json.dumps(tree, indent=None, ensure_ascii=False)
+        # Pruned tree for prompt (strip coordinates, element_id, redundant fields)
+        pruned = prune_tree_for_prompt(tree)
+        tree_json = json.dumps(pruned, indent=None, ensure_ascii=False)
 
         # Build prompt
         prompt = CLASSIFICATION_PROMPT.format(
@@ -316,7 +319,8 @@ def get_click_target(
     Used for NAVIGATION and TRANSITION screens where the BT structure
     is fixed but the click target varies per screen.
     """
-    tree_json = json.dumps(tree, indent=None, ensure_ascii=False)
+    pruned = prune_tree_for_prompt(tree)
+    tree_json = json.dumps(pruned, indent=None, ensure_ascii=False)
     prompt = CLICK_TARGET_PROMPT.format(
         screen_type=screen_type,
         platform=platform,
@@ -436,7 +440,8 @@ def build_extract_config(
     if not _should_extract(screen_type):
         return None
 
-    tree_json = json.dumps(tree, indent=None, ensure_ascii=False)
+    pruned = prune_tree_for_prompt(tree)
+    tree_json = json.dumps(pruned, indent=None, ensure_ascii=False)
     prompt = _EXTRACT_PROMPT.format(
         platform=platform,
         screen_type=screen_type,
@@ -974,8 +979,9 @@ def build_bt_from_tree(
             )
         prompt_parts.append(failed_section)
 
-    # The actual accessibility tree (UNCHANGED)
-    tree_json = json.dumps(tree, indent=None, ensure_ascii=False)
+    # Pruned tree for prompt (strip coordinates, element_id, redundant fields)
+    pruned = prune_tree_for_prompt(tree)
+    tree_json = json.dumps(pruned, indent=None, ensure_ascii=False)
     prompt_parts.append(f"=== ACCESSIBILITY TREE ===\n{tree_json}")
 
     # Response format

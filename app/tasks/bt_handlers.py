@@ -182,14 +182,18 @@ def register_all_handlers(ctx: ExecutionContext):
         from app.tasks.capture_tree import capture_tree
         from app.tasks.extract_question import extract_question
 
-        # Guard: extract_config is None for unmatched/consultation screens
-        if not ctx.extract_config:
-            btlog("extract_question: FAIL - no extract_config")
-            return {"success": False, "error": "no extract_config"}
+        # Determine extract config: prefer BT action params, fall back to ctx.extract_config
+        # Gemini-built BTs provide params with question/options/text criteria.
+        # YAML-configured screens provide ctx.extract_config with same schema.
+        config = params if params else ctx.extract_config
+
+        if not config:
+            btlog("extract_question: FAIL - no params and no extract_config")
+            return {"success": False, "error": "no extract_config or params"}
 
         tree = capture_tree(ctx.app_name)
         try:
-            q_data = extract_question(tree, ctx.extract_config)
+            q_data = extract_question(tree, config)
         except Exception as e:
             btlog(f"extract_question: FAIL - exception: {e}")
             return {"success": False, "error": str(e)}
