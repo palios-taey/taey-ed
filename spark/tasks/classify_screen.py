@@ -560,7 +560,8 @@ _BT_BUILDER_RESPONSE = """\
 === RESPONSE FORMAT ===
 Return ONLY valid JSON. No markdown fences. No explanation outside the JSON object.
 {{
-  "screen_type": "DESCRIPTIVE_NAME_LIKE_EXERCISE_RADIO_OR_ARTICLE_READING",
+  "category": "MASTER_CATEGORY",
+  "screen_type": "CATEGORY_VARIANT",
   "tree": {{
     "type": "sequence",
     "children": [...]
@@ -574,7 +575,8 @@ Return ONLY valid JSON. No markdown fences. No explanation outside the JSON obje
 }}
 
 RULES:
-- screen_type: descriptive name for this specific screen (EXERCISE_RADIO, ARTICLE_READING, etc.)
+- category: MUST be one of: VIDEO, ARTICLE, EXERCISE, NAVIGATION, TRANSITION, UNKNOWN
+- screen_type: category prefix + descriptive variant (EXERCISE_RADIO, ARTICLE_READING, TRANSITION_NEXT_LESSON, etc.)
 - tree: valid BT with type "sequence" at root. Use "fallback" for optional steps.
 - expected_next: what screen types appear after this BT runs. NEVER include current screen type.
 
@@ -992,8 +994,12 @@ def build_bt_from_tree(
             )
         prompt_parts.append(failed_section)
 
+    # Scope to AXWebArea (web content only — excludes browser chrome and other tabs)
+    from spark.tasks.prompt_codex import _find_web_area
+    scoped_tree = _find_web_area(tree)
+
     # Pruned tree for prompt (strip coordinates, element_id, redundant fields)
-    pruned = prune_tree_for_prompt(tree)
+    pruned = prune_tree_for_prompt(scoped_tree)
     tree_json = json.dumps(pruned, indent=None, ensure_ascii=False)
     prompt_parts.append(f"=== ACCESSIBILITY TREE ===\n{tree_json}")
 
@@ -1037,9 +1043,17 @@ def build_bt_from_tree(
         logger.error(f"build_bt_from_tree: BT validation failed: {json.dumps(bt)[:500]}")
         return None
 
+    from spark.tasks.screen_type_util import get_master_category, MASTER_CATEGORIES
+
     bt_screen_type = result.get("screen_type", screen_type)
+    bt_category = result.get("category", "").upper()
+
+    # Validate category is one of the 6 master categories
+    if bt_category not in MASTER_CATEGORIES:
+        bt_category = get_master_category(bt_screen_type)
+
     logger.info(
-        f"build_bt_from_tree: SUCCESS — type={bt_screen_type} "
+        f"build_bt_from_tree: SUCCESS — category={bt_category} type={bt_screen_type} "
         f"reason={result.get('reason', '')}"
     )
 
@@ -1051,6 +1065,7 @@ def build_bt_from_tree(
 
     return {
         "tree": bt,
+        "category": bt_category,
         "screen_type": bt_screen_type,
         "extract": extract,
         "expected_next": result.get("expected_next", []),
