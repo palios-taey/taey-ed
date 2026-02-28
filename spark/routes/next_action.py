@@ -66,6 +66,25 @@ def _get_extract_for_type(screen_type: str, tree: dict = None,
     return None
 
 
+FINGERPRINT_LOG_DIR = Path("/var/spark/taey-ed/fingerprint_log")
+
+
+def _log_fingerprint(platform: str, variant: str, skel_hash: str, fingerprint: dict):
+    """Append fingerprint entry to JSONL log for V22 learning."""
+    from datetime import datetime, timezone
+    FINGERPRINT_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = FINGERPRINT_LOG_DIR / f"{platform}.jsonl"
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "variant": variant,
+        "skeleton_hash": skel_hash,
+        "fingerprint": fingerprint,
+    }
+    with open(log_path, "a") as f:
+        f.write(json.dumps(entry) + "\n")
+    logger.info(f"  Fingerprint logged: variant={variant} hash={skel_hash[:12]}")
+
+
 def _with_chat(response: dict, platform: str, messages: list[dict]) -> dict:
     """Attach chat_messages to a response and persist them to Redis."""
     for msg in messages:
@@ -834,6 +853,15 @@ def next_action(request: NextActionRequest):
     # Register hash → variant for future exact lookups
     if variant != "UNKNOWN":
         register_hash(platform, skel_hash, variant)
+
+    # Log fingerprint for V22 learning (non-blocking)
+    try:
+        from spark.tasks.skeleton import extract_content_fingerprint
+        fingerprint = extract_content_fingerprint(tree)
+        if fingerprint:
+            _log_fingerprint(platform, variant, skel_hash, fingerprint)
+    except Exception as e:
+        logger.warning(f"  Step 5B: fingerprint logging failed (non-blocking): {e}")
 
     # Step 5C: Check variant BT cache (deterministic variants only)
     if variant != "UNKNOWN" and not is_non_deterministic(variant):

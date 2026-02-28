@@ -217,6 +217,87 @@ def _find_web_area(node: dict) -> Optional[dict]:
     return None
 
 
+def extract_content_fingerprint(tree: dict) -> dict:
+    """
+    Extract structural fingerprint from content area only.
+    Captures element counts and key button labels — NOT article text,
+    question text, or other variable content.
+
+    Used for V22 fingerprint matching. V21 logs these alongside Flash
+    classifications to build training data.
+    """
+    web_area = _find_web_area(tree)
+    if not web_area:
+        return {}
+
+    fp = {
+        "radio_button_count": 0,
+        "checkbox_count": 0,
+        "text_field_count": 0,
+        "text_area_count": 0,
+        "slider_count": 0,
+        "form_count": 0,
+        "static_text_count": 0,
+        "heading_count": 0,
+        "link_count": 0,
+        "image_count": 0,
+        "button_labels": [],
+        "has_video_player": False,
+        "has_transcript": False,
+        "has_sidebar_nav": False,
+    }
+
+    _walk_fingerprint(web_area, fp)
+
+    # Deduplicate and sort button labels
+    fp["button_labels"] = sorted(set(fp["button_labels"]))
+    return fp
+
+
+def _walk_fingerprint(node: dict, fp: dict):
+    """Walk tree counting elements and collecting button labels."""
+    role = node.get("role", "")
+
+    # Count interactive elements
+    if role == "AXRadioButton":
+        fp["radio_button_count"] += 1
+    elif role == "AXCheckBox":
+        fp["checkbox_count"] += 1
+    elif role == "AXTextField":
+        fp["text_field_count"] += 1
+    elif role == "AXTextArea":
+        fp["text_area_count"] += 1
+    elif role == "AXSlider":
+        fp["slider_count"] += 1
+    elif role == "AXForm":
+        fp["form_count"] += 1
+    elif role == "AXStaticText":
+        fp["static_text_count"] += 1
+    elif role == "AXHeading":
+        fp["heading_count"] += 1
+    elif role == "AXLink":
+        fp["link_count"] += 1
+    elif role == "AXImage":
+        fp["image_count"] += 1
+    elif role == "AXButton":
+        # Collect button label — developer-set, stable across instances
+        label = node.get("name") or node.get("title") or node.get("description") or ""
+        if label.strip():
+            fp["button_labels"].append(label.strip())
+    elif role == "AXVideo":
+        fp["has_video_player"] = True
+
+    # Detect structural signals from names/descriptions
+    name_lower = (node.get("name") or "").lower()
+    if "transcript" in name_lower:
+        fp["has_transcript"] = True
+    if "outline" in name_lower or "sidebar" in name_lower:
+        fp["has_sidebar_nav"] = True
+
+    for child in node.get("children", []):
+        _walk_fingerprint(child, fp)
+
+
 def _collect_text(node: dict, texts: list[str]):
     """Collect actual text values from tree for dynamic text extraction."""
     role = node.get("role", "")
