@@ -13,6 +13,7 @@ Split from V7 monolith (1062 lines) into modular routes:
 """
 
 import logging
+import logging.handlers
 import os
 import secrets
 
@@ -22,16 +23,27 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(name)s %(levelname)s: %(message)s",
-)
+# Configure logging with rotation (5MB max, 3 backups = 20MB max)
+_LOG_DIR = os.path.expanduser("~/taey-ed/logs")
+os.makedirs(_LOG_DIR, exist_ok=True)
+_LOG_FILE = os.path.join(_LOG_DIR, "spark_api.log")
+
+_fmt = logging.Formatter("%(asctime)s %(name)s %(levelname)s: %(message)s",
+                         datefmt="%H:%M:%S")
+
+# File handler with rotation
+_fh = logging.handlers.RotatingFileHandler(
+    _LOG_FILE, maxBytes=5_000_000, backupCount=3)
+_fh.setFormatter(_fmt)
+_fh.setLevel(logging.INFO)
+
+# Console handler (for nohup/journald)
+_ch = logging.StreamHandler()
+_ch.setFormatter(_fmt)
+_ch.setLevel(logging.INFO)
+
+logging.basicConfig(level=logging.INFO, handlers=[_fh, _ch])
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-if not logging.getLogger().handlers:
-    logging.getLogger().addHandler(logging.StreamHandler())
-    logging.getLogger().setLevel(logging.INFO)
 
 
 # ── Authentication ──
