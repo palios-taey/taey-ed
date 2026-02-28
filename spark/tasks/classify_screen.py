@@ -583,15 +583,27 @@ Extract captures the UNIQUE CONTENT of this screen for learning records. NOT pag
 sidebars, or navigation. YOU must analyze the accessibility tree to determine what the
 unique content is and WHERE it lives in the tree, then build targeted extraction criteria.
 
-TEXT EXTRACTION CRITERIA:
-Each criteria object matches nodes in the accessibility tree. Available filters:
-  - "role" (required): AX role to match, e.g. "AXStaticText"
-  - "parent_role" (optional): Only match if parent has this role, e.g. "AXGroup"
-  - "parent_contains" (optional): Only match if parent's name contains this string
-    LOOK AT THE TREE to find the actual parent container names for the content area.
-    Examples: "transcript", "lesson-content", "article-body", "reading", "question"
-  - "contains" (optional): Only match if the text value contains this substring
-  - "min_length" (optional): Skip text shorter than this (filters button labels, nav links)
+IMPORTANT: If your BT uses extract_question, the extract field MUST include "question"
+criteria so the handler knows how to find the question/prompt in the tree.
+
+EXTRACT FIELD KEYS:
+  "question" (dict, REQUIRED for exercise screens): Criteria to find the question/prompt text
+    - "role" (str): AX role to match (default: "AXStaticText")
+    - "contains" (str): Only match if text contains this substring
+    - "parent_contains" (str): Only match if parent name contains this string
+    - "min_length" (int): Minimum text length to qualify as a question
+  "options" (dict, for multiple-choice): Criteria to find answer option elements
+    - "role" (str): AX role (e.g., "AXRadioButton", "AXCheckBox", "AXButton")
+    - "exclude_titles" (list[str]): Button names to skip (e.g., ["Back", "Menu", "Close"])
+  "text" (list[dict]): Reference/context text extraction criteria
+    Each criteria object matches nodes in the accessibility tree. Available filters:
+      - "role" (required): AX role to match, e.g. "AXStaticText"
+      - "parent_role" (optional): Only match if parent has this role, e.g. "AXGroup"
+      - "parent_contains" (optional): Only match if parent's name contains this string
+        LOOK AT THE TREE to find the actual parent container names for the content area.
+      - "contains" (optional): Only match if the text value contains this substring
+      - "min_length" (optional): Skip text shorter than this (filters button labels, nav links)
+  "images" (list[dict]): Image extraction options
 
 Examples:
   Video with transcript section:
@@ -602,9 +614,16 @@ Examples:
     {{"text": [{{"role": "AXStaticText", "parent_contains": "lesson-content", "min_length": 20}}],
      "images": [{{"source": "window", "purpose": "Describe the article content"}}]}}
 
-  Exercise with questions:
-    {{"text": [{{"role": "AXStaticText", "parent_contains": "question", "min_length": 10}}],
+  Exercise with radio buttons:
+    {{"question": {{"role": "AXStaticText", "contains": "?"}},
+     "options": {{"role": "AXRadioButton"}},
+     "text": [{{"role": "AXStaticText", "parent_contains": "question", "min_length": 10}}],
      "images": [{{"source": "window", "purpose": "Describe the exercise"}}]}}
+
+  Discussion prompt / text input exercise:
+    {{"question": {{"role": "AXStaticText", "min_length": 30}},
+     "text": [{{"role": "AXStaticText", "min_length": 20}}],
+     "images": [{{"source": "window", "purpose": "Capture the discussion prompt"}}]}}
 
   Generic content (when you can't find a specific parent):
     {{"text": [{{"role": "AXStaticText", "min_length": 40}}],
