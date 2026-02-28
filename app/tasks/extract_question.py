@@ -67,7 +67,14 @@ def extract_question(tree: dict, extract_config: dict) -> dict:
     if q_config:
         q_role = q_config.get("role", "AXStaticText")
         q_contains = q_config.get("contains", "")
-        question_text = _find_question_text(scoped_tree, q_role, q_contains)
+        q_parent = q_config.get("parent_contains", "")
+        # If parent_contains specified, scope search to that subtree first
+        search_root = scoped_tree
+        if q_parent:
+            parent_node = _find_parent_node(scoped_tree, q_parent)
+            if parent_node:
+                search_root = parent_node
+        question_text = _find_question_text(search_root, q_role, q_contains)
 
     # Extract answer options (for solve_choice)
     opt_config = extract_config.get("options")
@@ -125,6 +132,28 @@ def _find_text_fields(node: dict) -> list:
 
     walk(node)
     return fields
+
+
+def _find_parent_node(node: dict, parent_contains: str) -> dict:
+    """Find a node whose name/title/description contains the given text.
+    Used for parent_contains scoping: find 'Question 1' container, then
+    search within it for the actual question text.
+    """
+    if not isinstance(node, dict):
+        return None
+
+    name = node.get("name") or node.get("title") or node.get("description") or ""
+    name = str(name).strip()
+
+    if name and parent_contains.lower() in name.lower():
+        return node
+
+    for child in node.get("children", []):
+        result = _find_parent_node(child, parent_contains)
+        if result:
+            return result
+
+    return None
 
 
 def _find_question_text(node: dict, role: str, contains: str) -> str:

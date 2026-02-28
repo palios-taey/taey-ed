@@ -182,14 +182,26 @@ def register_all_handlers(ctx: ExecutionContext):
         from app.tasks.capture_tree import capture_tree
         from app.tasks.extract_question import extract_question
 
-        # Guard: extract_config is None for unmatched/consultation screens
-        if not ctx.extract_config:
-            btlog("extract_question: FAIL - no extract_config")
+        # Build effective extract config: BT params override ctx.extract_config.
+        # Gemini Pro builds per-question params (e.g. parent_contains: "Question 1")
+        # that are more specific than the top-level extract_config.
+        effective_config = dict(ctx.extract_config) if ctx.extract_config else {}
+        if params.get("question"):
+            effective_config["question"] = params["question"]
+        if params.get("options"):
+            effective_config["options"] = params["options"]
+        if params.get("text"):
+            effective_config["text"] = params["text"]
+
+        if not effective_config:
+            btlog("extract_question: FAIL - no extract_config and no BT params")
             return {"success": False, "error": "no extract_config"}
+
+        btlog(f"extract_question: config={effective_config}")
 
         tree = capture_tree(ctx.app_name)
         try:
-            q_data = extract_question(tree, ctx.extract_config)
+            q_data = extract_question(tree, effective_config)
         except Exception as e:
             btlog(f"extract_question: FAIL - exception: {e}")
             return {"success": False, "error": str(e)}

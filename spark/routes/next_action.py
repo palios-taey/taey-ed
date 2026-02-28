@@ -47,6 +47,42 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+# ── Failure tracking (prevents infinite reclassify loops) ──
+# Key: "{platform}:{variant}" → {"count": int, "last_failed": float}
+# Reset when a DIFFERENT variant succeeds on the same platform.
+_variant_failures: dict[str, dict] = {}
+MAX_VARIANT_FAILURES = 2  # After 2 failures for same variant, STOP
+
+
+def _record_variant_failure(platform: str, variant: str):
+    """Record that a variant's BT failed. Used to prevent reclassify loops."""
+    key = f"{platform}:{variant}"
+    entry = _variant_failures.get(key, {"count": 0})
+    entry["count"] += 1
+    entry["last_failed"] = time.time()
+    _variant_failures[key] = entry
+    logger.info(f"  Failure tracker: {variant} fail_count={entry['count']}")
+
+
+def _check_variant_failed(platform: str, variant: str) -> bool:
+    """Check if a variant has exceeded max failures (would loop if retried)."""
+    key = f"{platform}:{variant}"
+    entry = _variant_failures.get(key)
+    if not entry:
+        return False
+    # Expire failures after 30 minutes (allow retry after cooldown)
+    if time.time() - entry.get("last_failed", 0) > 1800:
+        del _variant_failures[key]
+        return False
+    return entry["count"] >= MAX_VARIANT_FAILURES
+
+
+def _clear_variant_failures(platform: str):
+    """Clear failure tracking for a platform (on successful screen transition)."""
+    to_clear = [k for k in _variant_failures if k.startswith(f"{platform}:")]
+    for k in to_clear:
+        del _variant_failures[k]
+
 
 def _make_directive_id() -> str:
     return f"d-{uuid.uuid4().hex[:8]}"
@@ -499,6 +535,9 @@ def next_action(request: NextActionRequest):
                 except Exception as e:
                     logger.warning(f"Step 2: mark_validated failed (non-fatal): {e}")
 
+            # Success: clear failure tracking for this platform
+            _clear_variant_failures(platform)
+
             # Learn from successful BT execution
             # Note: lr doesn't carry the BT definition — pass empty dict.
             # submit_button detection won't fire but screen_type + success is recorded.
@@ -691,13 +730,17 @@ def next_action(request: NextActionRequest):
             logger.error("Step 3: Gemini retry with failure context also failed — stopping")
 
         # ── Screen mismatch recovery ──
+        # Record failure to prevent reclassify loops
+        if lr.screen:
+            _record_variant_failure(platform, lr.screen)
+
         # If the BT came from a hash match and it failed (including Gemini
-        # retry), the hash mapping was likely wrong. Delete it and let
-        # Steps 4/5 re-classify the screen from scratch.
+        # retry), the hash mapping was likely wrong. Delete it.
+        # BUT: check failure count BEFORE falling through to reclassify.
         if lr.directive_skeleton_hash:
             logger.info(
                 f"Step 3: BT failed for hash-matched screen {lr.screen} "
-                f"— deleting hash {lr.directive_skeleton_hash[:12]} and re-classifying"
+                f"— deleting hash {lr.directive_skeleton_hash[:12]}"
             )
             try:
                 from spark.tasks.variant_cache import delete_hash as _del_hash3, invalidate_variant_bt as _inv_bt3
@@ -706,6 +749,28 @@ def next_action(request: NextActionRequest):
                     _inv_bt3(platform=platform, variant=lr.screen)
             except Exception as e:
                 logger.warning(f"Step 3: delete_hash failed: {e}")
+
+            # Check if this variant has failed too many times — DON'T reclassify
+            if lr.screen and _check_variant_failed(platform, lr.screen):
+                logger.error(
+                    f"Step 3: LOOP GUARD — {lr.screen} has failed {MAX_VARIANT_FAILURES}+ times. "
+                    f"STOPPING to prevent infinite reclassify loop."
+                )
+                from spark.tasks.classify_screen import _describe_screen
+                _reason = (f"Screen '{lr.screen}' has failed {MAX_VARIANT_FAILURES}+ times. "
+                           f"The automation cannot handle this screen type. "
+                           f"Tell me what to do.")
+                return _with_chat({
+                    "directive": "user_input_needed",
+                    "directive_id": _make_directive_id(),
+                    "reason": _reason,
+                    "screen_type": lr.screen or "UNKNOWN",
+                    "screen_description": _describe_screen(tree),
+                }, platform, [
+                    build_status(f"Repeated failure on {lr.screen} — need your help"),
+                    build_question(_reason),
+                ])
+
             # Fall through to Step 4/5 for fresh classification
         else:
             # No signature to invalidate — genuinely stuck. STOP.
@@ -853,6 +918,27 @@ def next_action(request: NextActionRequest):
     # Register hash → variant for future exact lookups
     if variant != "UNKNOWN":
         register_hash(platform, skel_hash, variant)
+
+    # LOOP GUARD: If Flash reclassifies as a variant that already failed, STOP
+    if variant != "UNKNOWN" and _check_variant_failed(platform, variant):
+        logger.error(
+            f"  Step 5B: LOOP GUARD — Flash classified as {variant} which has failed "
+            f"{MAX_VARIANT_FAILURES}+ times. STOPPING."
+        )
+        from spark.tasks.classify_screen import _describe_screen
+        _reason = (f"Screen classified as '{variant}' which has repeatedly failed. "
+                   f"Tell me what to do on this screen.")
+        return _with_chat({
+            "directive": "user_input_needed",
+            "directive_id": _make_directive_id(),
+            "reason": _reason,
+            "screen_type": screen_type,
+            "screen_description": _describe_screen(tree),
+            "confidence_note": classification.get("confidence_note", ""),
+        }, platform, [
+            build_status(f"Screen '{variant}' keeps failing — need your help"),
+            build_question(_reason),
+        ])
 
     # Log fingerprint for V22 learning (non-blocking)
     try:

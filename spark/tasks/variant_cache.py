@@ -26,6 +26,7 @@ VARIANT_BTS_DIR = Path("/var/spark/taey-ed/variant_bts")
 HASH_INDEX_DIR = Path("/var/spark/taey-ed/hash_index")
 
 # Variants where BT varies per instance (always rebuild via Pro)
+# Any EXERCISE_* variant is non-deterministic — questions change per instance.
 NON_DETERMINISTIC_VARIANTS = {
     "EXERCISE_RADIO",
     "EXERCISE_CHECKBOX",
@@ -33,12 +34,20 @@ NON_DETERMINISTIC_VARIANTS = {
     "EXERCISE_MATCHING",
     "EXERCISE_DROPDOWN",
     "EXERCISE_FREE_RESPONSE",
+    "EXERCISE_ASSESSMENT",
+    "EXERCISE_MULTIPLE_CHOICE_MIXED",
+    "EXERCISE_MULTIPLE_CHOICE_MULTI",
 }
 
 
 def is_non_deterministic(variant: str) -> bool:
-    """Check if a variant needs a fresh BT every time."""
-    return variant in NON_DETERMINISTIC_VARIANTS
+    """Check if a variant needs a fresh BT every time.
+    Any EXERCISE_* variant is non-deterministic (questions change per instance).
+    """
+    if variant in NON_DETERMINISTIC_VARIANTS:
+        return True
+    # Catch-all: any variant starting with EXERCISE_ is non-deterministic
+    return variant.startswith("EXERCISE_")
 
 
 # ── Atomic file I/O ──
