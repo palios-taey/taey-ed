@@ -704,15 +704,18 @@ async def generate_answer(
     # Build prompt based on question type
     if question_type == "navigate" and items:
         # Navigation: pick first incomplete item from list
-        # Cap at 50 items — course content is in the first ~30 links,
-        # rest is footer/social/recommendations noise
-        nav_items = items[:50]
-        if len(items) > 50:
-            logger.info(f"navigate: capped items from {len(items)} to 50")
+        # Filter out short/generic links (< 4 chars = icons, arrows, etc.)
+        # and common footer patterns. Keep curriculum content.
         items_parts = []
-        for i, item in enumerate(nav_items):
+        idx = 0
+        for item in items:
             desc = item.get("popup_desc", item.get("description", ""))
-            items_parts.append(f"{i+1}. {desc}")
+            if len(desc) < 4:
+                continue
+            idx += 1
+            items_parts.append(f"{idx}. {desc}")
+        if len(items) != idx:
+            logger.info(f"navigate: filtered {len(items)} items to {idx}")
         items_block = "\n".join(items_parts)
 
         prompt = NAVIGATE_PROMPT.format(items_block=items_block)
