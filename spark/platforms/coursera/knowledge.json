@@ -1,0 +1,985 @@
+{
+  "$schema": "taey-ed-platform-knowledge-v1",
+  "platform": "coursera",
+  "platform_display": "Coursera",
+  "schema_version": "1.0",
+  "last_researched": "2026-02-27T22:27:58.648560+00:00",
+  "research_source": "perplexity_deep_research",
+  "research_confidence": {
+    "overall": "medium",
+    "notes": "Architecture and tech stack confirmed via BuiltWith (React, Webpack, Material-UI, Gatsby JS, Apollo GraphQL, Emotion CSS). UI element text (button labels) derived from official learner guides, support articles, community forums, YouTube walkthroughs, and automation extension repos—not from live accessibility tree inspection. Coursera has undergone recent layout changes (Aug 2025 sidebar redesign). Exact AXRole mappings are inferred from standard React/Material-UI accessibility patterns rather than direct AX tree dumps. Timing estimates are conservative best-guesses. Honor Code gate details confirmed via multiple community sources. Bot detection confirmed: Arkose Labs, reCAPTCHA Enterprise, Fingerprint2."
+  },
+  "global": {
+    "platform_type": "browser",
+    "platform_url": "https://www.coursera.org",
+    "spa_framework": "react",
+    "spa_details": "React with Webpack bundling, Material-UI component library, Emotion CSS-in-JS, Apollo GraphQL for data fetching, Gatsby JS for some static pages (blog/marketing). Contentful headless CMS for marketing content. Express/Node.js backend. Hosted on AWS (EC2, CloudFront CDN, S3, Route 53).",
+    "default_click_strategy": "ax_press",
+    "content_hierarchy": "Program > Course > Module (Week) > Lesson > Activity (Video | Reading | Quiz | Discussion | Lab | Plugin)",
+    "timing": {
+      "page_change": 3.0,
+      "submit": 4.0,
+      "portal_render": 3.5,
+      "spa_navigation": 2.5,
+      "modal_transition": 1.5,
+      "notes": "Coursera is a React SPA with client-side routing. Navigation between items within a course is fast (SPA transition ~2-3s) but initial course page load can be slower (~3-5s) due to GraphQL data fetching. Quiz submission triggers server roundtrip for grading (~3-4s). Modals (honor code, enrollment) animate in ~1s but wait for render. Reading pages may have a 30-second timer before Mark as completed activates. Video pages load embedded player which adds ~2s. All estimates are conservative for automation reliability."
+    },
+    "never_click": [
+      {
+        "text": "Unenroll",
+        "reason": "Permanently removes learner from course. Cannot be undone after 14 days. Would lose all progress."
+      },
+      {
+        "text": "Switch Sessions",
+        "reason": "Resets all progress and deadlines. May lose quiz grades and assignment submissions."
+      },
+      {
+        "text": "Upgrade",
+        "reason": "Triggers payment flow. May start 7-day free trial that auto-bills."
+      },
+      {
+        "text": "Enroll for Free",
+        "reason": "On course catalog pages, this triggers enrollment modal that may lead to payment/trial flow. Only safe if intentionally enrolling in a new course."
+      },
+      {
+        "text": "Delete Account",
+        "reason": "Permanently deletes the learner account and all progress."
+      },
+      {
+        "text": "Report",
+        "reason": "Reports content/user to Coursera moderation. Irrelevant to coursework completion."
+      },
+      {
+        "text": "Share",
+        "reason": "Opens sharing dialog to social media. Irrelevant to coursework completion."
+      },
+      {
+        "text": "Audit",
+        "reason": "Enrolls in audit mode without certificate eligibility. Changes enrollment type."
+      }
+    ],
+    "platform_quirks": [
+      {
+        "id": "honor_code_gate",
+        "description": "Graded quizzes require Honor Code agreement before Submit enables. Learner must: (1) check a checkbox agreeing to the Honor Code, (2) type their full name in a text field matching their government-issued ID. Only after both are completed does the 'Submit' button become clickable (un-grayed). The checkbox and name field appear at the bottom of the quiz, below all questions.",
+        "affects": [
+          "EXERCISE"
+        ],
+        "severity": "critical"
+      },
+      {
+        "id": "quiz_retry_cooldown",
+        "description": "Graded quizzes allow 3 attempts per 8-hour window. After 3 failed attempts, the learner must wait 8 hours (some sources say up to 24 hours) before retrying. The quiz page shows remaining attempts and cooldown timer. This is per-quiz, not global.",
+        "affects": [
+          "EXERCISE"
+        ],
+        "severity": "critical"
+      },
+      {
+        "id": "reading_timer_gate",
+        "description": "Readings over 250 words have a timer that keeps the 'Mark as completed' button grayed out/disabled for approximately 30 seconds after the page loads. Short readings (under 250 words) may have the button available immediately.",
+        "affects": [
+          "ARTICLE"
+        ],
+        "severity": "important"
+      },
+      {
+        "id": "video_next_required",
+        "description": "Watching a video to completion does not auto-register as complete. The learner must click the 'Next' button after the video ends to register completion and advance. Video must be watched to approximately 90% to count as viewed.",
+        "affects": [
+          "VIDEO"
+        ],
+        "severity": "critical"
+      },
+      {
+        "id": "peer_graded_not_automatable",
+        "description": "Peer-graded assignments require: (1) submitting your own work, (2) reviewing 2-3 peers' submissions. The review step requires reading and grading others' work. Cannot be single-session automated.",
+        "affects": [
+          "EXERCISE",
+          "UNKNOWN"
+        ],
+        "severity": "critical"
+      },
+      {
+        "id": "programming_assignments_not_automatable",
+        "description": "Programming assignments and Coursera Labs use external tool integrations (Jupyter, Rhyme, etc.) launched via 'Open Tool' button. These run in separate iframes or new windows. Cannot be automated via standard accessibility tree navigation.",
+        "affects": [
+          "UNKNOWN"
+        ],
+        "severity": "critical"
+      },
+      {
+        "id": "ungraded_plugins",
+        "description": "Ungraded plugins (interactive widgets, dialogues) are embedded via iframes. Some load unreliably. If no 'Mark as Complete' or 'Next' button is visible, no action is needed for course completion—they are optional.",
+        "affects": [
+          "UNKNOWN",
+          "TRANSITION"
+        ],
+        "severity": "important"
+      },
+      {
+        "id": "discussion_forum_completion",
+        "description": "Discussion forum prompts may require posting to register completion. After submitting a post, the completion checkmark may not appear immediately—navigating away and back can trigger it. Some discussion posts are marked Optional.",
+        "affects": [
+          "UNKNOWN"
+        ],
+        "severity": "important"
+      },
+      {
+        "id": "sidebar_layout_redesign_2025",
+        "description": "In August 2025, Coursera redesigned the left sidebar navigation. Previously organized by Lesson within Module with time indicators. Now shows all activities in a flat list per module without time indicators or lesson groupings. The sidebar is the primary navigation element within a course.",
+        "affects": [
+          "NAVIGATION"
+        ],
+        "severity": "important"
+      },
+      {
+        "id": "deadline_locks",
+        "description": "If a learner's schedule has ended, items become locked with message 'This item is locked because your schedule has ended.' The 'Reset my deadlines' button near the top of the page must be clicked to unlock content. This is a TRANSITION-type screen that blocks progress.",
+        "affects": [
+          "TRANSITION",
+          "NAVIGATION"
+        ],
+        "severity": "critical"
+      },
+      {
+        "id": "free_vs_paid",
+        "description": "Audit (free) users cannot submit graded assignments or receive certificates. The quiz/assignment may show but the Submit button is disabled or a paywall modal appears. Paid/enterprise users have full access. Some courses lock labs after course completion.",
+        "affects": [
+          "EXERCISE",
+          "UNKNOWN"
+        ],
+        "severity": "important"
+      },
+      {
+        "id": "summative_assessment_acknowledgement",
+        "description": "Some courses (especially for-credit) require completing a 'Summative Course Assessment Acknowledgement' to unlock the final assessment. This is a separate activity item that must be completed first.",
+        "affects": [
+          "TRANSITION",
+          "EXERCISE"
+        ],
+        "severity": "important"
+      }
+    ],
+    "completion_model": {
+      "video": "Must watch to ~90% of duration, then click 'Next' button. Green checkmark appears in sidebar.",
+      "reading": "Must wait for timer (if reading >250 words, ~30 seconds), then click 'Mark as completed'. Green checkmark appears in sidebar.",
+      "quiz_graded": "Must answer all questions, agree to Honor Code (checkbox + name), click 'Submit'. Score must meet passing threshold (varies by course, often 80%). 3 attempts per 8 hours.",
+      "quiz_practice": "Same interaction as graded but no Honor Code gate. Unlimited retries. Does not affect grade.",
+      "discussion": "Must post a response to register completion. May need to navigate away and back for checkmark to appear.",
+      "peer_assignment": "Must submit own work AND review required number of peers. Not single-session automatable.",
+      "programming_assignment": "Must complete in external tool (Jupyter/Rhyme) and submit. Not automatable via accessibility tree.",
+      "ungraded_plugin": "Interactive widget. May have 'Mark as Complete' button or auto-complete. Often optional.",
+      "ungraded_lab": "External tool launched via 'Open Tool'. If no 'Mark as Complete' or 'Next' button visible after lab, no action needed."
+    },
+    "bot_detection": {
+      "known_measures": "Arkose Labs (fraud prevention/bot detection), reCAPTCHA Enterprise, Fingerprint2 (browser fingerprinting for anonymous user identification with ~94% accuracy). Google Tag Manager for behavioral analytics. FullStory session replay may flag unusual interaction patterns. OneTrust cookie compliance. Coursera also has quiz attempt rate limiting (3 per 8 hours) which acts as implicit bot mitigation.",
+      "recommended_delays": "Minimum 1.5-2s between clicks. 3-5s after page navigation before interacting. 2-3s after form submissions. Randomize delays +/-500ms. Do NOT rapid-fire quiz submissions. Allow natural reading time on articles (30s+ for timer gate). Let videos play at real-time or max 2x speed. Avoid submitting quizzes faster than a human could read questions (~15-30s per question minimum)."
+    }
+  },
+  "screen_types": {
+    "EXERCISE": {
+      "description": "Quiz/assessment screens. Graded quizzes show question text, answer options (radio buttons for single-select, checkboxes for multi-select), and a Submit button. An Honor Code section appears at the bottom of graded quizzes with a checkbox and name text field that must both be completed before Submit enables. Practice quizzes lack the Honor Code gate. After submission, correct answers show green checkmarks and incorrect show red X marks with optional explanations.",
+      "exists_on_platform": true,
+      "tree_signals": [
+        "HAS_RADIO",
+        "HAS_CHECKBOX",
+        "HAS_TEXTFIELD"
+      ],
+      "subtypes": [
+        {
+          "name": "multiple_choice_single",
+          "description": "Select one correct answer from radio button options. Most common quiz type on Coursera.",
+          "tree_signal": "HAS_RADIO",
+          "interaction_pattern": "Click radio button for chosen answer, repeat for all questions, complete Honor Code (if graded), click Submit"
+        },
+        {
+          "name": "multiple_choice_multi",
+          "description": "Select all correct answers using checkboxes. Question text usually says 'Select all that apply'.",
+          "tree_signal": "HAS_CHECKBOX",
+          "interaction_pattern": "Click checkboxes for all correct answers, repeat for all questions, complete Honor Code (if graded), click Submit"
+        },
+        {
+          "name": "true_false",
+          "description": "Two radio button options: True and False.",
+          "tree_signal": "HAS_RADIO",
+          "interaction_pattern": "Same as multiple_choice_single but with only two options"
+        },
+        {
+          "name": "fill_in_blank",
+          "description": "Text input field where learner types a short answer. Less common.",
+          "tree_signal": "HAS_TEXTFIELD",
+          "interaction_pattern": "Click text field, type answer, complete Honor Code (if graded), click Submit"
+        }
+      ],
+      "handlers_needed": {
+        "always": [
+          "find_all",
+          "send_to_llm",
+          "find_and_click",
+          "find_and_type"
+        ],
+        "conditional": {
+          "HAS_RADIO": [
+            "find_and_click"
+          ],
+          "HAS_CHECKBOX": [
+            "find_and_click"
+          ],
+          "HAS_TEXTFIELD": [
+            "find_and_type"
+          ]
+        }
+      },
+      "question_types": {
+        "HAS_RADIO": "solve_choice",
+        "HAS_CHECKBOX": "solve_checkbox",
+        "HAS_TEXTFIELD": "solve"
+      },
+      "submit_button": {
+        "text": "Submit",
+        "alt_text": [
+          "Submit Quiz"
+        ],
+        "role": "AXButton",
+        "strategy": "mouse_click",
+        "post_delay": 4.0,
+        "notes": "Button text is 'Submit' on most quizzes. Older courses may show 'Submit Quiz'. Button is DISABLED (grayed out) until: (1) all questions answered, (2) Honor Code checkbox checked, (3) name typed in Honor Code field. For practice/ungraded quizzes, Submit enables as soon as questions are answered. After clicking Submit, server grades and returns results in ~3-4 seconds."
+      },
+      "honor_code_gate": {
+        "exists": true,
+        "applies_to": "graded quizzes only",
+        "checkbox": {
+          "role": "AXCheckBox",
+          "label_contains": "Honor Code",
+          "action": "click to check"
+        },
+        "name_field": {
+          "role": "AXTextField",
+          "label_contains": "name",
+          "action": "click then type full name as it appears on government-issued ID"
+        },
+        "notes": "Both must be completed for Submit to enable. The Honor Code section appears at the bottom of the quiz page, below all questions. Some courses may also have a 'Learn more' link about the Honor Code that must be clicked first."
+      },
+      "start_button": {
+        "text": "Start Quiz",
+        "alt_text": [
+          "Start Assignment",
+          "Resume Quiz",
+          "Retake Quiz",
+          "Retry"
+        ],
+        "role": "AXButton",
+        "notes": "Appears on the quiz landing page before questions are shown. For retakes, button may say 'Retake Quiz' or 'Retry'. Page shows attempt count and cooldown timer if applicable."
+      },
+      "extraction": {
+        "text": [
+          {
+            "role": "AXStaticText",
+            "parent_contains": "question",
+            "purpose": "Question text and answer options"
+          },
+          {
+            "role": "AXRadioButton",
+            "parent_contains": "question",
+            "purpose": "Answer option labels"
+          },
+          {
+            "role": "AXCheckBox",
+            "parent_contains": "question",
+            "purpose": "Multi-select answer options"
+          }
+        ],
+        "images": [
+          {
+            "source": "window",
+            "purpose": "Capture full quiz page including question text, answer options, and any embedded images in questions"
+          }
+        ]
+      },
+      "expected_next": [
+        "EXERCISE",
+        "TRANSITION",
+        "NAVIGATION"
+      ],
+      "wrong_answer_behavior": "After submission, incorrect answers are marked with red X icons and correct answers with green checkmarks. The score is displayed (e.g., '70%'). If below passing threshold, learner can retake (up to 3 attempts per 8 hours). Feedback text may appear per-question. A 'Retry' or 'Retake Quiz' button appears to start a new attempt."
+    },
+    "VIDEO": {
+      "description": "Video lecture screens. Coursera uses a custom HTML5 video player (not embedded YouTube). Videos have interactive transcripts below/beside the player, speed controls, download option, and subtitle/language settings. A 'Save Note' feature exists below the video. The sidebar shows the video's position in the course outline.",
+      "exists_on_platform": true,
+      "tree_signals": [
+        "HAS_VIDEO"
+      ],
+      "player_type": "custom",
+      "player_details": "Custom HTML5 video player with controls for play/pause, volume, progress scrubber, speed selector, fullscreen, CC/subtitles, and download. NOT embedded YouTube (Coursera hosts its own video). Interactive transcript panel shows timestamped text that highlights as video plays; clicking transcript text jumps to that timestamp.",
+      "handlers_needed": {
+        "always": [
+          "find_and_click",
+          "wait",
+          "video_poll"
+        ],
+        "conditional": {}
+      },
+      "states": {
+        "UNSTARTED": {
+          "tree_signal": "Play button visible, video progress at 0:00, or video thumbnail shown",
+          "action": "Click play button on video player to start playback",
+          "expected_next": [
+            "VIDEO"
+          ]
+        },
+        "PLAYING": {
+          "tree_signal": "Pause button visible (replaces play), video progress advancing, transcript highlighting",
+          "action": "video_poll ONLY — do not interact, wait for video to reach ~90% completion. Can set speed to 2x to reduce wait time.",
+          "expected_next": [
+            "VIDEO"
+          ]
+        },
+        "COMPLETE": {
+          "tree_signal": "Video progress at or near end, replay button may appear, 'Next' button visible in bottom navigation area",
+          "action": "Click 'Next' button to register completion and advance to next item. The 'Next' button is in the bottom navigation bar, not in the video player itself.",
+          "expected_next": [
+            "VIDEO",
+            "ARTICLE",
+            "EXERCISE",
+            "TRANSITION",
+            "NAVIGATION"
+          ]
+        }
+      },
+      "extraction": {
+        "text": [
+          {
+            "role": "AXStaticText",
+            "parent_contains": "transcript",
+            "purpose": "Video transcript text for context"
+          }
+        ],
+        "images": [
+          {
+            "source": "window",
+            "purpose": "Capture video frame and surrounding UI to confirm video state"
+          }
+        ]
+      },
+      "speed_controls": "Available speeds: 0.75x, 1x, 1.25x, 1.5x, 1.75x, 2x. Playing at 2x does NOT affect completion tracking — video still registers as watched. Speed control is in the video player toolbar. Using 2x is recommended for faster automation.",
+      "completion_notes": "Video must reach approximately 90% watched to register the green checkmark. Then 'Next' must be clicked. If the learner downloads the video and watches offline, it will NOT register as complete on the platform."
+    },
+    "ARTICLE": {
+      "description": "Reading/article screens. Content is displayed as formatted text (may include images, links, embedded media). A 'Mark as completed' button appears, but may be grayed out for ~30 seconds if the reading exceeds 250 words. After the timer expires, the button becomes clickable. Clicking it registers the reading as complete.",
+      "exists_on_platform": true,
+      "tree_signals": [
+        "HAS_STATIC_TEXT_LONG",
+        "HAS_MARK_COMPLETE_BUTTON"
+      ],
+      "handlers_needed": {
+        "always": [
+          "scroll",
+          "wait",
+          "find_and_click"
+        ],
+        "conditional": {}
+      },
+      "completion_mechanism": "Timer gate (~30 seconds for readings >250 words) + click 'Mark as completed' button. For very short readings, button may be immediately available. Some readings may auto-complete when scrolled to bottom, but this is not reliable.",
+      "completion_button": {
+        "text": "Mark as completed",
+        "role": "AXButton",
+        "notes": "Button is grayed out / disabled for approximately 30 seconds after page load for readings over 250 words. Wait for it to become enabled (un-grayed) before clicking. Button location is typically at the bottom of the reading content area. After clicking, a green checkmark appears in the sidebar."
+      },
+      "extraction": {
+        "text": [
+          {
+            "role": "AXStaticText",
+            "parent_contains": "reading-content",
+            "purpose": "Reading text content"
+          },
+          {
+            "role": "AXStaticText",
+            "min_length": 40,
+            "purpose": "Main body text of the article"
+          }
+        ],
+        "images": [
+          {
+            "source": "window",
+            "purpose": "Capture reading page to confirm content type and button state"
+          }
+        ]
+      },
+      "expected_next": [
+        "VIDEO",
+        "ARTICLE",
+        "EXERCISE",
+        "TRANSITION",
+        "NAVIGATION"
+      ]
+    },
+    "NAVIGATION": {
+      "description": "Course home page, module overview page, or sidebar navigation. Shows the course outline organized by Modules (Weeks). Each module lists its activities (videos, readings, quizzes) as clickable links. Completion is indicated by green checkmarks next to completed items. Progress percentage shown at top. Key buttons: 'Start', 'Resume', 'Go to Course'. The left sidebar is the primary navigation within a course.",
+      "exists_on_platform": true,
+      "tree_signals": [
+        "HAS_LINKS",
+        "HAS_CHECKMARKS"
+      ],
+      "handlers_needed": {
+        "always": [
+          "find_all",
+          "send_to_llm",
+          "find_and_click"
+        ]
+      },
+      "question_types": {
+        "always": "navigate"
+      },
+      "extraction": null,
+      "completion_indicators": {
+        "done": [
+          "Green checkmark icon next to item",
+          "Green filled circle",
+          "'Completed' text label",
+          "100% progress"
+        ],
+        "not_done": [
+          "Empty circle",
+          "No checkmark",
+          "'Not started' or blank status",
+          "Unchecked item"
+        ],
+        "in_progress": [
+          "Partially filled circle",
+          "'In progress' label",
+          "Resume button visible",
+          "Percentage shown (e.g., 'Completed: 45%')"
+        ]
+      },
+      "navigation_model": "sidebar",
+      "sidebar_details": "Left sidebar shows course outline. Since Aug 2025 redesign: flat list of all activities per module (no lesson sub-groupings). Each activity is a clickable link. Icons indicate type (video camera for video, document for reading, checkbox for quiz). Clicking any item navigates to it via SPA routing. Top of course page shows 'Resume' button that goes to last-accessed item.",
+      "adaptive_routing_warning": "Coursera has a 'Next Step' recommendation feature that highlights the suggested next item on the course home page. The 'Start' or 'Resume' button on the course page may direct to a recommended item rather than strict sequential order. It may send learner back to re-attempt a failed quiz. Navigate using sidebar for predictable sequential ordering.",
+      "key_navigation_buttons": [
+        {
+          "text": "Start",
+          "behavior": "Opens the first module/activity in the course"
+        },
+        {
+          "text": "Resume",
+          "behavior": "Returns to where the learner last left off, even mid-video"
+        },
+        {
+          "text": "Go to Course",
+          "behavior": "Enters the course from the program/catalog page"
+        },
+        {
+          "text": "Next",
+          "behavior": "Advances to the next activity item within the course (bottom nav bar)"
+        },
+        {
+          "text": "Previous",
+          "behavior": "Goes back to the previous activity item"
+        },
+        {
+          "text": "Reset my deadlines",
+          "behavior": "Resets schedule deadlines when items are locked due to expired schedule"
+        }
+      ],
+      "expected_next": [
+        "VIDEO",
+        "ARTICLE",
+        "EXERCISE",
+        "TRANSITION",
+        "NAVIGATION"
+      ]
+    },
+    "TRANSITION": {
+      "description": "Interstitial or intermediate screens that appear between content items. Includes: quiz landing pages (before questions load), module completion congratulations screens, enrollment confirmation, deadline lock screens, course completion pages, and various modal dialogs (Honor Code detail, payment prompts, etc.).",
+      "exists_on_platform": true,
+      "tree_signals": [
+        "HAS_BUTTONS",
+        "HAS_MODAL"
+      ],
+      "handlers_needed": {
+        "always": [
+          "find_and_click",
+          "wait"
+        ]
+      },
+      "extraction": null,
+      "common_advance_buttons": [
+        "Next",
+        "Continue",
+        "Start Quiz",
+        "Start Assignment",
+        "Resume Quiz",
+        "Retake Quiz",
+        "Go to next item",
+        "Go to Course",
+        "View Certificate",
+        "Reset my deadlines",
+        "Close",
+        "OK",
+        "Got it",
+        "Open Tool"
+      ],
+      "modal_types": [
+        {
+          "name": "honor_code_detail",
+          "trigger": "Clicking 'Learn more' on Honor Code",
+          "advance": "Click 'Agree' or close modal"
+        },
+        {
+          "name": "enrollment_modal",
+          "trigger": "First visit to course",
+          "advance": "Click 'Enroll for Free' or 'Go to Course'"
+        },
+        {
+          "name": "payment_modal",
+          "trigger": "Attempting to submit graded work on audit enrollment",
+          "advance": "CANNOT advance without payment — abort"
+        },
+        {
+          "name": "deadline_lock",
+          "trigger": "Schedule expired",
+          "advance": "Click 'Reset my deadlines'"
+        },
+        {
+          "name": "congratulations",
+          "trigger": "Completing a module or course",
+          "advance": "Click 'Continue' or 'Next'"
+        },
+        {
+          "name": "cookie_consent",
+          "trigger": "First visit",
+          "advance": "Click 'Accept' or close"
+        }
+      ],
+      "expected_next": [
+        "VIDEO",
+        "ARTICLE",
+        "EXERCISE",
+        "NAVIGATION",
+        "UNKNOWN"
+      ]
+    },
+    "UNKNOWN": {
+      "description": "Fallback for unrecognized screens. Could be: Coursera Labs (external tool), ungraded plugins/widgets, discussion forums, peer review interfaces, Guided Projects, or any page that doesn't match known patterns. For discussion forums, a text input and 'Reply' button may be present. For labs, an 'Open Tool' button launches external environment.",
+      "exists_on_platform": true,
+      "tree_signals": [],
+      "handlers_needed": {
+        "always": [
+          "find_and_click",
+          "scroll",
+          "wait",
+          "send_to_llm"
+        ]
+      },
+      "extraction": {
+        "text": [
+          {
+            "role": "AXStaticText",
+            "min_length": 40,
+            "purpose": "Capture page text for LLM to classify screen type"
+          }
+        ],
+        "images": [
+          {
+            "source": "window",
+            "purpose": "Full screenshot for LLM to visually identify screen type and determine next action"
+          }
+        ]
+      },
+      "common_unknown_types": [
+        {
+          "name": "discussion_forum",
+          "signals": "Text area, 'Reply' or 'Post' button, thread of responses",
+          "action": "Type response then click Reply/Post to complete"
+        },
+        {
+          "name": "coursera_lab",
+          "signals": "'Open Tool' button, external tool description",
+          "action": "Click 'Open Tool' — but lab itself is NOT automatable. Skip if possible."
+        },
+        {
+          "name": "ungraded_plugin",
+          "signals": "Embedded iframe, interactive widget",
+          "action": "Look for 'Mark as Complete' or 'Next'. If neither exists, click 'Next' in bottom nav to skip."
+        },
+        {
+          "name": "peer_review",
+          "signals": "Submission upload area, rubric criteria, 'Submit' button",
+          "action": "NOT automatable. Flag for human intervention."
+        },
+        {
+          "name": "guided_project",
+          "signals": "Split-screen interface, 'Open Tool' button",
+          "action": "NOT automatable. Flag for human intervention."
+        }
+      ],
+      "expected_next": []
+    }
+  },
+  "accessibility_tree_guide": {
+    "focus_area": "AXWebArea subtree — skip AXMenuBar (top site nav), AXToolbar (browser toolbar), AXTabGroup (browser tabs). Focus on the main content area which contains the course content, sidebar navigation, and video player.",
+    "key_signals": {
+      "AXButton": "Interactive buttons — Submit, Next, Mark as completed, Start Quiz, Play, Pause, Resume, Reset my deadlines",
+      "AXRadioButton": "Single-select quiz answer options (multiple choice). Presence strongly indicates EXERCISE screen.",
+      "AXCheckBox": "Multi-select quiz answer options OR Honor Code agreement checkbox. Context determines meaning.",
+      "AXTextField": "Text input — Honor Code name field, fill-in-blank answers, discussion forum post input, search box",
+      "AXLink": "Navigation links — sidebar course items, breadcrumb links, module/lesson links. Click to navigate.",
+      "AXStaticText": "Content text — question text, reading content, video transcript, instructions, labels",
+      "AXImage": "Images embedded in readings or questions. May contain diagrams relevant to quiz answers.",
+      "AXGroup": "Container divs — used for quiz question groups, reading sections, sidebar modules",
+      "AXProgressIndicator": "Video progress bar, course progress bar, or loading indicator",
+      "AXVideo": "HTML5 video element — indicates VIDEO screen type. Coursera's custom player wraps this."
+    },
+    "completion_indicators_in_tree": {
+      "green_checkmark": "Completed items show a green checkmark icon. In AX tree, look for AXImage with description containing 'completed' or 'checkmark', or an AXStaticText with check character.",
+      "progress_percentage": "AXStaticText containing pattern like 'Completed: XX%' or 'X% complete'",
+      "disabled_button": "AXButton with AXEnabled=false — indicates timer gate (reading) or missing prerequisite (Honor Code not completed)"
+    },
+    "platform_specific_roles": [
+      {
+        "role": "AXRadioButton",
+        "context": "Inside quiz content area",
+        "meaning": "Single-select answer option for a quiz question"
+      },
+      {
+        "role": "AXCheckBox",
+        "context": "Inside quiz content area, question labeled 'Select all that apply'",
+        "meaning": "Multi-select answer option"
+      },
+      {
+        "role": "AXCheckBox",
+        "context": "Near bottom of quiz page, near 'Honor Code' text",
+        "meaning": "Honor Code agreement checkbox — must check before Submit enables"
+      },
+      {
+        "role": "AXTextField",
+        "context": "Near Honor Code checkbox, label contains 'name'",
+        "meaning": "Honor Code name input — type learner's full name"
+      },
+      {
+        "role": "AXButton",
+        "context": "AXEnabled=false, text='Submit'",
+        "meaning": "Submit button is disabled — Honor Code not yet completed or questions unanswered"
+      },
+      {
+        "role": "AXButton",
+        "context": "AXEnabled=false, text='Mark as completed'",
+        "meaning": "Reading timer has not elapsed yet. Wait ~30 seconds."
+      },
+      {
+        "role": "AXButton",
+        "context": "Text='Next'",
+        "meaning": "Advance to next course item. Critical for video completion registration."
+      },
+      {
+        "role": "AXVideo",
+        "context": "Main content area",
+        "meaning": "Video player element. Interact with player controls, not the video element directly."
+      },
+      {
+        "role": "AXLink",
+        "context": "Left sidebar",
+        "meaning": "Course outline navigation link. Click to navigate to that activity."
+      }
+    ]
+  },
+  "button_reference": [
+    {
+      "text": "Submit",
+      "location": "Bottom of quiz page, below Honor Code section",
+      "safe": "yes",
+      "behavior": "Submits quiz answers for grading. Only enabled when all questions answered and Honor Code completed (for graded quizzes).",
+      "screen_types": [
+        "EXERCISE"
+      ]
+    },
+    {
+      "text": "Submit Quiz",
+      "location": "Bottom of quiz page (older course variant)",
+      "safe": "yes",
+      "behavior": "Same as Submit. Older button text variant.",
+      "screen_types": [
+        "EXERCISE"
+      ]
+    },
+    {
+      "text": "Start Quiz",
+      "location": "Quiz landing page before questions",
+      "safe": "yes",
+      "behavior": "Begins the quiz and shows questions. Uses one attempt.",
+      "screen_types": [
+        "TRANSITION"
+      ]
+    },
+    {
+      "text": "Retake Quiz",
+      "location": "Quiz results page after submission",
+      "safe": "caution",
+      "behavior": "Starts a new quiz attempt. Consumes one of 3 attempts per 8-hour window. Only click if previous score was insufficient.",
+      "screen_types": [
+        "EXERCISE",
+        "TRANSITION"
+      ]
+    },
+    {
+      "text": "Retry",
+      "location": "Quiz results page",
+      "safe": "caution",
+      "behavior": "Same as Retake Quiz. Alternate text.",
+      "screen_types": [
+        "EXERCISE",
+        "TRANSITION"
+      ]
+    },
+    {
+      "text": "Next",
+      "location": "Bottom navigation bar of any content page",
+      "safe": "yes",
+      "behavior": "Advances to the next activity item in the course sequence. CRITICAL for video completion — must click after video ends.",
+      "screen_types": [
+        "VIDEO",
+        "ARTICLE",
+        "EXERCISE",
+        "TRANSITION",
+        "NAVIGATION"
+      ]
+    },
+    {
+      "text": "Previous",
+      "location": "Bottom navigation bar",
+      "safe": "yes",
+      "behavior": "Goes back to the previous activity item.",
+      "screen_types": [
+        "VIDEO",
+        "ARTICLE",
+        "EXERCISE",
+        "TRANSITION"
+      ]
+    },
+    {
+      "text": "Mark as completed",
+      "location": "Bottom of reading/article content area",
+      "safe": "yes",
+      "behavior": "Marks the reading as complete. May be disabled for ~30 seconds after page load (timer gate for readings >250 words).",
+      "screen_types": [
+        "ARTICLE"
+      ]
+    },
+    {
+      "text": "Resume",
+      "location": "Course home page, program page",
+      "safe": "yes",
+      "behavior": "Returns learner to where they last left off in the course.",
+      "screen_types": [
+        "NAVIGATION"
+      ]
+    },
+    {
+      "text": "Start",
+      "location": "Course home page for new courses",
+      "safe": "yes",
+      "behavior": "Begins the first module/activity in the course.",
+      "screen_types": [
+        "NAVIGATION"
+      ]
+    },
+    {
+      "text": "Go to Course",
+      "location": "Course catalog tile, enrollment page",
+      "safe": "yes",
+      "behavior": "Enters the course from catalog/program page.",
+      "screen_types": [
+        "NAVIGATION",
+        "TRANSITION"
+      ]
+    },
+    {
+      "text": "Reset my deadlines",
+      "location": "Top of course page when schedule has expired",
+      "safe": "caution",
+      "behavior": "Resets all deadlines. Needed when items are locked due to expired schedule. May reset progress timestamps.",
+      "screen_types": [
+        "TRANSITION",
+        "NAVIGATION"
+      ]
+    },
+    {
+      "text": "Reset Deadlines",
+      "location": "In-course page or program home page",
+      "safe": "caution",
+      "behavior": "Alternate text for Reset my deadlines.",
+      "screen_types": [
+        "TRANSITION",
+        "NAVIGATION"
+      ]
+    },
+    {
+      "text": "Open Tool",
+      "location": "Lab/Guided Project page",
+      "safe": "caution",
+      "behavior": "Launches external tool (Jupyter, Rhyme, etc.) in new window/iframe. Tool environment is not automatable.",
+      "screen_types": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "text": "Enroll for Free",
+      "location": "Course description page",
+      "safe": "never",
+      "behavior": "Triggers enrollment flow which may lead to payment/7-day trial modal. Only safe if intentionally enrolling.",
+      "screen_types": [
+        "NAVIGATION",
+        "TRANSITION"
+      ]
+    },
+    {
+      "text": "Upgrade",
+      "location": "Various pages, enrollment modal",
+      "safe": "never",
+      "behavior": "Triggers payment flow. May start billing.",
+      "screen_types": [
+        "TRANSITION"
+      ]
+    },
+    {
+      "text": "Audit",
+      "location": "Enrollment modal",
+      "safe": "never",
+      "behavior": "Enrolls in audit mode without certificate eligibility. Changes enrollment type.",
+      "screen_types": [
+        "TRANSITION"
+      ]
+    },
+    {
+      "text": "Unenroll",
+      "location": "Course settings or three-dot menu",
+      "safe": "never",
+      "behavior": "Removes learner from course. Loses all progress if past 14-day window.",
+      "screen_types": [
+        "NAVIGATION"
+      ]
+    },
+    {
+      "text": "Switch Sessions",
+      "location": "Course settings",
+      "safe": "never",
+      "behavior": "Resets all progress and moves to a different course session.",
+      "screen_types": [
+        "NAVIGATION"
+      ]
+    },
+    {
+      "text": "Play",
+      "location": "Video player controls",
+      "safe": "yes",
+      "behavior": "Starts/resumes video playback.",
+      "screen_types": [
+        "VIDEO"
+      ]
+    },
+    {
+      "text": "Pause",
+      "location": "Video player controls",
+      "safe": "yes",
+      "behavior": "Pauses video playback.",
+      "screen_types": [
+        "VIDEO"
+      ]
+    },
+    {
+      "text": "Reply",
+      "location": "Discussion forum thread",
+      "safe": "yes",
+      "behavior": "Submits a reply to a discussion thread. May register discussion as complete.",
+      "screen_types": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "text": "Post",
+      "location": "Discussion forum new thread",
+      "safe": "yes",
+      "behavior": "Submits a new discussion post.",
+      "screen_types": [
+        "UNKNOWN"
+      ]
+    },
+    {
+      "text": "Continue",
+      "location": "Interstitial/congratulations screens",
+      "safe": "yes",
+      "behavior": "Advances past transition screen to next content.",
+      "screen_types": [
+        "TRANSITION"
+      ]
+    },
+    {
+      "text": "Close",
+      "location": "Modal dialogs",
+      "safe": "yes",
+      "behavior": "Closes modal dialog. May dismiss cookie consent, Honor Code detail, etc.",
+      "screen_types": [
+        "TRANSITION"
+      ]
+    },
+    {
+      "text": "Accept",
+      "location": "Cookie consent banner",
+      "safe": "yes",
+      "behavior": "Accepts cookies. Dismisses consent banner.",
+      "screen_types": [
+        "TRANSITION"
+      ]
+    },
+    {
+      "text": "View Certificate",
+      "location": "Course completion page",
+      "safe": "yes",
+      "behavior": "Opens certificate view. Not needed for coursework completion.",
+      "screen_types": [
+        "TRANSITION"
+      ]
+    },
+    {
+      "text": "Download",
+      "location": "Video page, reading page, certificate page",
+      "safe": "yes",
+      "behavior": "Downloads video/reading/certificate. Not needed for completion tracking.",
+      "screen_types": [
+        "VIDEO",
+        "ARTICLE"
+      ]
+    },
+    {
+      "text": "Save Note",
+      "location": "Below video player",
+      "safe": "yes",
+      "behavior": "Saves a timestamped note. Not needed for completion.",
+      "screen_types": [
+        "VIDEO"
+      ]
+    },
+    {
+      "text": "Report",
+      "location": "Various content pages",
+      "safe": "never",
+      "behavior": "Reports content issue to Coursera. Irrelevant to completion.",
+      "screen_types": [
+        "VIDEO",
+        "ARTICLE",
+        "EXERCISE"
+      ]
+    },
+    {
+      "text": "Share",
+      "location": "Various content pages",
+      "safe": "never",
+      "behavior": "Opens social sharing dialog. Irrelevant to completion.",
+      "screen_types": [
+        "VIDEO",
+        "ARTICLE",
+        "EXERCISE"
+      ]
+    }
+  ]
+}
