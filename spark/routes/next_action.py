@@ -867,19 +867,27 @@ def next_action(request: NextActionRequest):
         gate_flag = Path(f"/tmp/taey-ed-knowledge-gate-{platform}")
         if not gate_flag.exists():
             from spark.tasks.notify_tmux import notify_spark_claude
+            prompt_template = "spark/platforms/DEEP_RESEARCH_PROMPT.md"
+            platform_url = {
+                "khan_academy": "https://www.khanacademy.org",
+                "coursera": "https://www.coursera.org",
+                "edx": "https://www.edx.org",
+                "udemy": "https://www.udemy.com",
+                "acellus": "https://www.acellus.com",
+            }.get(platform, "UNKNOWN — look it up")
             notify_spark_claude(
                 f"RESEARCH REQUIRED: No knowledge.json exists for platform '{platform}'.\n"
-                f"You MUST use Perplexity Deep Research via taey's hands MCP tools to research this platform.\n"
-                f"DO NOT use WebSearch, WebFetch, or any other substitute. Perplexity is the ONLY acceptable method.\n"
+                f"You MUST use Perplexity Deep Research via taey's hands MCP tools.\n"
+                f"DO NOT use WebSearch, WebFetch, or any other substitute.\n"
                 f"DO NOT delegate this to a subagent — subagents cannot use MCP tools.\n\n"
-                f"Create a knowledge.json file at: {knowledge_path}\n"
-                f"The knowledge.json must follow the schema:\n"
-                f"  - platform, schema_version, last_researched\n"
-                f"  - global: timing, never_click, platform_quirks\n"
-                f"  - screen_types: each with handlers_needed, question_types, submit_button, extraction hints\n"
-                f"  - accessibility_tree_guide: completion_indicators_in_tree\n\n"
-                f"See existing knowledge.json files for reference schema.\n"
-                f"ONLY AFTER saving knowledge.json, the platform will proceed automatically on next screen."
+                f"STEPS:\n"
+                f"1. Read the prompt template: {prompt_template}\n"
+                f"2. Fill placeholders: PLATFORM_NAME={platform}, PLATFORM_URL={platform_url}\n"
+                f"3. Send filled prompt to Perplexity (Deep Research mode)\n"
+                f"4. Extract JSON from response (Download, not Copy)\n"
+                f"5. Save to: {knowledge_path}\n"
+                f"6. Create dir: spark/platforms/{platform}/learned/\n"
+                f"7. Platform will proceed automatically on next screen cycle."
             )
             gate_flag.write_text(str(time.time()))
             logger.info(f"  Step 5: Notified Spark Claude (first time for {platform})")
