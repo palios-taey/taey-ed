@@ -103,33 +103,20 @@ Format:
 IMPORTANT: Return ONLY valid JSON. No explanation. Use EXACT option text as shown above - copy it character for character."""
 
 
-NAVIGATE_PROMPT = """You are helping navigate an educational platform. Given a list of content items, identify the FIRST item that has NOT been completed yet.
+NAVIGATE_PROMPT = """You are helping navigate an educational platform. Given a list of content items, select the FIRST incomplete item in curriculum order (top to bottom).
 
-CRITICAL RULES:
-1. Videos and Articles MUST be completed BEFORE exercises/practice for the SAME topic. Never skip an incomplete video or article to do an exercise.
-2. "Understand" items MUST be completed BEFORE "Apply" items for the SAME topic.
-3. Ignore any "Up next for you!" recommendations - always follow curriculum order (top to bottom).
-4. NEVER pick an item whose description starts with "completed" - those are already done.
+RULES:
+1. Go through items in order (item 1 first, then 2, etc.). Pick the FIRST one that is incomplete.
+2. Skip site navigation links (logos, search bars, "skip to content", site name, etc.) — only consider actual course content items.
+3. Skip any item whose description starts with "completed" or whose label indicates completion (contains "Completed", "Mastery points", a checkmark, or a percentage score).
+4. Within the SAME topic/section, videos and articles must be completed before exercises. If you see an incomplete video or article in the same section as an exercise, pick the video/article first.
 
 Each item has a label (status text near the item) and a description (the item's link text).
 
 Items:
 {items_block}
 
-COMPLETION CHECK - An item is DONE if ANY of these are true:
-- Its description starts with "completed" (e.g., "completed Article The biosphere")
-- Its label contains "Completed", "Mastery points", a checkmark, or a percentage score
-
-An item is INCOMPLETE if:
-- Its description does NOT start with "completed"
-- Its label is empty, says "Not started", "Start", "unfamiliar", or has no completion indicator
-
-Priority order for picking the FIRST incomplete item:
-1. First incomplete Video (description starts with "Video")
-2. First incomplete Article (description starts with "Article")
-3. First incomplete "Understand" item
-4. First incomplete "Apply" or "Practice" item
-5. First incomplete UNIT link (description starts with "UNIT")
+An item is INCOMPLETE if its label is empty, says "Not started", "Start", "unfamiliar", or has no completion indicator.
 
 Reply with ONLY the exact DESCRIPTION text of the first incomplete item. Nothing else. Just the description text, copied exactly."""
 

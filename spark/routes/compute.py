@@ -42,11 +42,14 @@ async def generate(request: GenerateRequest):
     from spark.tasks.call_gemini import generate_answer
 
     if request.items:
-        for i, item in enumerate(request.items[:5]):
+        logger.info(f"generate: total items={len(request.items)}")
+        for i, item in enumerate(request.items[:10]):
             logger.info(
                 f"generate: item[{i}] keys={list(item.keys())} "
                 f"full={str(item)[:200]}"
             )
+        if len(request.items) > 10:
+            logger.info(f"generate: ... ({len(request.items) - 10} more items)")
     logger.info(
         f"generate: q_type={request.question_type} "
         f"question='{request.question[:60]}'"
