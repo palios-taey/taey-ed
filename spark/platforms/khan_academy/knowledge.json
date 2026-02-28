@@ -1,0 +1,908 @@
+{
+  "$schema": "taey-ed-platform-knowledge-v1",
+  "platform": "khan_academy",
+  "platform_display": "Khan Academy",
+  "schema_version": "1.0",
+  "last_researched": "2026-02-28T14:40:04.817280+00:00",
+  "research_source": "perplexity_deep_research",
+  "research_confidence": {
+    "overall": "medium",
+    "notes": "Architecture and content types well-documented via KA engineering blog and open-source repos (Perseus, Wonder Blocks). Exact accessibility tree roles (AXButton vs AXLink) for specific buttons are inferred from standard React/WCAG patterns since direct macOS accessibility tree dumps were not available. Button text ('Check', 'Skip', 'Next question') confirmed from KA support articles and community posts. Timing values are conservative estimates based on SPA behavior with GraphQL backend and Fastly CDN. Perseus widget types confirmed from GitHub source (30+ widget dirs). Khanmigo AI tutor may introduce unexpected modals on paid/district accounts."
+  },
+  "global": {
+    "platform_type": "browser",
+    "platform_url": "https://www.khanacademy.org",
+    "spa_framework": "react",
+    "default_click_strategy": "mouse_click",
+    "content_hierarchy": "Course > Unit > Lesson > Activity",
+    "timing": {
+      "page_change": 3.0,
+      "submit": 2.0,
+      "portal_render": 2.5,
+      "spa_navigation": 2.5,
+      "modal_transition": 1.5,
+      "notes": "React SPA with GraphQL Federation backend (Go services + Python monolith) on Google Cloud via Fastly CDN. Page transitions are client-side route changes (no full reload) but involve GraphQL data fetching. Exercise question transitions within a set are faster (~1.5s) since they swap content in-place via Perseus. Video pages load YouTube iframe which adds latency. Initial page loads slower than in-page transitions. Wonder Blocks design system components used throughout. Conservative estimates account for slow network and dynamic content hydration."
+    },
+    "never_click": [
+      {
+        "text": "Delete account",
+        "reason": "Permanently deletes user account and all progress data"
+      },
+      {
+        "text": "Log out",
+        "reason": "Ends the session; re-authentication required to continue"
+      },
+      {
+        "text": "Sign out",
+        "reason": "Alternative text for logout; ends session"
+      },
+      {
+        "text": "Remove student",
+        "reason": "Teacher-facing action that removes a student from a class"
+      },
+      {
+        "text": "Leave class",
+        "reason": "Removes the learner from an enrolled class"
+      },
+      {
+        "text": "Report a problem",
+        "reason": "Opens a report dialog for content issues; does not advance learning and may flag account for unusual activity. Contains hidden 'Show Answer' option."
+      },
+      {
+        "text": "Video on YouTube",
+        "reason": "Navigates away from Khan Academy to YouTube; video progress will NOT be tracked and no credit is awarded"
+      },
+      {
+        "text": "Donate",
+        "reason": "Opens donation page; not related to coursework"
+      },
+      {
+        "text": "Settings",
+        "reason": "Opens account settings; not related to coursework and could change configuration"
+      }
+    ],
+    "platform_quirks": [
+      {
+        "id": "khanmigo_modal",
+        "description": "Khanmigo AI tutor (GPT-4 based) may appear as a floating button or modal dialog on exercise pages for paid/district accounts ($9/month or district-provided). It presents as a chat overlay that can obscure exercise content. If detected, it should be dismissed (close button, typically an X in top-right of overlay) before interacting with the exercise. The Khanmigo icon is usually in the bottom-right corner.",
+        "affects": [
+          "EXERCISE",
+          "VIDEO",
+          "ARTICLE"
+        ],
+        "severity": "important"
+      },
+      {
+        "id": "bonus_question",
+        "description": "After completing a practice exercise with exactly 1 incorrect answer, a 'Bonus question' button may appear. If offered, the bonus question MUST be either answered or skipped — leaving it unanswered means the exercise is NOT marked complete and no credit is given. Answering correctly upgrades score to Proficient. Some exercises (reading comprehension, teacher-locked, small question banks) do not offer bonus questions.",
+        "affects": [
+          "EXERCISE"
+        ],
+        "severity": "critical"
+      },
+      {
+        "id": "skip_marks_incorrect",
+        "description": "The 'Skip' button on exercises automatically marks the question as INCORRECT. It also shows a step-by-step solution/hint walkthrough. The old separate 'Hint' button has been replaced by this Skip flow. Do NOT click Skip unless the system is stuck or unable to answer. The Skip button grays out after a question is successfully answered.",
+        "affects": [
+          "EXERCISE"
+        ],
+        "severity": "critical"
+      },
+      {
+        "id": "video_completion_strict",
+        "description": "Videos must be watched in their entirety (every second) to be marked as complete. Skipping even a few seconds results in an incomplete status. Playback speed up to 2x is allowed and still counts for completion. For teacher-assigned videos, 90% must be watched at no greater than 2x speed. The video must play to the very end — closing early even with seconds remaining marks incomplete.",
+        "affects": [
+          "VIDEO"
+        ],
+        "severity": "critical"
+      },
+      {
+        "id": "fallback_video_player",
+        "description": "Under heavy traffic or network restrictions (e.g., YouTube blocked), Khan Academy may serve a fallback video player instead of the YouTube embed. This player lacks speed controls and subtitle customization. A 'Switch to full player' link appears at bottom-right to return to YouTube player.",
+        "affects": [
+          "VIDEO"
+        ],
+        "severity": "important"
+      },
+      {
+        "id": "mastery_challenge_timing",
+        "description": "Mastery Challenges (math courses only) have a 12-hour window to complete once started, and only one can be taken per 12-hour period. They consist of exactly 6 questions covering 3 skills (2 questions each). They appear on the main Course page only when specific conditions are met (Familiar on 3+ skills, Proficient on 1+ skill). Questions are randomized so 2 questions per skill may not be consecutive.",
+        "affects": [
+          "EXERCISE",
+          "NAVIGATION"
+        ],
+        "severity": "important"
+      },
+      {
+        "id": "expression_input_formatting",
+        "description": "Math expression inputs require specific formatting. Parentheses must be used explicitly (e.g., '1/(2p)' not '1/2p'). Square brackets shown in hints should be entered as parentheses. The expression evaluator follows strict PEMDAS order of operations. Formatting errors cause correct answers to be marked wrong.",
+        "affects": [
+          "EXERCISE"
+        ],
+        "severity": "important"
+      },
+      {
+        "id": "welcome_modal_onboarding",
+        "description": "First-time or returning users may see a 'Welcome to Khan Academy!' modal asking 'So we can give you the right tools, let us know if you're a... Learner / Teacher / Parent'. This must be dismissed before content is accessible. District admin goal-setting popups may also appear on login. Cookie consent banner may appear on first visit.",
+        "affects": [
+          "NAVIGATION",
+          "TRANSITION"
+        ],
+        "severity": "important"
+      },
+      {
+        "id": "sidebar_collapse_state",
+        "description": "The left sidebar navigation panel opens by default but can be collapsed by clicking a left-pointing arrow button. If collapsed, lesson activity items are not visible in the accessibility tree for navigation. The sidebar must be expanded (click right-pointing arrow) to navigate between activities within a lesson.",
+        "affects": [
+          "NAVIGATION"
+        ],
+        "severity": "important"
+      },
+      {
+        "id": "quiz_unit_test_no_skip_back",
+        "description": "Quizzes, Unit Tests, and Course Challenges are sequential — once you advance past a question, you cannot go back to it. The 'Skip' button marks it as incorrect permanently for that attempt. Course Challenges contain 30 questions. Unit Tests cover all unit skills. Mastery Challenges have 6 questions.",
+        "affects": [
+          "EXERCISE"
+        ],
+        "severity": "critical"
+      },
+      {
+        "id": "perseus_widget_diversity",
+        "description": "Khan Academy exercises use the Perseus system with 30+ widget types including: radio (multiple choice), input-number, numeric-input, expression (math), interactive-graphs (Mafs library, rebuilt for a11y), categorizer, sorter, orderer, dropdown, matcher, graded-group, graded-group-set, label-image, table, passage, plotter, free-response, matrix, number-line, definition, explanation, image, measurer, and more. Each widget type has different interaction patterns. Some (interactive-graph, sorter, orderer, matcher) require drag-and-drop or complex mouse interactions that may need screenshot-based LLM guidance.",
+        "affects": [
+          "EXERCISE"
+        ],
+        "severity": "critical"
+      },
+      {
+        "id": "opens_a_modal_pattern",
+        "description": "On unit/course navigation pages, clicking video or article items may open content in a modal overlay rather than navigating to a new page. The modal has the video's title as a hyperlink at the top — clicking the title navigates to the full lesson page. This modal behavior is inconsistent and may differ between content types.",
+        "affects": [
+          "NAVIGATION",
+          "VIDEO"
+        ],
+        "severity": "important"
+      }
+    ],
+    "completion_model": {
+      "video": "Must watch every second of the video (no skipping). Playback up to 2x is fine. Completion shown as full colored bar with checkmark icon in sidebar. For assignments: 90% watched at ≤2x speed.",
+      "article": "Auto-completed when visited and scrolled through. No explicit 'Mark as complete' button. Simply opening and scrolling to the bottom registers as read. Green checkmark appears in sidebar.",
+      "exercise": "Must answer all questions in the set (typically 4-7 questions). >70% correct = 'Practiced' level. All correct = 'Proficient'. With bonus question: 1 wrong + bonus correct = 'Proficient'. Exercise NOT complete until all questions (including bonus if offered) are answered or skipped.",
+      "quiz": "Must answer all questions. Scored as percentage. Results affect mastery levels for skills covered. No going back to previous questions.",
+      "unit_test": "Must answer all questions. Results can level skills up or down. Covers all skills in the unit. No going back.",
+      "course_challenge": "30 questions covering entire course. Results affect mastery levels across all course skills. No going back.",
+      "mastery_challenge": "6 questions covering 3 skills (2 each). Math courses only. 12-hour window. 2 correct on a skill = level up, 2 wrong = level down, 1 each = no change."
+    },
+    "bot_detection": {
+      "known_measures": "Khan Academy uses Fastly CDN which provides basic bot detection and rate limiting. No CAPTCHA documented for normal browsing. The platform tracks video watching behavior closely (scrub detection, play state monitoring via YouTube API) to prevent credit gaming. Google Cloud App Engine has default DDoS protections. Static assets served from kastatic.org and kasandbox.org domains. No explicit Cloudflare or dedicated bot management layer documented in public sources.",
+      "recommended_delays": "Add 1-2s random delay between actions. For exercises, wait at least 2s after Check before clicking Next. For video pages, do not interact with the player programmatically faster than a human would. Avoid submitting answers faster than 5s per question to prevent pattern detection. Between page navigations, wait 2-3s minimum. For rapid sequential exercises, vary timing between 3-8s per question."
+    }
+  },
+  "screen_types": {
+    "EXERCISE": {
+      "description": "Exercise screens present a question (rendered by the Perseus system) with various interactive widgets for answering. The question appears in the main content area. At the bottom-right are 'Check' and 'Skip' buttons. A progress indicator (dots or fraction like '3 of 7') shows position in the question set. After checking, correct answers show green with a ding sound; incorrect answers show red. Left sidebar shows current position within the lesson. Exercise types include practice (4-7 questions), quizzes, unit tests, course challenges (30 questions), and mastery challenges (6 questions).",
+      "exists_on_platform": true,
+      "tree_signals": [
+        "HAS_RADIO",
+        "HAS_CHECKBOX",
+        "HAS_TEXT_FIELD",
+        "HAS_BUTTONS"
+      ],
+      "subtypes": [
+        {
+          "name": "multiple_choice",
+          "description": "Radio button selection from 4-5 answer choices. Most common exercise type (~74% of exercises produce number or MC response). Each choice is a clickable radio button with text/math label.",
+          "tree_signal": "HAS_RADIO",
+          "interaction_pattern": "click radio button for desired answer -> click 'Check'"
+        },
+        {
+          "name": "multiple_select",
+          "description": "Checkbox selection where multiple answers may be correct. Instructions say 'Select all that apply' or 'Choose all answers that apply'.",
+          "tree_signal": "HAS_CHECKBOX",
+          "interaction_pattern": "click one or more checkboxes -> click 'Check'"
+        },
+        {
+          "name": "numeric_input",
+          "description": "Text field expecting a numeric answer. May have math keypad overlay. Field accepts typed numbers. Perseus widgets: input-number, numeric-input.",
+          "tree_signal": "HAS_TEXT_FIELD",
+          "interaction_pattern": "click text field -> type numeric answer -> click 'Check'"
+        },
+        {
+          "name": "expression_input",
+          "description": "Math expression field accepting algebraic expressions, fractions, exponents. Uses specialized math input with LaTeX rendering. Requires precise formatting (parentheses matter, PEMDAS enforced). Perseus widget: expression.",
+          "tree_signal": "HAS_TEXT_FIELD",
+          "interaction_pattern": "click expression field -> type math expression (use parentheses carefully) -> click 'Check'"
+        },
+        {
+          "name": "dropdown",
+          "description": "One or more dropdown menus embedded in a sentence or passage. User selects the correct option from each dropdown. Perseus widget: dropdown.",
+          "tree_signal": "HAS_POPUP_BUTTON",
+          "interaction_pattern": "click dropdown -> select option from popup list -> repeat for all dropdowns -> click 'Check'"
+        },
+        {
+          "name": "interactive_graph",
+          "description": "Graphing widget where users plot points, draw lines, or manipulate graph elements. Built with Mafs React library. Supports keyboard and screen reader. Perseus widget: interactive-graphs. Includes number-line widget.",
+          "tree_signal": "HAS_GROUP",
+          "interaction_pattern": "interact with graph (drag points, draw lines, use keyboard arrows) -> click 'Check'. Complex — likely needs screenshot + LLM visual analysis."
+        },
+        {
+          "name": "sorter_orderer",
+          "description": "Items that must be arranged in correct order (orderer) or sorted into categories (sorter/categorizer). Drag-and-drop interface. Perseus widgets: sorter, orderer, categorizer.",
+          "tree_signal": "HAS_LIST",
+          "interaction_pattern": "drag items to correct positions or categories -> click 'Check'. May need screenshot + LLM analysis for correct ordering."
+        },
+        {
+          "name": "matcher",
+          "description": "Match items from two columns. Connect related items. Perseus widget: matcher.",
+          "tree_signal": "HAS_LIST",
+          "interaction_pattern": "match items between columns (drag or select) -> click 'Check'. May need screenshot analysis."
+        },
+        {
+          "name": "label_image",
+          "description": "Image with hotspots or blank labels to fill in. User clicks dots/regions and selects or types labels. Perseus widget: label-image.",
+          "tree_signal": "HAS_IMAGE",
+          "interaction_pattern": "click labeled points on image -> select/type answer for each -> click 'Check'"
+        },
+        {
+          "name": "free_response",
+          "description": "Open text field for free-form written answers. Perseus widget: free-response. Relatively rare.",
+          "tree_signal": "HAS_TEXT_AREA",
+          "interaction_pattern": "click text area -> type response -> click 'Check'"
+        },
+        {
+          "name": "table_input",
+          "description": "Table with editable cells for filling in values. Perseus widgets: table, matrix.",
+          "tree_signal": "HAS_TEXT_FIELD",
+          "interaction_pattern": "click table cells -> type values -> click 'Check'"
+        },
+        {
+          "name": "passage_based",
+          "description": "Reading comprehension with a passage displayed alongside questions. The passage may be long and require scrolling. Perseus widgets: passage, passage-ref. Questions reference specific parts of the passage.",
+          "tree_signal": "HAS_RADIO",
+          "interaction_pattern": "read passage (may need scroll) -> answer questions (usually MC) -> click 'Check'"
+        }
+      ],
+      "handlers_needed": {
+        "always": [
+          "find_all",
+          "send_to_llm",
+          "find_and_click",
+          "scroll"
+        ],
+        "conditional": {
+          "HAS_RADIO": [
+            "find_and_click"
+          ],
+          "HAS_CHECKBOX": [
+            "find_and_click"
+          ],
+          "HAS_TEXT_FIELD": [
+            "find_and_type"
+          ],
+          "HAS_TEXT_AREA": [
+            "find_and_type"
+          ],
+          "HAS_POPUP_BUTTON": [
+            "find_and_click"
+          ],
+          "HAS_IMAGE": [
+            "screenshot",
+            "send_to_llm"
+          ],
+          "HAS_GROUP": [
+            "screenshot",
+            "send_to_llm"
+          ],
+          "HAS_LIST": [
+            "screenshot",
+            "send_to_llm",
+            "drag"
+          ]
+        }
+      },
+      "question_types": {
+        "HAS_RADIO": "solve_choice",
+        "HAS_CHECKBOX": "solve_checkbox",
+        "HAS_TEXT_FIELD": "solve",
+        "HAS_TEXT_AREA": "solve",
+        "HAS_POPUP_BUTTON": "solve_choice",
+        "HAS_LIST": "solve_matching",
+        "HAS_GROUP": "solve_complex",
+        "HAS_IMAGE": "solve_complex"
+      },
+      "submit_button": {
+        "text": "Check",
+        "role": "AXButton",
+        "strategy": "mouse_click",
+        "post_delay": 2.5,
+        "notes": "Located at bottom-right of exercise area. After clicking, the system grades the answer and shows feedback (green/ding for correct, red for incorrect). A brief animation plays. After feedback, a 'Next question' button may appear OR the next question auto-loads. In quizzes/unit tests, the button may show as 'Next' instead of 'Check' after answering. The 'Skip' button appears to the LEFT of 'Check' — do NOT confuse them. Check is the rightmost primary-colored button."
+      },
+      "extraction": {
+        "text": [
+          {
+            "role": "AXStaticText",
+            "parent_contains": "perseus-renderer"
+          },
+          {
+            "role": "AXStaticText",
+            "parent_contains": "framework-perseus"
+          },
+          {
+            "role": "AXRadioButton",
+            "parent_contains": "perseus-renderer"
+          },
+          {
+            "role": "AXTextField",
+            "parent_contains": "perseus-renderer"
+          },
+          {
+            "role": "AXStaticText",
+            "parent_contains": "problem-area"
+          }
+        ],
+        "images": [
+          {
+            "source": "window",
+            "purpose": "Capture the full exercise question including any diagrams, graphs, images, mathematical notation, or interactive elements that contain visual information needed to answer the question"
+          }
+        ]
+      },
+      "expected_next": [
+        "EXERCISE",
+        "TRANSITION",
+        "NAVIGATION"
+      ],
+      "wrong_answer_behavior": "Incorrect answer: selected answer highlights red, audible tone may play, correct answer may or may not be shown depending on exercise type. For practice exercises: advances to next question (wrong answers reduce score percentage). For quizzes/unit tests: advances to next question, wrong answer recorded, may level down skills. After last question in any set, summary card appears showing skills leveled up/down with option to review. If exactly 1 wrong in practice exercise, 'Bonus question' may be offered."
+    },
+    "VIDEO": {
+      "description": "Video screens show an embedded YouTube player (primary) or fallback player in the main content area. Below the video: transcript expandable section, 'Ask a question' discussion box, and community comments. Left sidebar shows lesson position. Video title appears above player. Energy points counter (typically 750-850) updates as video progresses. A correction text box may appear in lower-right of video for known errors (not visible in fullscreen). Some videos have associated questions that pop up during playback.",
+      "exists_on_platform": true,
+      "tree_signals": [
+        "HAS_VIDEO"
+      ],
+      "player_type": "embedded YouTube (primary), custom fallback player (low bandwidth/restricted networks)",
+      "handlers_needed": {
+        "always": [
+          "video_play",
+          "video_poll",
+          "find_and_click"
+        ],
+        "conditional": {}
+      },
+      "states": {
+        "UNSTARTED": {
+          "tree_signal": "YouTube iframe present but video not playing; large play button triangle overlay visible in center of player; AXGroup containing embedded AXWebArea (YouTube) detected; no progress bar advancement",
+          "action": "Click the play button (large triangle overlay in center of YouTube player) or click anywhere on the video area to start playback. If fallback player is shown instead, look for a play button within the custom player controls.",
+          "expected_next": [
+            "VIDEO"
+          ]
+        },
+        "PLAYING": {
+          "tree_signal": "Video actively playing; YouTube progress bar advancing; energy points incrementing in real-time; no play button overlay visible; elapsed time counter increasing",
+          "action": "video_poll ONLY — monitor progress. Do NOT interact with the page. Let the video play to completion. Optionally set speed to 2x via gear icon -> Playback speed -> 2x (this is safe and still counts for completion). Do not scrub/skip forward.",
+          "expected_next": [
+            "VIDEO"
+          ]
+        },
+        "COMPLETE": {
+          "tree_signal": "Video ended; replay circular arrow button may appear in player center; full colored progress bar visible below video icon in sidebar; checkmark icon appears on video item in sidebar; energy points fully awarded (750-850); YouTube end screen may show suggested videos (ignore these)",
+          "action": "Click 'Up next' link or the next item in the left sidebar to advance to next activity. Do NOT click YouTube suggested videos (these are inside the iframe and navigate away). Do NOT click 'Video on YouTube' link below the player.",
+          "expected_next": [
+            "EXERCISE",
+            "ARTICLE",
+            "VIDEO",
+            "NAVIGATION",
+            "TRANSITION"
+          ]
+        }
+      },
+      "extraction": {
+        "text": [
+          {
+            "role": "AXStaticText",
+            "parent_contains": "transcript"
+          },
+          {
+            "role": "AXStaticText",
+            "parent_contains": "video-content"
+          }
+        ],
+        "images": [
+          {
+            "source": "window",
+            "purpose": "Describe the video content frame if transcript is unavailable or for visual-heavy content"
+          }
+        ]
+      },
+      "speed_controls": "YouTube player offers 0.25x, 0.5x, 0.75x, 1x, 1.25x, 1.5x, 1.75x, 2x speeds via the gear/settings icon in the YouTube control bar. Speeds up to 2x do NOT affect completion credit. The fallback player may lack speed controls entirely. To change speed: click gear icon in YouTube player controls -> 'Playback speed' -> select desired speed. 2x recommended for time efficiency."
+    },
+    "ARTICLE": {
+      "description": "Article screens present formatted educational text in the main content area with headers, paragraphs, images, embedded interactive elements ('Try it yourself' inline practice problems rendered by Perseus), and mathematical notation (MathJax/KaTeX). Left sidebar shows lesson position. 'Up next' link or arrow appears at bottom to advance. Articles may contain embedded Perseus widgets for inline practice that are NOT separately graded. Breadcrumb navigation at top shows Course > Unit > Lesson path.",
+      "exists_on_platform": true,
+      "tree_signals": [
+        "HAS_STATIC_TEXT",
+        "HAS_LINKS"
+      ],
+      "handlers_needed": {
+        "always": [
+          "scroll",
+          "find_and_click"
+        ],
+        "conditional": {}
+      },
+      "completion_mechanism": "Articles auto-complete when visited and scrolled through. No explicit 'Mark as complete' button. Opening and scrolling to bottom registers as read. For teacher assignments, viewing the article marks it complete with a green checkmark. The 'Up next' navigation advances to next activity.",
+      "completion_button": {
+        "text": "Up next",
+        "role": "AXLink",
+        "notes": "Not a completion button per se — articles auto-complete on view/scroll. 'Up next' is a navigation link at the bottom of the article or visible in the sidebar that advances to the next activity in the lesson. May also appear as a right-arrow icon or as the next item's title as a clickable link in the sidebar."
+      },
+      "extraction": {
+        "text": [
+          {
+            "role": "AXStaticText",
+            "parent_contains": "article-renderer"
+          },
+          {
+            "role": "AXStaticText",
+            "parent_contains": "perseus-renderer"
+          },
+          {
+            "role": "AXStaticText",
+            "parent_contains": "framework-perseus"
+          }
+        ],
+        "images": [
+          {
+            "source": "window",
+            "purpose": "Capture article content including diagrams, charts, illustrations, or embedded interactive elements"
+          }
+        ]
+      },
+      "expected_next": [
+        "EXERCISE",
+        "VIDEO",
+        "ARTICLE",
+        "NAVIGATION",
+        "TRANSITION"
+      ]
+    },
+    "NAVIGATION": {
+      "description": "Navigation screens include Course pages (list of Units with mastery %), Unit pages (list of Lessons with completion indicators), and Lesson list pages (list of Videos, Articles, Exercises in chronological order). Course pages have 'Course challenge' card at bottom. Unit pages have quiz/test links. Left sidebar shows assignments (ordered by due date) at top and lesson content below. Items have type icons: camera for video, document for article, star/diamond for exercise. Navigation is also possible via breadcrumbs at top of page.",
+      "exists_on_platform": true,
+      "tree_signals": [
+        "HAS_LINKS"
+      ],
+      "handlers_needed": {
+        "always": [
+          "find_all",
+          "send_to_llm",
+          "find_and_click"
+        ]
+      },
+      "question_types": {
+        "always": "navigate"
+      },
+      "extraction": null,
+      "completion_indicators": {
+        "done": [
+          "Checkmark icon (✓) on item",
+          "Full colored progress bar under item",
+          "Green checkmark badge",
+          "'Mastered' label with crown icon",
+          "'Proficient' label",
+          "100% progress text",
+          "Solid filled circle/ring indicator"
+        ],
+        "not_done": [
+          "No icon/badge on item",
+          "No colored bar",
+          "Gray or empty progress indicator",
+          "'Not started' implicit (no label)",
+          "Empty circle/ring indicator",
+          "0% or no percentage shown"
+        ],
+        "in_progress": [
+          "Partial colored progress bar",
+          "Half-colored bar under video items",
+          "'Familiar' label",
+          "'Practiced' label",
+          "'Attempted' label",
+          "Percentage between 1-99%",
+          "Partially filled circle/ring indicator"
+        ]
+      },
+      "navigation_model": "sidebar + list. Left sidebar shows lesson-level navigation in chronological order (videos, articles, exercises listed sequentially). Course and Unit pages use vertical list/card layout. Breadcrumbs at top: Course > Unit > Lesson. Items within a lesson listed vertically with type icons (camera=video, document=article, star=exercise). Sidebar has collapsible arrow and shows assignments section at top ordered by due date.",
+      "adaptive_routing_warning": "Khan Academy has 'Up next' recommendation system that suggests next activity based on learner's progress and mastery level. This is generally safe to follow for sequential completion. However, the Mastery system may recommend skipping ahead or reviewing earlier content based on quiz/test performance. Mastery Challenges appear only when conditions are met (3+ Familiar, 1+ Proficient skills). For complete coursework automation, follow the sidebar lesson list sequentially rather than relying solely on 'Up next' recommendations. The 'recommended' path may skip optional content or suggest Mastery Challenges instead of sequential lesson items.",
+      "expected_next": [
+        "VIDEO",
+        "ARTICLE",
+        "EXERCISE",
+        "TRANSITION",
+        "NAVIGATION"
+      ]
+    },
+    "TRANSITION": {
+      "description": "Transition screens appear between activities and at exercise boundaries. Types: (1) Exercise summary cards showing skills leveled up/down with colored indicators after completing exercise/quiz/test, (2) Welcome modals ('So we can give you the right tools, let us know if you're a... Learner/Teacher/Parent'), (3) District admin goal-setting popups on login, (4) 'Keep learning' prompts, (5) Mastery level-up celebrations with confetti/animations, (6) Cookie consent banners, (7) Quiz/test intro cards showing question count and estimated time, (8) Khanmigo feature announcements.",
+      "exists_on_platform": true,
+      "tree_signals": [
+        "HAS_BUTTONS"
+      ],
+      "handlers_needed": {
+        "always": [
+          "find_and_click"
+        ]
+      },
+      "extraction": null,
+      "common_advance_buttons": [
+        "Next",
+        "Next question",
+        "Continue",
+        "Keep learning",
+        "Got it",
+        "Learner",
+        "Start",
+        "Start quiz",
+        "Start unit test",
+        "Start course challenge",
+        "Begin",
+        "Bonus question",
+        "Close",
+        "Dismiss",
+        "Accept",
+        "OK",
+        "No thanks"
+      ],
+      "expected_next": [
+        "EXERCISE",
+        "VIDEO",
+        "ARTICLE",
+        "NAVIGATION"
+      ]
+    },
+    "UNKNOWN": {
+      "description": "Fallback for unrecognized screens. Could be: account settings, teacher dashboard (wrong account type), Khanmigo AI chat interface, donation/fundraising page, search results, community discussion forums, user profile/badges page, parent/coach dashboard, or any non-learning page.",
+      "exists_on_platform": true,
+      "tree_signals": [],
+      "handlers_needed": {
+        "always": [
+          "find_and_click",
+          "scroll",
+          "wait"
+        ]
+      },
+      "extraction": {
+        "text": [
+          {
+            "role": "AXStaticText",
+            "min_length": 40
+          }
+        ],
+        "images": [
+          {
+            "source": "window"
+          }
+        ]
+      },
+      "expected_next": []
+    }
+  },
+  "accessibility_tree_guide": {
+    "focus_area": "AXWebArea subtree (skip AXMenuBar, AXToolbar, AXTabGroup). Focus on the main content area which contains the exercise/video/article rendered by Perseus/React. The left sidebar navigation is an AXGroup or AXNavigation role containing AXLink elements for lesson items. YouTube player is a nested AXWebArea inside the main AXWebArea.",
+    "key_signals": {
+      "AXRadioButton": "Multiple choice answer option in Perseus exercise. Each radio button = one answer choice. Label text is the answer content. Parent group is the answer choice set.",
+      "AXCheckBox": "Multi-select answer option ('Select all that apply'). Each checkbox = one possible answer.",
+      "AXTextField": "Numeric or expression input field in Perseus. Also appears in search bars (ignore). Exercise inputs are within perseus-renderer or framework-perseus containers.",
+      "AXTextArea": "Free-response text input. Rare in exercises. Also used for 'Ask a question' discussion box below videos (ignore discussion areas).",
+      "AXButton": "Interactive buttons. Key: 'Check' (submit), 'Skip' (skip, marks incorrect), 'Next question' (advance), 'Bonus question' (post-exercise). Also: sidebar collapse arrow, video player controls (fallback player).",
+      "AXLink": "Navigation links. Sidebar lesson items, 'Up next' advancement, breadcrumbs, course/unit/lesson links. DANGER: 'Video on YouTube' and 'Report a problem' are also AXLink — never click these.",
+      "AXPopUpButton": "Dropdown select widget in Perseus exercises. Click to open, then select from popup menu items.",
+      "AXGroup": "Container for grouped content. Video player = AXGroup containing YouTube iframe AXWebArea. Graph widgets = AXGroup. Question blocks = AXGroup within Perseus renderer.",
+      "AXImage": "Images within exercises, articles, or as icons. Exercise images may contain visual info needed to answer questions. Type icons in sidebar navigation.",
+      "AXStaticText": "Text content. Question text, answer choice labels, article paragraphs, video titles. Primary source for extracting question content for LLM processing.",
+      "AXProgressIndicator": "Progress bars. Course/unit mastery %, video playback progress, exercise question progress (e.g., '3 of 7').",
+      "AXList": "Ordered/unordered list. Appears in sorter/orderer Perseus widgets where items need rearranging. Also in article content.",
+      "AXHeading": "Section headers in articles and navigation pages. Useful for identifying content type and page structure."
+    },
+    "completion_indicators_in_tree": {
+      "video_complete": "AXImage with checkmark near video item in sidebar navigation. Progress bar (AXProgressIndicator) at 100%. Full colored bar visible.",
+      "exercise_complete": "AXStaticText showing score (e.g., '100%' or '5 of 7 correct') on summary card. Sidebar item shows checkmark AXImage.",
+      "article_complete": "AXImage with green checkmark near article item in sidebar. Auto-completes on visit/scroll.",
+      "skill_mastered": "AXStaticText 'Mastered' or crown AXImage near skill name in navigation/progress views.",
+      "skill_proficient": "AXStaticText 'Proficient' near skill name in navigation/progress views.",
+      "question_correct": "Green-highlighted answer area. AXStaticText 'Correct!' after Check. Audible ding sound.",
+      "question_incorrect": "Red-highlighted answer area. AXStaticText 'Incorrect' or 'Sorry, try again' or 'Not quite' after Check."
+    },
+    "platform_specific_roles": [
+      {
+        "role": "AXGroup",
+        "context": "Within exercise content area (perseus-renderer)",
+        "meaning": "Perseus widget container. Look inside for AXRadioButton, AXTextField, AXPopUpButton, AXList etc. to determine specific widget type and required interaction pattern."
+      },
+      {
+        "role": "AXWebArea",
+        "context": "Nested within main AXWebArea, inside video content area",
+        "meaning": "Embedded YouTube player iframe. Interaction with YouTube controls (play, pause, settings gear, progress bar) happens within this nested web area. Avoid clicking YouTube suggested videos at end."
+      },
+      {
+        "role": "AXNavigation",
+        "context": "Left sidebar panel",
+        "meaning": "Lesson sidebar containing AXLink elements for all activities in the current lesson. Items listed chronologically. Collapsible via arrow button. Shows assignments at top."
+      },
+      {
+        "role": "AXButton",
+        "context": "Bottom-right of exercise area",
+        "meaning": "Exercise control buttons. 'Check' = rightmost, primary-colored (blue/green). 'Skip' = to its left, secondary-colored. After answering, 'Check' may change to 'Next question' or 'Next'."
+      },
+      {
+        "role": "AXLink",
+        "context": "Bottom of article/video page or in sidebar",
+        "meaning": "'Up next' navigation link to advance to next activity in lesson sequence. May also be the next item's title rendered as a link."
+      },
+      {
+        "role": "AXRadioButton",
+        "context": "Within perseus-renderer exercise area",
+        "meaning": "Multiple choice answer option. The AXRadioButton's AXDescription or AXValue contains the answer text. Click to select, then click 'Check' to submit."
+      }
+    ]
+  },
+  "button_reference": [
+    {
+      "text": "Check",
+      "location": "Bottom-right of exercise content area",
+      "safe": "yes",
+      "behavior": "Submits currently selected/entered answer for grading. Shows correct (green + ding) or incorrect (red) feedback. Advances question flow.",
+      "screen_types": [
+        "EXERCISE"
+      ]
+    },
+    {
+      "text": "Skip",
+      "location": "Bottom-right, LEFT of Check button",
+      "safe": "caution",
+      "behavior": "Skips current question and marks it as INCORRECT. Shows step-by-step solution. Cannot be undone. Only use if genuinely stuck.",
+      "screen_types": [
+        "EXERCISE"
+      ]
+    },
+    {
+      "text": "Next question",
+      "location": "Bottom-right, replaces Check after answering",
+      "safe": "yes",
+      "behavior": "Advances to next question in exercise set after current answer checked.",
+      "screen_types": [
+        "EXERCISE"
+      ]
+    },
+    {
+      "text": "Next",
+      "location": "Bottom-right of quiz/test question or bottom of content",
+      "safe": "yes",
+      "behavior": "Advances to next question in quiz/unit test/course challenge, or to next content item.",
+      "screen_types": [
+        "EXERCISE",
+        "TRANSITION"
+      ]
+    },
+    {
+      "text": "Bonus question",
+      "location": "Exercise summary/completion area",
+      "safe": "yes",
+      "behavior": "Appears after exercise with exactly 1 wrong answer. Presents additional question; correct = upgrades to Proficient. MUST be answered or skipped if offered.",
+      "screen_types": [
+        "EXERCISE",
+        "TRANSITION"
+      ]
+    },
+    {
+      "text": "Up next",
+      "location": "Bottom of content area or in sidebar navigation",
+      "safe": "yes",
+      "behavior": "Navigates to next activity in lesson sequence (video/article/exercise). Primary inter-activity navigation.",
+      "screen_types": [
+        "VIDEO",
+        "ARTICLE",
+        "NAVIGATION"
+      ]
+    },
+    {
+      "text": "Start",
+      "location": "Beginning of quiz/unit test/course challenge",
+      "safe": "yes",
+      "behavior": "Begins assessment. Info card shows question count and estimated time first.",
+      "screen_types": [
+        "TRANSITION"
+      ]
+    },
+    {
+      "text": "Start quiz",
+      "location": "Quiz intro card",
+      "safe": "yes",
+      "behavior": "Begins a quiz assessment.",
+      "screen_types": [
+        "TRANSITION"
+      ]
+    },
+    {
+      "text": "Start unit test",
+      "location": "Unit test intro card",
+      "safe": "yes",
+      "behavior": "Begins a unit test assessment.",
+      "screen_types": [
+        "TRANSITION"
+      ]
+    },
+    {
+      "text": "Start course challenge",
+      "location": "Course challenge intro card",
+      "safe": "yes",
+      "behavior": "Begins the 30-question course challenge.",
+      "screen_types": [
+        "TRANSITION"
+      ]
+    },
+    {
+      "text": "Continue",
+      "location": "Various transition screens",
+      "safe": "yes",
+      "behavior": "Dismisses interstitial screens and continues to next content or resumes progress.",
+      "screen_types": [
+        "TRANSITION"
+      ]
+    },
+    {
+      "text": "Keep learning",
+      "location": "Post-exercise summary screen",
+      "safe": "yes",
+      "behavior": "Returns to lesson flow after viewing exercise results summary.",
+      "screen_types": [
+        "TRANSITION"
+      ]
+    },
+    {
+      "text": "Learner",
+      "location": "Welcome/onboarding modal",
+      "safe": "yes",
+      "behavior": "Selects 'Learner' role in onboarding modal. Sets UI for student experience. Click to dismiss modal.",
+      "screen_types": [
+        "TRANSITION"
+      ]
+    },
+    {
+      "text": "Got it",
+      "location": "Tooltip/overlay dismissal",
+      "safe": "yes",
+      "behavior": "Dismisses informational tooltips, feature announcements, cookie banners.",
+      "screen_types": [
+        "TRANSITION"
+      ]
+    },
+    {
+      "text": "Accept",
+      "location": "Cookie consent banner",
+      "safe": "yes",
+      "behavior": "Accepts cookies and dismisses consent banner.",
+      "screen_types": [
+        "TRANSITION"
+      ]
+    },
+    {
+      "text": "Close",
+      "location": "Modal dialogs, Khanmigo chat overlay, video modals",
+      "safe": "yes",
+      "behavior": "Closes modal windows including Khanmigo overlay, info popups, video modals opened from navigation pages.",
+      "screen_types": [
+        "TRANSITION",
+        "EXERCISE",
+        "VIDEO"
+      ]
+    },
+    {
+      "text": "No thanks",
+      "location": "Khanmigo or feature upsell prompts",
+      "safe": "yes",
+      "behavior": "Dismisses optional feature prompts without enabling them.",
+      "screen_types": [
+        "TRANSITION"
+      ]
+    },
+    {
+      "text": "Stuck? Use a hint",
+      "location": "Below answer options in exercise",
+      "safe": "caution",
+      "behavior": "Shows hints for current question. In current UI this is integrated into Skip flow. Using may affect scoring perception.",
+      "screen_types": [
+        "EXERCISE"
+      ]
+    },
+    {
+      "text": "Report a problem",
+      "location": "Lower-right of exercise page",
+      "safe": "never",
+      "behavior": "Opens content issue reporting dialog. Does NOT advance learning. Contains hidden 'Show Answer'. May flag account.",
+      "screen_types": [
+        "EXERCISE"
+      ]
+    },
+    {
+      "text": "Video on YouTube",
+      "location": "Bottom of video page below comments",
+      "safe": "never",
+      "behavior": "Navigates away to YouTube.com. No progress tracked, no credit awarded, no energy points, assignments not marked complete.",
+      "screen_types": [
+        "VIDEO"
+      ]
+    },
+    {
+      "text": "Switch to full player",
+      "location": "Bottom-right of fallback video player",
+      "safe": "caution",
+      "behavior": "Reloads video in YouTube player from fallback player. Causes page reload. Only relevant if fallback player was served.",
+      "screen_types": [
+        "VIDEO"
+      ]
+    },
+    {
+      "text": "Log out",
+      "location": "User menu dropdown top-right",
+      "safe": "never",
+      "behavior": "Ends session. Unsaved quiz/test progress may be lost. Requires re-authentication.",
+      "screen_types": [
+        "NAVIGATION"
+      ]
+    },
+    {
+      "text": "Sign out",
+      "location": "User menu dropdown top-right",
+      "safe": "never",
+      "behavior": "Alternative text for logout. Same effect as Log out.",
+      "screen_types": [
+        "NAVIGATION"
+      ]
+    },
+    {
+      "text": "Donate",
+      "location": "Top navigation or footer",
+      "safe": "never",
+      "behavior": "Navigates to donation page. Not related to coursework.",
+      "screen_types": [
+        "NAVIGATION"
+      ]
+    },
+    {
+      "text": "Search",
+      "location": "Top navigation bar magnifying glass",
+      "safe": "caution",
+      "behavior": "Opens search overlay. Could navigate away from current lesson flow if result clicked.",
+      "screen_types": [
+        "NAVIGATION"
+      ]
+    },
+    {
+      "text": "Courses",
+      "location": "Top navigation bar",
+      "safe": "caution",
+      "behavior": "Opens course catalog. Could navigate away from current lesson.",
+      "screen_types": [
+        "NAVIGATION"
+      ]
+    },
+    {
+      "text": "Teacher",
+      "location": "Welcome/onboarding modal",
+      "safe": "never",
+      "behavior": "Selects 'Teacher' role — wrong role for student coursework automation. Sets UI for teacher dashboard.",
+      "screen_types": [
+        "TRANSITION"
+      ]
+    },
+    {
+      "text": "Parent",
+      "location": "Welcome/onboarding modal",
+      "safe": "never",
+      "behavior": "Selects 'Parent' role — wrong role for student coursework automation. Sets UI for parent/coach view.",
+      "screen_types": [
+        "TRANSITION"
+      ]
+    }
+  ]
+}
