@@ -291,15 +291,13 @@ def register_all_handlers(ctx: ExecutionContext):
         if has_text_field:
             payload["has_text_field"] = True
 
-        # For solve_complex: include screenshot so Gemini can SEE the screen
-        # (diagrams, checked boxes, layout context that text extraction misses)
-        if question_type == "solve_complex":
-            try:
-                screenshot_bytes = capture_screenshot(ctx.app_name)
-                payload["screenshot_b64"] = base64.b64encode(screenshot_bytes).decode("utf-8")
-                btlog(f"send_to_llm: attached screenshot for solve_complex ({len(screenshot_bytes)} bytes)")
-            except Exception as e:
-                btlog(f"send_to_llm: screenshot capture failed (continuing without): {e}")
+        # Always include screenshot so Spark can use vision when needed
+        try:
+            screenshot_bytes = capture_screenshot(ctx.app_name)
+            payload["screenshot_b64"] = base64.b64encode(screenshot_bytes).decode("utf-8")
+            btlog(f"send_to_llm: attached screenshot ({len(screenshot_bytes)} bytes)")
+        except Exception as e:
+            btlog(f"send_to_llm: screenshot capture failed (continuing without): {e}")
 
         # For matching: convert popup dicts to LLM-friendly format
         if items:

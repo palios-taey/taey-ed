@@ -103,20 +103,16 @@ Format:
 IMPORTANT: Return ONLY valid JSON. No explanation. Use EXACT option text as shown above - copy it character for character."""
 
 
-NAVIGATE_PROMPT = """You are helping navigate an educational platform. Given a list of content items, select the FIRST incomplete item in curriculum order (top to bottom).
+NAVIGATE_PROMPT = """You are helping navigate an educational platform. Look at the screenshot and the list of clickable items below. Select the FIRST incomplete content item in curriculum order (top to bottom).
 
 RULES:
-1. Go through items in order (item 1 first, then 2, etc.). Pick the FIRST one that is incomplete.
-2. Skip site navigation links (logos, search bars, "skip to content", site name, etc.) — only consider actual course content items.
-3. Skip any item whose description starts with "completed" or whose label indicates completion (contains "Completed", "Mastery points", a checkmark, or a percentage score).
+1. Use the screenshot to understand the page layout and identify which items are completed vs incomplete. Completed items typically have checkmarks, green indicators, progress bars, or "Completed" text. Incomplete items have no indicator, say "Not started", "Start", or "unfamiliar".
+2. Go through items in curriculum order (top to bottom on the page). Pick the FIRST one that is incomplete.
+3. Skip site navigation links (logos, search bars, "skip to content", site name, etc.) — only consider actual course content items.
 4. Within the SAME topic/section, videos and articles must be completed before exercises. If you see an incomplete video or article in the same section as an exercise, pick the video/article first.
 
-Each item has a label (status text near the item) and a description (the item's link text).
-
-Items:
+Clickable items (in page order):
 {items_block}
-
-An item is INCOMPLETE if its label is empty, says "Not started", "Start", "unfamiliar", or has no completion indicator.
 
 Reply with ONLY the exact DESCRIPTION text of the first incomplete item. Nothing else. Just the description text, copied exactly."""
 
@@ -472,23 +468,33 @@ def _ensure_gemini():
         return False
 
 
-async def _solve_with_gemini(prompt: str) -> Optional[str]:
+async def _solve_with_gemini(prompt: str, screenshot_b64: str = None) -> Optional[str]:
     """
-    Send a text prompt to Gemini 2.5 Pro and return raw response.
+    Send a prompt to Gemini 2.5 Pro and return raw response.
+    Optionally includes screenshot for vision-based reasoning.
 
-    Primary model for all text-based Q&A (paid tier, no rate limits).
+    Primary model for all Q&A (paid tier, no rate limits).
     Returns None on failure so caller can fall back to Claude CLI.
     """
     if not _ensure_gemini():
         return None
 
     try:
+        import base64
         import google.generativeai as genai
+
+        # Build content: text + optional screenshot
+        content_parts = [prompt]
+        if screenshot_b64:
+            image_data = base64.b64decode(screenshot_b64)
+            mime_type = "image/png" if image_data[:8] == b'\x89PNG\r\n\x1a\n' else "image/jpeg"
+            content_parts.append({"mime_type": mime_type, "data": image_data})
+            logger.info(f"_solve_with_gemini: including screenshot ({len(image_data)} bytes)")
 
         for model_name in GEMINI_MODELS:
             try:
                 model = genai.GenerativeModel(model_name)
-                response = model.generate_content(prompt)
+                response = model.generate_content(content_parts)
                 raw = response.text.strip()
                 if raw and len(raw) >= 1:
                     logger.info(f"Gemini ({model_name}) answered, len={len(raw)}")
@@ -804,7 +810,7 @@ async def generate_answer(
     model_used = "gemini-2.5-pro"
     raw_answer = ""
 
-    gemini_response = await _solve_with_gemini(prompt)
+    gemini_response = await _solve_with_gemini(prompt, screenshot_b64=screenshot_b64)
     if gemini_response:
         raw_answer = gemini_response
         model_used = "gemini-2.5-pro"
