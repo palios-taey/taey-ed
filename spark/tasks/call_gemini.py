@@ -103,18 +103,21 @@ Format:
 IMPORTANT: Return ONLY valid JSON. No explanation. Use EXACT option text as shown above - copy it character for character."""
 
 
-NAVIGATE_PROMPT = """You are helping navigate an educational platform. Look at the screenshot and the list of clickable items below. Select the FIRST incomplete content item in curriculum order (top to bottom).
+NAVIGATE_PROMPT = """You are helping navigate an educational platform. Look at the screenshot and the list of clickable items below. Select the FIRST incomplete content item in strict curriculum order.
 
 RULES:
-1. Use the screenshot to understand the page layout and identify which items are completed vs incomplete. Completed items typically have checkmarks, green indicators, progress bars, or "Completed" text. Incomplete items have no indicator, say "Not started", "Start", or "unfamiliar".
-2. Go through items in curriculum order (top to bottom on the page). Pick the FIRST one that is incomplete.
-3. Skip site navigation links (logos, search bars, "skip to content", site name, etc.) — only consider actual course content items.
-4. Within the SAME topic/section, videos and articles must be completed before exercises. If you see an incomplete video or article in the same section as an exercise, pick the video/article first.
+1. IGNORE these — they are NOT curriculum items:
+   - Site navigation (logos, search, "skip to content", login, etc.)
+   - Recommendation sections ("Up next for you", "Recommended", "Continue where you left off", etc.)
+   - Footer links (About, Donate, Privacy, social media, etc.)
+2. Use the screenshot to determine completion status. Completed items have checkmarks, green indicators, or "Completed" text. Incomplete items have no indicator or say "Not started", "unfamiliar", etc.
+3. Follow STRICT curriculum order: go through items top to bottom as numbered. Pick the FIRST incomplete curriculum item. Do NOT jump ahead based on visual prominence or recommendations.
+4. Within the SAME section, videos and articles must be completed before exercises.
 
 Clickable items (in page order):
 {items_block}
 
-Reply with ONLY the exact DESCRIPTION text of the first incomplete item. Nothing else. Just the description text, copied exactly."""
+Reply with ONLY the exact DESCRIPTION text of the first incomplete curriculum item. Nothing else. Just the description text, copied exactly."""
 
 
 SOLVE_MATCHING_PROMPT = """You are a helpful tutor assisting a student with their homework. This is a matching quiz from an online course. Your job is to match each numbered item to its correct description from the given options.
@@ -701,11 +704,15 @@ async def generate_answer(
     # Build prompt based on question type
     if question_type == "navigate" and items:
         # Navigation: pick first incomplete item from list
+        # Cap at 50 items — course content is in the first ~30 links,
+        # rest is footer/social/recommendations noise
+        nav_items = items[:50]
+        if len(items) > 50:
+            logger.info(f"navigate: capped items from {len(items)} to 50")
         items_parts = []
-        for i, item in enumerate(items):
-            label = item.get("label", "")
+        for i, item in enumerate(nav_items):
             desc = item.get("popup_desc", item.get("description", ""))
-            items_parts.append(f"{i+1}. Label: \"{label}\" — Description: \"{desc}\"")
+            items_parts.append(f"{i+1}. {desc}")
         items_block = "\n".join(items_parts)
 
         prompt = NAVIGATE_PROMPT.format(items_block=items_block)
