@@ -400,9 +400,6 @@ def register_all_handlers(ctx: ExecutionContext):
             _dump(web_area)
             return None
 
-        # Build KB context once
-        kb_context = build_kb_context(ctx.platform, ctx.course_id, "assessment")
-
         # Process EACH question individually
         for i, q in enumerate(questions):
             q_type = q["type"]
@@ -412,6 +409,11 @@ def register_all_handlers(ctx: ExecutionContext):
             btlog(f"  question: {q_text[:80]}")
             for j, opt in enumerate(options):
                 btlog(f"  opt {j}: {opt[:70]}")
+
+            # Build KB context per-question (keyword search on actual question text)
+            kb_context = build_kb_context(ctx.platform, ctx.course_id, q_text)
+            if kb_context:
+                btlog(f"  KB context: {len(kb_context)} items")
 
             if q_type == "radio":
                 # Single choice - use proven solve_choice
