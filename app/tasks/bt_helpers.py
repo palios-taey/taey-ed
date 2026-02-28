@@ -67,10 +67,10 @@ def _extract_menu_items(tree: dict, role: str) -> list:
     return items
 
 
-def _find_preceding_label(tree: dict, popup_desc: str) -> str:
+def _find_preceding_label(tree: dict, target_desc: str, target_role: str = "AXPopUpButton") -> str:
     """
-    Find AXStaticText label that precedes a popup button in tree order.
-    Associates each popup with its question item (e.g., "Canvas", "Voice Mode").
+    Find AXStaticText label that precedes a target element in tree order.
+    Works for any role (AXPopUpButton, AXLink, etc.).
     """
     last_label = ""
     found = [False]
@@ -92,10 +92,10 @@ def _find_preceding_label(tree: dict, popup_desc: str) -> str:
             if text:
                 last_label = text
 
-        if role == "AXPopUpButton":
+        if role == target_role:
             desc = node.get("description") or node.get("title") or node.get("value") or ""
             desc = str(desc).strip()
-            if popup_desc.lower() in desc.lower():
+            if target_desc.lower() in desc.lower():
                 found[0] = True
                 return
 

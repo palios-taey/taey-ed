@@ -160,7 +160,7 @@ def register_all_handlers(ctx: ExecutionContext):
 
         items = []
         for element, desc in results:
-            label = _find_preceding_label(tree, desc)
+            label = _find_preceding_label(tree, desc, target_role=role)
             items.append({
                 "element": element,
                 "description": desc,
