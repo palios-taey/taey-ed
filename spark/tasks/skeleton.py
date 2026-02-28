@@ -1,4 +1,3 @@
-# STATUS: FROZEN - Proven in v7. Verified 2026-02-19. Do not modify.
 """
 Layer 1: Skeleton Extractor
 
@@ -9,8 +8,10 @@ for "the same screen with different question text."
 KEEP: role, depth, sibling index, relative vertical position (top/mid/bottom)
 DROP: actual text content, exact coordinates, transient states, element_id
 
-The skeleton gets embedded into a 4096-dim vector for semantic matching
-against Weaviate's ScreenEmbedding collection.
+V21: Added web_content_only scoping. When True (default), skeleton is
+computed from the AXWebArea subtree only, excluding browser chrome
+(menus, bookmarks, tabs). This ensures the hash reflects page content
+structure, not browser state.
 
 Design principle: Two exercise pages with different questions should produce
 the SAME skeleton. A video page and an exercise page should produce
@@ -21,20 +22,30 @@ import hashlib
 from typing import Optional
 
 
-def extract_skeleton(tree: dict, viewport_height: int = 900) -> str:
+def extract_skeleton(tree: dict, viewport_height: int = 900,
+                     web_content_only: bool = True) -> str:
     """
     Extract structural skeleton from accessibility tree.
 
     Args:
         tree: Nested dict from Mac's capture_tree (role, name, children, position, size)
         viewport_height: Screen height for vertical third calculation (default Mac viewport)
+        web_content_only: If True, scope to AXWebArea subtree (excludes browser chrome).
+                         Default True for V21 — hashes should reflect page content, not
+                         browser menus/bookmarks/tabs.
 
     Returns:
         Deterministic string representation of tree structure.
         Same screen type with different content → same skeleton.
     """
+    root = tree
+    if web_content_only:
+        web_area = _find_web_area(tree)
+        if web_area:
+            root = web_area
+
     lines = []
-    _walk(tree, depth=0, sibling_idx=0, viewport_height=viewport_height, lines=lines)
+    _walk(root, depth=0, sibling_idx=0, viewport_height=viewport_height, lines=lines)
     return "\n".join(lines)
 
 
@@ -188,6 +199,22 @@ def _walk_children(
     # Recurse into structural/interactive children
     for i, child in structural_children:
         _walk(child, depth, i, viewport_height, lines, max_depth)
+
+
+def _find_web_area(node: dict) -> Optional[dict]:
+    """
+    Find the first AXWebArea node in the tree (BFS).
+    AXWebArea is the root of browser page content — everything above it
+    is browser chrome (menus, toolbar, bookmarks, tabs).
+    """
+    stack = [node]
+    while stack:
+        n = stack.pop(0)  # BFS — find shallowest AXWebArea
+        if n.get("role") == "AXWebArea":
+            return n
+        for child in n.get("children", []):
+            stack.append(child)
+    return None
 
 
 def _collect_text(node: dict, texts: list[str]):

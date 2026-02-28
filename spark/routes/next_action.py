@@ -1,5 +1,5 @@
 """
-/next_action — V8 Directive Model.
+/next_action — V21 Directive Model.
 
 Mac sends state, Spark returns ONE directive. All intelligence server-side.
 Mac is a dumb executor; Spark makes all decisions.
@@ -7,26 +7,19 @@ Mac is a dumb executor; Spark makes all decisions.
 Flow:
   1. Active consultation? → wait or execute completed BT
   2. Validate previous action → stuck detection, wrong-answer detection
-  3. match_screen() → set-difference signature matching (JSON files)
-  4. Match found:
-     A. Has BT → execute_tree
-     B. No BT but screen_type known → consult with type context (skip classification)
-  5. No match → classify via Gemini → store signature → consult for BT
-     UNKNOWN → consultation escalation
+  3. BT failure recovery → retry with context, delete bad hash mappings
+  4. V21 Exact hash lookup → skeleton hash → variant → stored BT (free, ~0ms)
+  5. No hash match → knowledge gate → Flash classify ($0.002) → variant BT cache → Pro ($0.09)
 
 Screen types (6 universal + 1 escalation, IMS Caliper validated):
   NAVIGATION, VIDEO, ARTICLE, EXERCISE, TRANSITION, UNKNOWN
 
-Bug fixes from V7:
-  #8: Uses CURRENT tree hash for validation, not stale consultation hash
-  #9: Single match_screen call (remove double-call)
-  #10: Log + flag when after-tree matches nothing
-
-Post-V8 fixes (2026-02-21):
-  - Removed navigation auto-detect (link count heuristic broke Coursera)
-  - Gemini classification replaces heuristic analyze_tree()
-  - V17: Replaced Weaviate vector matching with set-difference signature matching
-  - Signatures stored in /var/spark/taey-ed/signatures/{platform}.json
+V21 (2026-02-28):
+  - Replaced Jaccard signature matching with skeleton hash + Flash classification
+  - Skeleton scoped to AXWebArea (excludes browser chrome)
+  - Variant BT cache: BTs stored per variant, not per screen instance
+  - Non-deterministic variants (EXERCISE_*) always get fresh Pro BT
+  - Data files: /var/spark/taey-ed/variant_bts/ and /var/spark/taey-ed/hash_index/
 """
 
 import json
@@ -39,7 +32,6 @@ from fastapi import APIRouter
 
 from spark.models import NextActionRequest, ClientState
 from spark.tasks.load_yaml import load_yaml
-from spark.tasks.match_screen import match_screen
 from spark.tasks.handle_consultation import (
     request_consultation,
     check_consultation,
@@ -164,26 +156,20 @@ def _store_and_return_bt(result: dict, platform: str, tree: dict, sig_hash: str)
     """Store a Gemini-built BT with the signature and return execute_tree directive."""
     variant_type = result.get("screen_type", "UNKNOWN")
 
-    # Only store BT with signature for deterministic types (VIDEO, ARTICLE).
-    # Non-deterministic types store signature for recognition but NOT the BT,
-    # so Gemini rebuilds it fresh each time with current screen content.
-    from spark.tasks.screen_type_util import is_deterministic
-    bt_to_store = result["tree"] if is_deterministic(variant_type) else None
-
+    # V21: Store BT in variant cache (deterministic types only)
+    from spark.tasks.variant_cache import store_variant_bt, is_non_deterministic, register_hash
     extract_config = result.get("extract")
     try:
-        from spark.tasks.screen_signatures import learn_screen
-        stored_hash = learn_screen(
-            platform=platform,
-            tree=tree,
-            screen_type=variant_type,
-            behavior_tree=bt_to_store,
-            extract=extract_config,
-            source="gemini_bt",
-        )
-        logger.info(f"  Stored {'BT + ' if bt_to_store else ''}signature for {variant_type} (hash={stored_hash[:12]})")
+        if not is_non_deterministic(variant_type):
+            store_variant_bt(platform, variant_type, result["tree"],
+                             extract_config, result.get("expected_next"),
+                             source="gemini_bt")
+        # Register hash → variant if we have a skeleton hash
+        if sig_hash:
+            register_hash(platform, sig_hash, variant_type)
+        logger.info(f"  Stored variant BT for {variant_type} (hash={sig_hash[:12] if sig_hash else 'none'})")
     except Exception as e:
-        logger.warning(f"  Failed to store Gemini BT: {e}")
+        logger.warning(f"  Failed to store variant BT: {e}")
 
     bt_json = json.dumps(result["tree"], indent=2)
     logger.info(f"  Gemini BT for {variant_type}:\n{bt_json}")
@@ -290,31 +276,34 @@ def _validate_last_action(platform: str, config: dict, lr, current_tree: dict) -
             "reason": "same_screen",
         }
 
-    # Re-match the after_tree to identify where we landed
-    after_tree_to_match = lr.after_tree or current_tree
-    match_result = match_screen(after_tree_to_match, config)
-    new_screen = match_result.get("screen") if match_result.get("matched") else None
+    # V21: Use skeleton hash to identify where we landed
+    from spark.tasks.skeleton import extract_skeleton, skeleton_hash as _skel_hash
+    from spark.tasks.variant_cache import lookup_by_hash
 
-    # Bug #10: Log when after-tree matches nothing
+    after_tree_to_match = lr.after_tree or current_tree
+    after_skel = extract_skeleton(after_tree_to_match)
+    after_hash = _skel_hash(after_skel)
+    hash_result = lookup_by_hash(platform, after_hash)
+    new_screen = hash_result["variant"] if hash_result else None
+
     if not new_screen:
         logger.warning(
-            f"Step 2: after_tree matches NO known screen "
-            f"(hash changed {lr.tree_hash_before[:12]} → {lr.tree_hash_after[:12]})"
+            f"Step 2: after_tree matches NO known variant "
+            f"(hash changed {lr.tree_hash_before[:12]} → {lr.tree_hash_after[:12]}, "
+            f"after_skel_hash={after_hash[:12]})"
         )
 
     # Wrong answer detection
     wrong_answer = False
     if new_screen and new_screen == lr.screen:
-        # V20: Use get_master_category() instead of hardcoded keyword list
         from spark.tasks.screen_type_util import get_master_category
         screen_master = get_master_category(new_screen)
         if screen_master == "EXERCISE":
-            after_skeleton_hash = match_result.get("skeleton_hash", "")
             directive_hash = lr.directive_skeleton_hash or ""
-            if after_skeleton_hash and directive_hash and after_skeleton_hash != directive_hash:
+            if after_hash and directive_hash and after_hash != directive_hash:
                 logger.info(
-                    f"Step 2: Same screen type {new_screen} but different skeleton hash "
-                    f"({directive_hash[:12]} → {after_skeleton_hash[:12]}). "
+                    f"Step 2: Same variant {new_screen} but different skeleton hash "
+                    f"({directive_hash[:12]} → {after_hash[:12]}). "
                     f"Progress to next question, not wrong answer."
                 )
             else:
@@ -326,7 +315,7 @@ def _validate_last_action(platform: str, config: dict, lr, current_tree: dict) -
     if expected_next and new_screen:
         expected_match = new_screen in expected_next
 
-    validated = tree_changed and (new_screen is not None) and not wrong_answer
+    validated = tree_changed and not wrong_answer
 
     return {
         "validated": validated,
@@ -334,6 +323,7 @@ def _validate_last_action(platform: str, config: dict, lr, current_tree: dict) -
         "new_screen": new_screen,
         "wrong_answer": wrong_answer,
         "expected_next_match": expected_match,
+        "after_skeleton_hash": after_hash,
         "reason": "validated" if validated else ("wrong_answer" if wrong_answer else "validation_failed"),
     }
 
@@ -390,12 +380,8 @@ def next_action(request: NextActionRequest):
                 user_guidance=user_guidance,
             )
             if result:
-                sig_hash = ""
-                try:
-                    _match = match_screen(tree, config)
-                    sig_hash = _match.get("sig_hash", "")
-                except Exception:
-                    pass
+                from spark.tasks.skeleton import extract_skeleton, skeleton_hash as _urgent_hash
+                sig_hash = _urgent_hash(extract_skeleton(tree))
                 return _store_and_return_bt(result, platform, tree, sig_hash)
 
             # Gemini couldn't build BT — ask user for more specific guidance
@@ -482,8 +468,10 @@ def next_action(request: NextActionRequest):
         if vr["validated"]:
             if lr.directive_skeleton_hash:
                 try:
-                    from spark.tasks.screen_signatures import mark_validated
-                    mark_validated(platform=platform, sig_hash=lr.directive_skeleton_hash)
+                    from spark.tasks.variant_cache import mark_variant_validated, mark_hash_validated
+                    mark_hash_validated(platform=platform, skel_hash=lr.directive_skeleton_hash)
+                    if lr.screen:
+                        mark_variant_validated(platform=platform, variant=lr.screen)
                     logger.info(
                         f"Step 2: Validated {lr.screen} "
                         f"(hash={lr.directive_skeleton_hash[:12]}, "
@@ -511,10 +499,12 @@ def next_action(request: NextActionRequest):
             )
             if lr.directive_skeleton_hash:
                 try:
-                    from spark.tasks.screen_signatures import delete_screen
-                    delete_screen(platform=platform, sig_hash=lr.directive_skeleton_hash)
+                    from spark.tasks.variant_cache import delete_hash, invalidate_variant_bt
+                    delete_hash(platform=platform, skel_hash=lr.directive_skeleton_hash)
+                    if lr.screen:
+                        invalidate_variant_bt(platform=platform, variant=lr.screen)
                 except Exception as e:
-                    logger.warning(f"Step 2: delete_screen failed: {e}")
+                    logger.warning(f"Step 2: delete_hash failed: {e}")
             from spark.tasks.classify_screen import _describe_screen
             _reason = (f"WRONG ANSWER on screen '{lr.screen}'. "
                        f"Tell me what the correct action is for this screen.")
@@ -547,14 +537,16 @@ def next_action(request: NextActionRequest):
                 f"STUCK: {lr.screen} unchanged after action. "
                 f"ONE TRY ONLY — stopping. Hash={lr.directive_skeleton_hash or 'none'}"
             )
-            # Delete the failed entry so it doesn't re-match next time
+            # Delete the failed hash mapping so it doesn't re-match next time
             if lr.directive_skeleton_hash:
                 try:
-                    from spark.tasks.screen_signatures import delete_screen as _del_screen
-                    _del_screen(platform=platform, sig_hash=lr.directive_skeleton_hash)
-                    logger.info(f"Step 2.5: Deleted failed screen entry {lr.directive_skeleton_hash[:12]}")
+                    from spark.tasks.variant_cache import delete_hash as _del_hash, invalidate_variant_bt as _inv_bt
+                    _del_hash(platform=platform, skel_hash=lr.directive_skeleton_hash)
+                    if lr.screen:
+                        _inv_bt(platform=platform, variant=lr.screen)
+                    logger.info(f"Step 2.5: Deleted failed hash {lr.directive_skeleton_hash[:12]}")
                 except Exception as e:
-                    logger.warning(f"Step 2.5: delete_screen failed: {e}")
+                    logger.warning(f"Step 2.5: delete_hash failed: {e}")
             from spark.tasks.classify_screen import _describe_screen
             _reason = (f"STUCK: Screen '{lr.screen}' unchanged after action. "
                        f"Tell me what to do on this screen.")
@@ -645,13 +637,8 @@ def next_action(request: NextActionRequest):
                 user_guidance=lr.user_response,
             )
             if result:
-                # Get signature hash for storage
-                sig_hash = ""
-                try:
-                    match_result = match_screen(tree, config)
-                    sig_hash = match_result.get("sig_hash", "")
-                except Exception:
-                    pass
+                from spark.tasks.skeleton import extract_skeleton, skeleton_hash as _s3_hash
+                sig_hash = _s3_hash(extract_skeleton(tree))
                 return _store_and_return_bt(result, platform, tree, sig_hash)
 
             # Gemini couldn't build BT from user guidance — fall back to consultation
@@ -679,29 +666,27 @@ def next_action(request: NextActionRequest):
                 failed_bt_debug=lr.bt_debug_tail,
             )
             if result:
-                retry_sig_hash = ""
-                try:
-                    retry_match = match_screen(tree, config)
-                    retry_sig_hash = retry_match.get("sig_hash", "")
-                except Exception:
-                    pass
+                from spark.tasks.skeleton import extract_skeleton, skeleton_hash as _s3r_hash
+                retry_sig_hash = _s3r_hash(extract_skeleton(tree))
                 return _store_and_return_bt(result, platform, tree, retry_sig_hash)
             logger.error("Step 3: Gemini retry with failure context also failed — stopping")
 
         # ── Screen mismatch recovery ──
-        # If the BT came from a signature match and it failed (including Gemini
-        # retry), the signature was likely a false match. Delete it and let
+        # If the BT came from a hash match and it failed (including Gemini
+        # retry), the hash mapping was likely wrong. Delete it and let
         # Steps 4/5 re-classify the screen from scratch.
         if lr.directive_skeleton_hash:
             logger.info(
-                f"Step 3: BT failed for signature-matched screen {lr.screen} "
-                f"— deleting signature {lr.directive_skeleton_hash[:12]} and re-classifying"
+                f"Step 3: BT failed for hash-matched screen {lr.screen} "
+                f"— deleting hash {lr.directive_skeleton_hash[:12]} and re-classifying"
             )
             try:
-                from spark.tasks.screen_signatures import delete_screen
-                delete_screen(platform=platform, sig_hash=lr.directive_skeleton_hash)
+                from spark.tasks.variant_cache import delete_hash as _del_hash3, invalidate_variant_bt as _inv_bt3
+                _del_hash3(platform=platform, skel_hash=lr.directive_skeleton_hash)
+                if lr.screen:
+                    _inv_bt3(platform=platform, variant=lr.screen)
             except Exception as e:
-                logger.warning(f"Step 3: delete_screen failed: {e}")
+                logger.warning(f"Step 3: delete_hash failed: {e}")
             # Fall through to Step 4/5 for fresh classification
         else:
             # No signature to invalidate — genuinely stuck. STOP.
@@ -732,70 +717,62 @@ def next_action(request: NextActionRequest):
                 build_question(_reason),
             ])
 
-    # ── Step 4: Match screen (set-difference signatures) ──
-    logger.info("  Step 4: Signature matching...")
-    match_result = match_screen(tree, config)
-    logger.info(
-        f"    match_result: matched={match_result.get('matched')} "
-        f"screen={match_result.get('screen', 'none')} "
-        f"screen_type={match_result.get('screen_type', 'none')} "
-        f"has_tree={'yes' if match_result.get('tree') else 'no'} "
-        f"score={match_result.get('match_score', 'n/a')}"
+    # ── Step 4: V21 Exact hash lookup ──
+    from spark.tasks.skeleton import extract_skeleton, skeleton_hash as _skel_hash
+    from spark.tasks.variant_cache import (
+        lookup_by_hash, lookup_variant_bt, register_hash, delete_hash,
+        store_variant_bt, is_non_deterministic, mark_variant_validated,
+        mark_hash_validated,
     )
 
-    # Step 4: Signature matched — check for stored BT first, then templates
-    if match_result.get("matched"):
-        known_type = match_result.get("screen_type", "")
-        sig_hash = match_result.get("sig_hash", "")
-        stored_bt = match_result.get("tree")
+    skel = extract_skeleton(tree)  # web_content_only=True by default
+    skel_hash = _skel_hash(skel)
+    logger.info(f"  Step 4: Exact hash lookup (hash={skel_hash[:12]})")
 
-        # Only reuse stored BTs for deterministic screen types (VIDEO, ARTICLE).
-        # All other types get fresh Gemini analysis since content changes.
-        from spark.tasks.screen_type_util import is_deterministic
-        if stored_bt and isinstance(stored_bt, dict) and stored_bt.get("type") and is_deterministic(known_type):
-            logger.info(
-                f"  Step 4: REUSING deterministic BT for {known_type} "
-                f"(hash={sig_hash[:12]}, score={match_result.get('match_score', 0):.2f})"
-            )
-            bt_json = json.dumps(stored_bt, indent=2)
-            logger.info(f"  Stored BT:\n{bt_json}")
-            return _with_chat({
-                "directive": "execute_tree",
-                "directive_id": _make_directive_id(),
-                "tree": stored_bt,
-                "screen": known_type,
-                "skeleton_hash": sig_hash,
-                "extract": match_result.get("extract") or _get_extract_for_type(
-                    known_type, tree=tree, screenshot_b64=request.screenshot_b64, platform=platform),
-                "expected_next": [],
-            }, platform, [build_status(f"Executing {known_type} automation")])
+    hash_result = lookup_by_hash(platform, skel_hash)
+    if hash_result:
+        variant = hash_result["variant"]
+        logger.info(f"  Step 4: Hash hit → variant={variant}")
 
-        # Non-deterministic type or no stored BT — build fresh via Gemini
-        logger.info(
-            f"  Step 4B: Screen recognized as {known_type} "
-            f"(hash={sig_hash[:12]}, "
-            f"score={match_result.get('match_score', 0):.2f}) — building fresh BT via Gemini"
-        )
+        # For deterministic variants, try to reuse stored BT
+        if not is_non_deterministic(variant):
+            bt_entry = lookup_variant_bt(platform, variant)
+            if bt_entry and bt_entry.get("behavior_tree"):
+                stored_bt = bt_entry["behavior_tree"]
+                bt_json = json.dumps(stored_bt, indent=2)
+                logger.info(f"  Step 4: REUSING BT for {variant} (hash={skel_hash[:12]})")
+                logger.info(f"  Stored BT:\n{bt_json}")
+                return _with_chat({
+                    "directive": "execute_tree",
+                    "directive_id": _make_directive_id(),
+                    "tree": stored_bt,
+                    "screen": variant,
+                    "skeleton_hash": skel_hash,
+                    "extract": bt_entry.get("extract"),
+                    "expected_next": bt_entry.get("expected_next", []),
+                }, platform, [build_status(f"Executing {variant} automation")])
+
+        # Non-deterministic variant (EXERCISE) or no stored BT — need Pro
+        logger.info(f"  Step 4B: Hash known as {variant} but needs fresh BT")
+        screen_type = variant.split("_")[0] if "_" in variant else variant
         if not request.screenshot_b64:
             return {
                 "directive": "need_screenshot",
                 "directive_id": _make_directive_id(),
-                "reason": f"click_target_for_{known_type}",
+                "reason": f"bt_build_for_{variant}",
             }
-        return _build_screen_directive(request, platform, tree, known_type, sig_hash)
+        return _build_screen_directive(request, platform, tree, screen_type, skel_hash)
 
-    # ── Step 5: No match — check knowledge gate, then classify ──
-    logger.info("  Step 5: No signature match — checking knowledge gate")
+    # ── Step 5: No hash match — knowledge gate, then Flash classify ──
+    logger.info(f"  Step 5: No hash match — checking knowledge gate")
 
     # Knowledge gate: no knowledge.json = research required first
-    # Notify Spark Claude ONCE, then return wait directive on every subsequent call
     from spark.tasks.knowledge_loader import load_knowledge
     knowledge = load_knowledge(platform)
     if not knowledge:
         knowledge_path = f"spark/platforms/{platform}/knowledge.json"
         logger.warning(f"  Step 5: KNOWLEDGE GATE — no knowledge.json for {platform}")
 
-        # Only notify once per platform — use a flag file to prevent spam
         gate_flag = Path(f"/tmp/taey-ed-knowledge-gate-{platform}")
         if not gate_flag.exists():
             from spark.tasks.notify_tmux import notify_spark_claude
@@ -825,57 +802,64 @@ def next_action(request: NextActionRequest):
             "reason": f"Waiting for knowledge.json research for {platform}",
         }
 
-    # Knowledge gate passed — clean up flag file if it exists
+    # Knowledge gate passed
     gate_flag = Path(f"/tmp/taey-ed-knowledge-gate-{platform}")
     if gate_flag.exists():
         gate_flag.unlink()
         logger.info(f"  Step 5: Knowledge gate cleared for {platform}")
 
-    # V20: Always use Gemini for classification. No structural shortcutting.
-    # Per REQUIREMENTS.md: "Gemini sees the screen. Gemini decides."
-    logger.info("  Step 5: Knowledge exists — classifying via Gemini")
-
-    # Step 5A: Need screenshot for classification + BT building
+    # Step 5A: Need screenshot for Flash classification
     if not request.screenshot_b64:
-        logger.info("  Step 5A: Requesting screenshot for classification/BT building")
+        logger.info("  Step 5A: Requesting screenshot for Flash classification")
         return {
             "directive": "need_screenshot",
             "directive_id": _make_directive_id(),
             "reason": "classification_needed",
         }
 
-    # V20: Always classify via Gemini — no structural shortcuts
-    from spark.tasks.classify_screen import classify_screen
-    classification = classify_screen(
-        tree=tree,
+    # Step 5B: Flash classification (screenshot only, ~$0.002)
+    from spark.tasks.flash_classify import classify_screen_flash
+    logger.info("  Step 5B: Flash classifying screen...")
+    classification = classify_screen_flash(
         screenshot_b64=request.screenshot_b64,
         platform=platform,
     )
+    variant = classification.get("variant", "UNKNOWN")
     screen_type = classification.get("screen_type", "UNKNOWN")
     logger.info(
-        f"  Step 5A: Gemini classification result: type={screen_type} "
-        f"variant={classification.get('platform_variant', '')} "
+        f"  Step 5B: Flash result: type={screen_type} variant={variant} "
         f"note={classification.get('confidence_note', '')}"
     )
 
-    # ── Step 5B: Store classification as signature ──
-    # Store immediately so this screen is recognized on next encounter.
-    if screen_type != "UNKNOWN":
-        try:
-            from spark.tasks.screen_signatures import learn_screen
-            sig_hash = learn_screen(
-                platform=platform,
-                tree=tree,
-                screen_type=screen_type,
-                source="classification",
-            )
-            logger.info(f"  Step 5B: Stored {screen_type} signature ({sig_hash})")
-        except Exception as e:
-            logger.error(f"  Step 5B: Failed to store classification: {e}")
+    # Register hash → variant for future exact lookups
+    if variant != "UNKNOWN":
+        register_hash(platform, skel_hash, variant)
 
-    # ── Step 5C: Return directive based on classification ──
+    # Step 5C: Check variant BT cache (deterministic variants only)
+    if variant != "UNKNOWN" and not is_non_deterministic(variant):
+        bt_entry = lookup_variant_bt(platform, variant)
+        if bt_entry and bt_entry.get("behavior_tree"):
+            stored_bt = bt_entry["behavior_tree"]
+            bt_json = json.dumps(stored_bt, indent=2)
+            logger.info(f"  Step 5C: REUSING variant BT for {variant}")
+            logger.info(f"  Stored BT:\n{bt_json}")
+            return _with_chat({
+                "directive": "execute_tree",
+                "directive_id": _make_directive_id(),
+                "tree": stored_bt,
+                "screen": variant,
+                "skeleton_hash": skel_hash,
+                "extract": bt_entry.get("extract"),
+                "expected_next": bt_entry.get("expected_next", []),
+            }, platform, [build_status(f"Executing {variant} automation")])
+
+    # Step 5D: Pro builds BT (new variant or non-deterministic)
+    logger.info(f"  Step 5D: Pro building BT for {variant}")
+    store_message(platform, build_status(f"Identified screen as {variant}"))
+
     if screen_type == "UNKNOWN":
-        logger.warning("  Step 5C: UNKNOWN screen — trying Gemini BT builder first")
+        # UNKNOWN — try Pro BT builder, escalate if it fails
+        logger.warning("  Step 5D: UNKNOWN screen — trying Gemini Pro BT builder")
         from spark.tasks.classify_screen import build_bt_from_tree, _describe_screen
         result = build_bt_from_tree(
             tree=tree,
@@ -884,25 +868,17 @@ def next_action(request: NextActionRequest):
             screen_type="UNKNOWN",
         )
         if result:
-            logger.info(f"  Step 5C: Gemini built BT for UNKNOWN → {result.get('screen_type')}")
-            # Store signature with the Gemini-determined type
-            try:
-                from spark.tasks.screen_signatures import learn_screen
-                sig_hash = learn_screen(
-                    platform=platform,
-                    tree=tree,
-                    screen_type=result["screen_type"],
-                    behavior_tree=result["tree"],
-                    extract=result.get("extract"),
-                    source="gemini_bt",
-                )
-            except Exception as e:
-                sig_hash = ""
-                logger.warning(f"  Step 5C: Signature storage failed: {e}")
-            return _store_and_return_bt(result, platform, tree, sig_hash)
+            result_variant = result.get("screen_type", "UNKNOWN")
+            logger.info(f"  Step 5D: Pro built BT for UNKNOWN → {result_variant}")
+            # Store variant BT if deterministic
+            if not is_non_deterministic(result_variant):
+                store_variant_bt(platform, result_variant, result["tree"],
+                                 result.get("extract"), result.get("expected_next"))
+            register_hash(platform, skel_hash, result_variant)
+            return _store_and_return_bt(result, platform, tree, skel_hash)
 
-        # Gemini BT builder failed — describe screen and ask for user input
-        logger.warning("  Step 5C: Gemini BT builder failed — requesting user input")
+        # Pro failed — escalate
+        logger.warning("  Step 5D: Pro BT builder failed — requesting user input")
         _reason = ("Unknown screen type. Gemini could not build a behavior tree. "
                    "Tell me what to do on this screen.")
         return _with_chat({
@@ -917,7 +893,14 @@ def next_action(request: NextActionRequest):
             build_question(_reason),
         ])
 
-    # Known type — identified via classification, now build BT
-    logger.info(f"  Step 5C: {screen_type} — building BT")
-    store_message(platform, build_status(f"Identified screen as {screen_type}"))
-    return _build_screen_directive(request, platform, tree, screen_type, sig_hash if screen_type != "UNKNOWN" else "")
+    # Known type — build BT via Pro, store for variant
+    result = _build_screen_directive(request, platform, tree, screen_type, skel_hash)
+
+    # If Pro built a BT successfully, store it under the variant for reuse
+    if result.get("directive") == "execute_tree" and not is_non_deterministic(variant):
+        bt = result.get("tree")
+        if bt:
+            store_variant_bt(platform, variant, bt,
+                             result.get("extract"), result.get("expected_next"))
+
+    return result

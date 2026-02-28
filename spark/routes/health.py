@@ -12,6 +12,6 @@ def health():
 
 @router.get("/screen-memory/stats")
 def screen_memory_stats_endpoint():
-    """Get screen signature stats."""
-    from spark.tasks.screen_signatures import get_stats
+    """Get variant cache stats (V21)."""
+    from spark.tasks.variant_cache import get_stats
     return get_stats()
