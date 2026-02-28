@@ -605,27 +605,21 @@ EXTRACT FIELD KEYS:
       - "min_length" (optional): Skip text shorter than this (filters button labels, nav links)
   "images" (list[dict]): Image extraction options
 
-Examples:
-  Video with transcript section:
-    {{"text": [{{"role": "AXStaticText", "parent_contains": "transcript"}}],
-     "images": [{{"source": "window", "purpose": "Describe the video content being shown"}}]}}
+CRITICAL: Do NOT guess parent container names. LOOK AT THE ACTUAL TREE above to find real
+container names, roles, and text patterns for THIS screen. Every platform is different.
 
-  Article inside a content container:
-    {{"text": [{{"role": "AXStaticText", "parent_contains": "lesson-content", "min_length": 20}}],
-     "images": [{{"source": "window", "purpose": "Describe the article content"}}]}}
+Examples (illustrative structure only — replace values with what you see in the tree):
+  Content with identifiable parent container:
+    {{"text": [{{"role": "AXStaticText", "parent_contains": "ACTUAL_PARENT_NAME_FROM_TREE", "min_length": 20}}],
+     "images": [{{"source": "window", "purpose": "Describe the content"}}]}}
 
-  Exercise with radio buttons:
-    {{"question": {{"role": "AXStaticText", "contains": "?"}},
-     "options": {{"role": "AXRadioButton"}},
-     "text": [{{"role": "AXStaticText", "parent_contains": "question", "min_length": 10}}],
+  Exercise screen (when BT uses extract_question):
+    {{"question": {{"role": "AXStaticText", "min_length": 20}},
+     "options": {{"role": "ACTUAL_OPTION_ROLE_FROM_TREE"}},
+     "text": [{{"role": "AXStaticText", "min_length": 10}}],
      "images": [{{"source": "window", "purpose": "Describe the exercise"}}]}}
 
-  Discussion prompt / text input exercise:
-    {{"question": {{"role": "AXStaticText", "min_length": 30}},
-     "text": [{{"role": "AXStaticText", "min_length": 20}}],
-     "images": [{{"source": "window", "purpose": "Capture the discussion prompt"}}]}}
-
-  Generic content (when you can't find a specific parent):
+  Fallback (no clear parent container):
     {{"text": [{{"role": "AXStaticText", "min_length": 40}}],
      "images": [{{"source": "window"}}]}}
 
