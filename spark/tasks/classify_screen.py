@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Optional
 
 from spark.tasks.prune_tree import prune_tree_for_prompt
+from spark.tasks.prompt_codex import _find_web_area
 
 logger = logging.getLogger(__name__)
 
@@ -159,8 +160,11 @@ def classify_screen(
                     f"\n\n=== COMPLETION INDICATORS IN TREE ===\n{indicator_text}"
                 )
 
+        # Scope to AXWebArea (web content only — excludes browser chrome and other tabs)
+        scoped_tree = _find_web_area(tree)
+
         # Pruned tree for prompt (strip coordinates, element_id, redundant fields)
-        pruned = prune_tree_for_prompt(tree)
+        pruned = prune_tree_for_prompt(scoped_tree)
         tree_json = json.dumps(pruned, indent=None, ensure_ascii=False)
 
         # Build prompt
@@ -319,7 +323,8 @@ def get_click_target(
     Used for NAVIGATION and TRANSITION screens where the BT structure
     is fixed but the click target varies per screen.
     """
-    pruned = prune_tree_for_prompt(tree)
+    scoped_tree = _find_web_area(tree)
+    pruned = prune_tree_for_prompt(scoped_tree)
     tree_json = json.dumps(pruned, indent=None, ensure_ascii=False)
     prompt = CLICK_TARGET_PROMPT.format(
         screen_type=screen_type,
@@ -440,7 +445,8 @@ def build_extract_config(
     if not _should_extract(screen_type):
         return None
 
-    pruned = prune_tree_for_prompt(tree)
+    scoped_tree = _find_web_area(tree)
+    pruned = prune_tree_for_prompt(scoped_tree)
     tree_json = json.dumps(pruned, indent=None, ensure_ascii=False)
     prompt = _EXTRACT_PROMPT.format(
         platform=platform,
@@ -521,7 +527,7 @@ Every screen on an LMS needs to be completed. That means:
 
 === CRITICAL RULES ===
 1. ONLY use handlers listed in the HANDLER REFERENCE below. Any unlisted action SILENTLY FAILS.
-2. Use element NAME (text) to find elements, NEVER element_id. IDs are for your reference only.
+2. Use element TITLE or DESCRIPTION (text) to find elements, NEVER element_id. IDs are for your reference only.
 3. Click strategies for BROWSER platforms (Chrome): "mouse_click" for buttons and links (ax_press SILENTLY FAILS on Chrome).
    "focus_space" for radio buttons and checkboxes. "focus_enter" also works for buttons.
    IMPORTANT: After a scroll action, the element positions change. Always use a wait(1.0) after scroll
@@ -695,7 +701,7 @@ def _validate_bt(tree: dict) -> bool:
 
 def _describe_screen(tree: dict) -> str:
     """Generate a human-readable description of key screen elements."""
-    from spark.tasks.prompt_codex import analyze_tree, _find_web_area, _count_roles
+    from spark.tasks.prompt_codex import analyze_tree, _count_roles
 
     tags = analyze_tree(tree)
     web_area = _find_web_area(tree)
@@ -995,7 +1001,6 @@ def build_bt_from_tree(
         prompt_parts.append(failed_section)
 
     # Scope to AXWebArea (web content only — excludes browser chrome and other tabs)
-    from spark.tasks.prompt_codex import _find_web_area
     scoped_tree = _find_web_area(tree)
 
     # Pruned tree for prompt (strip coordinates, element_id, redundant fields)

@@ -162,7 +162,7 @@ ESCALATION LEVEL: {escalation_level} (attempt {spark_attempts})
 === CARDINAL RULES ===
 1. FALLBACK NODES ARE SUPPORTED. Use type: "fallback" for try-or-skip patterns
    (try first child, if it fails try next). Use type: "sequence" for must-all-succeed.
-2. Execution uses NAME and ROLE to find elements, NEVER element_id.
+2. Execution uses TITLE, DESCRIPTION, and ROLE to find elements, NEVER element_id.
    Element IDs in tree.json are for YOUR visual reference only.
 3. NEVER target "Skip" buttons. Exercises must be SOLVED or ESCALATED.
 4. NEVER click "Up next" on Khan Academy (mastery-adaptive, skips content).
