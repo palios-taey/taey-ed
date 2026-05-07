@@ -12,7 +12,7 @@ import uuid
 
 import redis
 
-_redis = redis.Redis(host="192.168.100.10", port=6379, decode_responses=True)
+_redis = redis.Redis(host="127.0.0.1", port=6379, decode_responses=True)
 
 
 def _key(platform: str) -> str:

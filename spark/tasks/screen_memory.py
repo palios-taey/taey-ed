@@ -42,10 +42,10 @@ from weaviate.classes.config import Configure, Property, DataType
 from weaviate.classes.query import MetadataQuery
 
 # Infrastructure
-WEAVIATE_HOST = "192.168.100.10"
+WEAVIATE_HOST = "127.0.0.1"
 WEAVIATE_PORT = 8088
 WEAVIATE_GRPC = 50052
-EMBEDDING_URL = "http://192.168.100.10:8091"
+EMBEDDING_URL = "http://127.0.0.1:8089"
 EMBEDDING_MODEL = "Qwen/Qwen3-Embedding-8B"
 
 COLLECTION_NAME = "ScreenEmbedding"

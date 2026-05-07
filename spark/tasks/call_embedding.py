@@ -17,7 +17,7 @@ from typing import List, Union
 # LOCKED CONSTANTS - These define the API contract with Mac/DeepTutor
 # DO NOT CHANGE without updating all consumers (Mac LightRAG, DeepTutor)
 # =============================================================================
-EMBED_URL = "http://192.168.100.10:8091"  # LOCKED: NCCL nginx LB
+EMBED_URL = "http://127.0.0.1:8089"  # Mira-local Qwen3-Embedding (was NCCL nginx LB)
 MODEL = "Qwen/Qwen3-Embedding-8B"          # LOCKED: Model name
 EMBEDDING_DIM = 3072                        # LOCKED: MRL dimension (DeepTutor compatible)
 
