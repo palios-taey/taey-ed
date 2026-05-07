@@ -47,6 +47,57 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+# ── Claude-primary platforms ──
+# Platforms in this set bypass Flash classify + Pro BT-build entirely and route
+# screens directly to the taey-ed tmux session (Spark Claude) for vision +
+# BT-building. Reversible by removing the platform from the set.
+CLAUDE_PRIMARY_PLATFORMS = {"khan_academy"}
+
+
+def _maybe_claude_consult(
+    request,
+    platform: str,
+    tree: dict,
+    screen_type: str,
+    user_guidance: str | None = None,
+    failed_bt: dict | None = None,
+    failed_bt_debug: str | None = None,
+) -> dict | None:
+    """
+    If platform is Claude-primary, request a minimal consultation and return a
+    directive (consulting / wait / need_screenshot). Returns None for
+    Gemini-primary platforms so the caller proceeds normally.
+    """
+    if platform not in CLAUDE_PRIMARY_PLATFORMS:
+        return None
+
+    if not request.screenshot_b64:
+        return {
+            "directive": "need_screenshot",
+            "directive_id": _make_directive_id(),
+            "reason": f"claude_consultation_{screen_type}",
+        }
+
+    parts = []
+    if user_guidance:
+        parts.append(user_guidance)
+    if failed_bt:
+        parts.append(f"PREVIOUS BT FAILED:\n{json.dumps(failed_bt, indent=2)}")
+    if failed_bt_debug:
+        parts.append(f"BT debug log:\n{failed_bt_debug}")
+    combined = "\n\n".join(parts) if parts else None
+
+    from spark.tasks.consultation_request import request_minimal_consultation
+    consult_result = request_minimal_consultation(
+        platform=platform,
+        tree=tree,
+        screenshot_b64=request.screenshot_b64,
+        screen_type=screen_type,
+        user_guidance=combined,
+    )
+    return _consultation_or_wait(consult_result)
+
+
 # ── Failure tracking (prevents infinite reclassify loops) ──
 # Key: "{platform}:{variant}" → {"count": int, "last_failed": float}
 # Reset when a DIFFERENT variant succeeds on the same platform.
@@ -281,6 +332,13 @@ def _build_screen_directive(request, platform: str, tree: dict, screen_type: str
     2. No screenshot? → deterministic template as last resort
     3. Both fail? → user_input_needed
     """
+    # Claude-primary platforms: bypass Gemini, route to consultation.
+    _claude_directive = _maybe_claude_consult(
+        request, platform, tree, screen_type, user_guidance=user_guidance,
+    )
+    if _claude_directive:
+        return _claude_directive
+
     from spark.tasks.classify_screen import get_click_target, build_bt_from_tree
 
     # PRIMARY PATH: Gemini 2.5 Pro builds a BT specific to THIS screen
@@ -418,6 +476,15 @@ def next_action(request: NextActionRequest):
                 if lr.bt_debug_tail:
                     guidance_parts.append(f"Last BT debug:\n{lr.bt_debug_tail}")
             user_guidance = "\n".join(guidance_parts)
+
+            # Claude-primary platforms: bypass Gemini, route to consultation.
+            _claude_directive = _maybe_claude_consult(
+                request, platform, tree,
+                screen_type=(lr.screen if lr else "UNKNOWN") or "UNKNOWN",
+                user_guidance=user_guidance,
+            )
+            if _claude_directive:
+                return _claude_directive
 
             # Classify current screen to give Gemini context
             from spark.tasks.classify_screen import classify_screen, build_bt_from_tree
@@ -691,6 +758,16 @@ def next_action(request: NextActionRequest):
                     "directive_id": _make_directive_id(),
                     "reason": "user_guidance_needs_screenshot",
                 }
+
+            # Claude-primary platforms: route to consultation with the user guidance.
+            _claude_directive = _maybe_claude_consult(
+                request, platform, tree,
+                screen_type=lr.screen or "UNKNOWN",
+                user_guidance=lr.user_response,
+            )
+            if _claude_directive:
+                return _claude_directive
+
             from spark.tasks.classify_screen import build_bt_from_tree
             result = build_bt_from_tree(
                 tree=tree,
@@ -719,6 +796,18 @@ def next_action(request: NextActionRequest):
             logger.info(
                 f"Step 3: BT failed for {lr.screen} — retrying with failure context"
             )
+
+            # Claude-primary platforms: route the retry to consultation with
+            # the failed BT + debug log as context.
+            _claude_directive = _maybe_claude_consult(
+                request, platform, tree,
+                screen_type=lr.screen or "UNKNOWN",
+                failed_bt=lr.failed_bt,
+                failed_bt_debug=lr.bt_debug_tail,
+            )
+            if _claude_directive:
+                return _claude_directive
+
             from spark.tasks.classify_screen import build_bt_from_tree
             result = build_bt_from_tree(
                 tree=tree,
@@ -906,6 +995,15 @@ def next_action(request: NextActionRequest):
     if gate_flag.exists():
         gate_flag.unlink()
         logger.info(f"  Step 5: Knowledge gate cleared for {platform}")
+
+    # Claude-primary platforms: skip Flash + Pro entirely, route to consultation.
+    # Step 4 (exact hash → reuse stored BT) still applies and stays free.
+    _claude_directive = _maybe_claude_consult(
+        request, platform, tree, screen_type="UNKNOWN",
+    )
+    if _claude_directive:
+        logger.info(f"  Step 5: Claude-primary platform — routing to consultation")
+        return _claude_directive
 
     # Step 5A: Need screenshot for Flash classification
     if not request.screenshot_b64:

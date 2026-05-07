@@ -280,6 +280,101 @@ def request_consultation(
     }
 
 
+def request_minimal_consultation(
+    platform: str,
+    tree: dict,
+    screenshot_b64: str,
+    screen_type: str = "UNKNOWN",
+    user_guidance: str | None = None,
+) -> dict:
+    """
+    Bypass-Gemini consultation for Claude-primary platforms.
+
+    Saves tree + screenshot to /tmp/taey-ed-consult/{id}/ and notifies the
+    taey-ed tmux session with a short prompt. The receiving Spark Claude has
+    the codebase loaded (CLAUDE.md, BT handler reference) so we send pointers,
+    not embedded documentation.
+    """
+    CONSULT_DIR.mkdir(parents=True, exist_ok=True)
+
+    # ONE AT A TIME: if any consultation is pending, return it.
+    for _p in CONSULT_DIR.iterdir():
+        if not _p.is_dir() or not _p.name.startswith("consult_"):
+            continue
+        _mf = _p / "metadata.json"
+        if _mf.exists():
+            try:
+                _m = json.loads(_mf.read_text())
+                if _m.get("status") == "pending":
+                    existing_id = _m.get("consultation_id", "")
+                    return {
+                        "consultation_id": existing_id,
+                        "status": "existing",
+                        "message": f"Waiting on existing consultation {existing_id}",
+                    }
+            except Exception:
+                continue
+
+    consultation_id = f"consult_{int(time.time())}_{uuid.uuid4().hex[:8]}"
+    consult_path = CONSULT_DIR / consultation_id
+    consult_path.mkdir(parents=True, exist_ok=True)
+
+    if screenshot_b64:
+        try:
+            (consult_path / "screenshot.png").write_bytes(base64.b64decode(screenshot_b64))
+        except Exception as e:
+            logger.error(f"Failed to save screenshot: {e}")
+
+    atomic_write_json(consult_path / "tree.json", tree)
+
+    metadata = {
+        "consultation_id": consultation_id,
+        "platform": platform,
+        "screen_hash": compute_tree_hash(tree),
+        "context": {
+            "screen_type_hint": screen_type,
+            "user_guidance": user_guidance or "",
+        },
+        "timestamp": datetime.now().isoformat(),
+        "status": "pending",
+        "escalation_level": "claude_primary",
+        "spark_attempts": 0,
+    }
+    atomic_write_json(consult_path / "metadata.json", metadata)
+
+    set_consultation_state(consultation_id, ConsultationState(
+        consultation_id=consultation_id,
+        screen_hash=compute_tree_hash(tree),
+        platform=platform,
+    ))
+
+    guidance_block = f"\nUser guidance / failure context:\n{user_guidance}\n" if user_guidance else ""
+    notification = (
+        f"CLAUDE-PRIMARY CONSULTATION {consultation_id}\n"
+        f"Platform: {platform}\n"
+        f"Screen-type hint: {screen_type}\n"
+        f"Files: {consult_path}/screenshot.png, {consult_path}/tree.json\n"
+        f"Knowledge: spark/platforms/{platform}/knowledge.json\n"
+        f"{guidance_block}"
+        f"Look at the screenshot, read the tree, build a behavior tree to advance "
+        f"this screen, and write {consult_path}/response.json with shape:\n"
+        f'  {{"tree": <BT>, "screen_type": "<TYPE>", '
+        f'"expected_next": [], "extract": null}}\n'
+        f"BT format and handler list are in CLAUDE.md. Never click Skip or Up next."
+    )
+    notify_spark_claude(notification)
+
+    logger.info(f"Minimal consultation created: {consultation_id} at {consult_path}")
+    _cleanup_old_consultations(keep=2)
+
+    return {
+        "consultation_id": consultation_id,
+        "status": "pending",
+        "message": "Spark Claude notified (minimal prompt)",
+        "path": str(consult_path),
+    }
+
+
 def check_consultation(consultation_id: str) -> dict:
     """
     Check if consultation response is available.
