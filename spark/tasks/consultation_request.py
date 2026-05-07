@@ -297,9 +297,14 @@ def request_minimal_consultation(
     """
     CONSULT_DIR.mkdir(parents=True, exist_ok=True)
 
-    # ONE AT A TIME: if any consultation is pending, return it.
+    # ONE AT A TIME: if any consultation is pending AND not yet responded,
+    # return it. A consultation with response.json on disk is effectively
+    # complete even if metadata.status was never flipped (Spark Claude
+    # writes the response file directly without going through the API).
     for _p in CONSULT_DIR.iterdir():
         if not _p.is_dir() or not _p.name.startswith("consult_"):
+            continue
+        if (_p / "response.json").exists():
             continue
         _mf = _p / "metadata.json"
         if _mf.exists():
