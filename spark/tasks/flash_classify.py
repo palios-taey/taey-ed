@@ -115,10 +115,11 @@ def classify_screen_flash(
     """
     try:
         import google.generativeai as genai
+        from .paths import SECRETS_PATH
 
-        secrets_path = Path(__file__).parent.parent / "palios-taey-secrets.json"
+        secrets_path = SECRETS_PATH
         if not secrets_path.exists():
-            logger.error("flash_classify: Gemini API key not configured")
+            logger.error(f"flash_classify: Gemini API key not configured (secrets at {secrets_path} missing)")
             return _fallback("no_api_key")
 
         secrets = json.loads(secrets_path.read_text())

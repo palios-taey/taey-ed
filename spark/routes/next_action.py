@@ -19,7 +19,7 @@ V21 (2026-02-28):
   - Skeleton scoped to AXWebArea (excludes browser chrome)
   - Variant BT cache: BTs stored per variant, not per screen instance
   - Non-deterministic variants (EXERCISE_*) always get fresh Pro BT
-  - Data files: /var/spark/taey-ed/variant_bts/ and /var/spark/taey-ed/hash_index/
+  - Data files under TAEY_ED_DATA_DIR (see spark/tasks/paths.py)
 """
 
 import json
@@ -153,7 +153,7 @@ def _get_extract_for_type(screen_type: str, tree: dict = None,
     return None
 
 
-FINGERPRINT_LOG_DIR = Path("/var/spark/taey-ed/fingerprint_log")
+from spark.tasks.paths import FINGERPRINT_LOG_DIR
 
 
 def _log_fingerprint(platform: str, variant: str, skel_hash: str, fingerprint: dict):

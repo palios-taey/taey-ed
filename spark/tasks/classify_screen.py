@@ -117,11 +117,11 @@ def classify_screen(
     """
     try:
         import google.generativeai as genai
+        from .paths import SECRETS_PATH
 
-        # Load API key
-        secrets_path = Path(__file__).parent.parent / "palios-taey-secrets.json"
+        secrets_path = SECRETS_PATH
         if not secrets_path.exists():
-            logger.error("classify_screen: palios-taey-secrets.json missing")
+            logger.error(f"classify_screen: secrets file missing at {secrets_path}")
             return {
                 "success": False,
                 "screen_type": "UNKNOWN",
@@ -252,10 +252,11 @@ def _gemini_api_call(prompt: str, screenshot_b64: Optional[str] = None,
     """
     try:
         import google.generativeai as genai
+        from .paths import SECRETS_PATH
 
-        secrets_path = Path(__file__).parent.parent / "palios-taey-secrets.json"
+        secrets_path = SECRETS_PATH
         if not secrets_path.exists():
-            logger.error("Gemini API key not configured")
+            logger.error(f"Gemini API key not configured (secrets at {secrets_path} missing)")
             return None
 
         secrets = json.loads(secrets_path.read_text())

@@ -19,7 +19,7 @@ import google.generativeai as genai
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
-SECRETS_PATH = Path(__file__).parent.parent / "palios-taey-secrets.json"
+from .paths import SECRETS_PATH
 MIN_IMAGE_SIZE = 32  # Minimum image dimension
 
 # Load API key

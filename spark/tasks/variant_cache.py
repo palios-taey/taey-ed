@@ -5,9 +5,9 @@ Replaces V17-V20 Jaccard signature matching with:
   1. Exact skeleton hash → variant lookup (free, ~0ms)
   2. Variant → stored BT lookup (no fuzzy matching)
 
-Two data files per platform:
-  /var/spark/taey-ed/variant_bts/{platform}.json   — BT per variant
-  /var/spark/taey-ed/hash_index/{platform}.json     — hash → variant mapping
+Two data files per platform under TAEY_ED_DATA_DIR (see paths.py):
+  variant_bts/{platform}.json   — BT per variant
+  hash_index/{platform}.json    — hash → variant mapping
 
 No Jaccard. No discriminative markers. No common element computation.
 If the hash doesn't match exactly, don't guess — let Flash classify.
@@ -20,10 +20,9 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-logger = logging.getLogger("taey-ed")
+from .paths import VARIANT_BTS_DIR, HASH_INDEX_DIR
 
-VARIANT_BTS_DIR = Path("/var/spark/taey-ed/variant_bts")
-HASH_INDEX_DIR = Path("/var/spark/taey-ed/hash_index")
+logger = logging.getLogger("taey-ed")
 
 # Variants where BT varies per instance (always rebuild via Pro)
 # Any EXERCISE_* variant is non-deterministic — questions change per instance.

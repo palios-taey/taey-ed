@@ -25,9 +25,9 @@ import json
 import logging
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
+from .paths import SIGNATURES_DIR
 
-SIGNATURES_DIR = Path("/var/spark/taey-ed/signatures")
+logger = logging.getLogger(__name__)
 
 # Roles with stable developer-set text labels
 STABLE_TEXT_ROLES = {

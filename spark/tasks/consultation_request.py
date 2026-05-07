@@ -25,6 +25,7 @@ from .consultation_state import (
     compute_tree_hash,
 )
 from .notify_tmux import notify_spark_claude
+from .paths import is_valid_png_b64
 
 logger = logging.getLogger(__name__)
 
@@ -56,9 +57,14 @@ def request_consultation(
     """
     CONSULT_DIR.mkdir(parents=True, exist_ok=True)
 
-    # ONE AT A TIME: If any consultation is pending, return it.
+    # ONE AT A TIME: If any consultation is pending AND not yet responded,
+    # return it. A consultation with response.json on disk is effectively
+    # complete even if metadata.status was never flipped (Spark Claude writes
+    # the response file directly without going through the API).
     for _p in CONSULT_DIR.iterdir():
         if not _p.is_dir() or not _p.name.startswith("consult_"):
+            continue
+        if (_p / "response.json").exists():
             continue
         _mf = _p / "metadata.json"
         if _mf.exists():
@@ -82,13 +88,18 @@ def request_consultation(
     consult_path = CONSULT_DIR / consultation_id
     consult_path.mkdir(parents=True, exist_ok=True)
 
-    # Save screenshot
+    # Save screenshot only if it's a real PNG. Reject test/stale payloads
+    # (e.g. screenshot_b64="test" decodes to 3 garbage bytes) loudly so we
+    # never feed Claude a corrupt image and trigger an API 400.
     if screenshot_b64:
-        try:
-            screenshot_bytes = base64.b64decode(screenshot_b64)
-            (consult_path / "screenshot.png").write_bytes(screenshot_bytes)
-        except Exception as e:
-            logger.error(f"Failed to save screenshot: {e}")
+        if is_valid_png_b64(screenshot_b64):
+            (consult_path / "screenshot.png").write_bytes(base64.b64decode(screenshot_b64))
+        else:
+            logger.error(
+                f"Rejected screenshot_b64 for consult {consultation_id}: "
+                f"not a valid PNG (len={len(screenshot_b64)}). "
+                f"No screenshot.png written."
+            )
 
     # Save tree (atomic to prevent Mac reading partial JSON during poll)
     atomic_write_json(consult_path / "tree.json", tree)
@@ -325,10 +336,14 @@ def request_minimal_consultation(
     consult_path.mkdir(parents=True, exist_ok=True)
 
     if screenshot_b64:
-        try:
+        if is_valid_png_b64(screenshot_b64):
             (consult_path / "screenshot.png").write_bytes(base64.b64decode(screenshot_b64))
-        except Exception as e:
-            logger.error(f"Failed to save screenshot: {e}")
+        else:
+            logger.error(
+                f"Rejected screenshot_b64 for minimal consult {consultation_id}: "
+                f"not a valid PNG (len={len(screenshot_b64)}). "
+                f"No screenshot.png written."
+            )
 
     atomic_write_json(consult_path / "tree.json", tree)
 

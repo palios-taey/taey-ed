@@ -1367,7 +1367,7 @@ When in doubt, use 2.0s. Too long is slow but works. Too short breaks."""
 SECTION_8_RESPONSE = """\
 === YOUR RESPONSE ===
 
-POST to: http://localhost:5002/api/v1/consult/{{consultation_id}}/respond
+POST to: http://127.0.0.1:5003/api/v1/consult/{{consultation_id}}/respond
 
 JSON payload:
 {{
@@ -1412,7 +1412,7 @@ RULES FOR expected_next:
 - Empty list is allowed for terminal screens
 
 SIGNATURE STORAGE:
-Screen signatures are stored in JSON files at /var/spark/taey-ed/signatures/{{platform}}.json.
+Screen signatures are stored under the configured TAEY_ED_DATA_DIR (see spark/tasks/paths.py).
 Deterministic types (VIDEO, ARTICLE) store the BT with the signature for instant reuse.
 Dynamic types (EXERCISE, NAVIGATION, TRANSITION) store the signature for recognition
 but always rebuild the BT via Gemini since content changes between encounters.

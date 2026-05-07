@@ -180,7 +180,8 @@ async def _solve_complex_with_gemini(
         from pathlib import Path
 
         # Load Gemini API key
-        secrets_path = Path(__file__).parent.parent / "palios-taey-secrets.json"
+        from .paths import SECRETS_PATH
+        secrets_path = SECRETS_PATH
         if not secrets_path.exists():
             return {
                 "success": False,
@@ -343,7 +344,8 @@ async def _solve_matching_with_gemini(
         import google.generativeai as genai
         from pathlib import Path
 
-        secrets_path = Path(__file__).parent.parent / "palios-taey-secrets.json"
+        from .paths import SECRETS_PATH
+        secrets_path = SECRETS_PATH
         if not secrets_path.exists():
             return {
                 "success": False,
@@ -454,7 +456,8 @@ def _ensure_gemini():
     _gemini_configured = True
     try:
         from pathlib import Path
-        secrets_path = Path(__file__).parent.parent / "palios-taey-secrets.json"
+        from .paths import SECRETS_PATH
+        secrets_path = SECRETS_PATH
         if not secrets_path.exists():
             logger.warning("Gemini API key not found (palios-taey-secrets.json missing)")
             return False

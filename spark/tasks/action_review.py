@@ -221,7 +221,7 @@ def _build_user_report_notification(
         f"Review files (screenshot + tree + bt_debug.log): {review_dir}/\n"
         f"BT DEBUG LOG: {review_dir}/bt_debug.log (READ THIS FIRST — shows exact handler execution trace)\n"
         f"Platform config: /home/user/taey-ed/spark/platforms/{platform}/config.yaml\n"
-        f"Respond via API: POST http://localhost:5002/api/v1/action_review/{platform}/{review_id}/respond\n"
+        f"Respond via API: POST http://127.0.0.1:5003/api/v1/action_review/{platform}/{review_id}/respond\n"
         f"Response format: {{\\\"resolution\\\": \\\"yaml_updated|acknowledged\\\", \\\"retry\\\": true, \\\"message\\\": \\\"...\\\"}}\""
     )
 
@@ -282,7 +282,7 @@ def _build_escalation_notification(
         f"Review files: {review_dir}/\n"
         f"BT DEBUG LOG: {review_dir}/bt_debug.log (READ THIS FIRST — shows exact handler execution trace)\n"
         f"Platform config: /home/user/taey-ed/spark/platforms/{platform}/config.yaml\n"
-        f"Respond via API: POST http://localhost:5002/api/v1/action_review/{platform}/{review_id}/respond\n"
+        f"Respond via API: POST http://127.0.0.1:5003/api/v1/action_review/{platform}/{review_id}/respond\n"
         f"Response format: {{\\\"resolution\\\": \\\"yaml_updated|acknowledged\\\", \\\"retry\\\": true|false, \\\"message\\\": \\\"...\\\"}}\""
     )
     return diag
