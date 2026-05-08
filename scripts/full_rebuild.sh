@@ -1,6 +1,6 @@
 #!/bin/bash
 #═══════════════════════════════════════════════════════════════════════════════
-# Taey-Ed: FULL REBUILD — Clean → Build → Sign → Notarize → Staple → Launch
+# Taey-Ed: FULL REBUILD — Clean → Build → Sign → Launch → Notarize (bg)
 #═══════════════════════════════════════════════════════════════════════════════
 #
 # THE ONE SCRIPT. Run this and only this for any rebuild.
@@ -115,16 +115,30 @@ if ! $RESIGN_ONLY; then
     # STEP 1: Clean build artifacts
     # ══════════════════════════════════════════════════════════════════════════
     echo "=== Step 1: Clean ==="
-    if [ -d "$PROJECT_DIR/dist" ]; then
-        echo "  Clearing extended attributes on dist/..."
-        xattr -rc "$PROJECT_DIR/dist" 2>/dev/null || true
-        echo "  Removing dist/..."
-        rm -rf "$PROJECT_DIR/dist"
-    fi
-    if [ -d "$PROJECT_DIR/build" ]; then
-        echo "  Removing build/..."
-        rm -rf "$PROJECT_DIR/build"
-    fi
+    for dir in "$PROJECT_DIR/dist" "$PROJECT_DIR/build"; do
+        if [ -d "$dir" ]; then
+            echo "  Removing $(basename "$dir")/..."
+            # Try 1: xattr + rm (works for most cases)
+            xattr -rc "$dir" 2>/dev/null || true
+            rm -rf "$dir" 2>/dev/null || true
+            # Try 2: find -delete (handles stubborn signed bundles)
+            if [ -d "$dir" ]; then
+                echo "  rm -rf failed, using find -delete..."
+                find "$dir" -type f -delete 2>/dev/null || true
+                find "$dir" -depth -type d -delete 2>/dev/null || true
+            fi
+            # Try 3: rename + background delete (nuclear option)
+            if [ -d "$dir" ]; then
+                echo "  find -delete failed, rename + async delete..."
+                TRASH="/tmp/taey-ed-trash-$$"
+                mv "$dir" "$TRASH" 2>/dev/null && rm -rf "$TRASH" &
+            fi
+            if [ -d "$dir" ]; then
+                echo "  FATAL: Cannot remove $dir"
+                exit 1
+            fi
+        fi
+    done
     echo "  Clean complete."
     echo ""
 
@@ -296,94 +310,83 @@ fi
 echo ""
 
 # ══════════════════════════════════════════════════════════════════════════════
-# STEP 11: Notarize
-# CRITICAL: `notarytool submit --wait` has a known Bus error (exit 138) on
-# macOS. The upload succeeds but the --wait polling crashes. We work around
-# this by:
-#   1. Submit WITHOUT --wait, capture the submission ID
-#   2. Poll with `notarytool wait <id>` (separate process, no Bus error)
+# STEP 11: Launch app (before notarization — app is signed and usable now)
+# Uses CLI launch to inherit terminal's Local Network permission on macOS
+# Sequoia, avoiding the GUI-only NSLocalNetworkUsageDescription prompt.
 # ══════════════════════════════════════════════════════════════════════════════
-echo "=== Step 11: Notarize ==="
+SUBMISSION_ID="(not-submitted)"
+if ! $NO_LAUNCH; then
+    echo "=== Step 11: Launch (CLI) ==="
+    "$APP_PATH/Contents/MacOS/Taey-Ed" 2>/tmp/taey-ed-stderr.log &
+    APP_PID=$!
+    echo "  Launched as PID $APP_PID"
+    sleep 5
+    if kill -0 "$APP_PID" 2>/dev/null; then
+        echo "  Taey-Ed is running (PID $APP_PID)."
+        echo "  Stderr so far:"
+        head -10 /tmp/taey-ed-stderr.log 2>/dev/null || true
+    else
+        echo "  WARNING: Taey-Ed may have crashed. Check /tmp/taey-ed-stderr.log"
+    fi
+    echo ""
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
+# STEP 12: Notarize (background — does NOT block the script)
+# Submits to Apple, then spawns a background watcher that polls for status,
+# staples on acceptance, and cleans up the ZIP.
+# ══════════════════════════════════════════════════════════════════════════════
+echo "=== Step 12: Notarize (background) ==="
 rm -f "$ZIP_PATH"
 echo "  Creating ZIP..."
 ditto -c -k --keepParent "$APP_PATH" "$ZIP_PATH"
 
 echo "  Submitting to Apple notary service..."
-# Submit WITHOUT --wait to avoid Bus error
 SUBMIT_OUTPUT=$(xcrun notarytool submit "$ZIP_PATH" \
     --keychain-profile "$KEYCHAIN_PROFILE" 2>&1) || true
 
-# Extract submission ID from output
 SUBMISSION_ID=$(echo "$SUBMIT_OUTPUT" | grep "id:" | head -1 | awk '{print $2}')
 
 if [ -z "$SUBMISSION_ID" ]; then
-    echo "FATAL: Failed to extract submission ID from notarytool output:"
-    echo "$SUBMIT_OUTPUT"
-    exit 1
-fi
-
-echo "  Submission ID: $SUBMISSION_ID"
-echo "  Waiting for Apple to process (this takes 2-15 minutes)..."
-
-# Wait using separate command (avoids Bus error)
-WAIT_OUTPUT=$(xcrun notarytool wait "$SUBMISSION_ID" \
-    --keychain-profile "$KEYCHAIN_PROFILE" 2>&1)
-WAIT_EXIT=$?
-
-echo "$WAIT_OUTPUT"
-
-# Check result
-if echo "$WAIT_OUTPUT" | grep -q "status: Accepted"; then
-    echo "  Notarization ACCEPTED."
-elif echo "$WAIT_OUTPUT" | grep -q "status: Invalid"; then
-    echo "FATAL: Notarization REJECTED."
-    echo "  Check log: xcrun notarytool log $SUBMISSION_ID --keychain-profile $KEYCHAIN_PROFILE"
-    exit 1
+    echo "  WARNING: Failed to submit for notarization:"
+    echo "  $SUBMIT_OUTPUT"
+    echo "  App is running but NOT notarized. You can notarize manually later."
 else
-    echo "WARNING: Unexpected notarization status (exit $WAIT_EXIT)."
-    echo "  Checking status directly..."
-    xcrun notarytool info "$SUBMISSION_ID" --keychain-profile "$KEYCHAIN_PROFILE" 2>&1
-    echo ""
-    echo "  If status is 'Accepted', run manually:"
-    echo "    xcrun stapler staple $APP_PATH"
-    exit 1
+    echo "  Submission ID: $SUBMISSION_ID"
+    echo "  Spawning background watcher (poll every 30s, auto-staple on accept)..."
+
+    # Background watcher: poll → staple → cleanup
+    (
+        while true; do
+            sleep 30
+            STATUS=$(xcrun notarytool info "$SUBMISSION_ID" \
+                --keychain-profile "$KEYCHAIN_PROFILE" 2>&1)
+            if echo "$STATUS" | grep -q "status: Accepted"; then
+                xcrun stapler staple "$APP_PATH" 2>/dev/null
+                rm -f "$ZIP_PATH"
+                echo "[notarize-bg] ACCEPTED and stapled ($SUBMISSION_ID)" >> /tmp/taey-ed-notarize.log
+                exit 0
+            elif echo "$STATUS" | grep -q "status: Invalid"; then
+                echo "[notarize-bg] REJECTED ($SUBMISSION_ID)" >> /tmp/taey-ed-notarize.log
+                echo "[notarize-bg] Check: xcrun notarytool log $SUBMISSION_ID --keychain-profile $KEYCHAIN_PROFILE" >> /tmp/taey-ed-notarize.log
+                exit 1
+            fi
+        done
+    ) &
+    NOTARIZE_WATCHER_PID=$!
+    echo "  Watcher PID: $NOTARIZE_WATCHER_PID"
+    echo "  Check progress: xcrun notarytool info $SUBMISSION_ID --keychain-profile $KEYCHAIN_PROFILE"
+    echo "  Log file: /tmp/taey-ed-notarize.log"
 fi
 echo ""
-
-# ══════════════════════════════════════════════════════════════════════════════
-# STEP 12: Staple
-# ══════════════════════════════════════════════════════════════════════════════
-echo "=== Step 12: Staple notarization ticket ==="
-xcrun stapler staple "$APP_PATH"
-echo "  Stapled."
-echo ""
-
-# ══════════════════════════════════════════════════════════════════════════════
-# STEP 13: Cleanup
-# ══════════════════════════════════════════════════════════════════════════════
-echo "=== Step 13: Cleanup ==="
-rm -f "$ZIP_PATH"
-echo "  Removed notarization ZIP."
-echo ""
-
-# ══════════════════════════════════════════════════════════════════════════════
-# STEP 14: Launch (optional)
-# ══════════════════════════════════════════════════════════════════════════════
-if ! $NO_LAUNCH; then
-    echo "=== Step 14: Launch ==="
-    open "$APP_PATH"
-    sleep 2
-    if pgrep -xq "Taey-Ed"; then
-        echo "  Taey-Ed is running."
-    else
-        echo "  WARNING: Taey-Ed may not have launched. Check manually."
-    fi
-    echo ""
-fi
 
 # ══════════════════════════════════════════════════════════════════════════════
 echo "═══════════════════════════════════════════════════════════════"
 echo "  DONE"
 echo "  App: $APP_PATH"
 echo "  Notarization ID: $SUBMISSION_ID"
+if ! $NO_LAUNCH; then
+    echo "  App PID: ${APP_PID:-unknown}"
+fi
+echo "  Notarization runs in background. Check /tmp/taey-ed-notarize.log"
 echo "═══════════════════════════════════════════════════════════════"
