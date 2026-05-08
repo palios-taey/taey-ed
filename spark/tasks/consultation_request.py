@@ -31,8 +31,48 @@ logger = logging.getLogger(__name__)
 
 CONSULT_DIR = Path("/tmp/taey-ed-consult")
 
+# Pending consultations that exceed this age are auto-abandoned to prevent
+# the ONE-AT-A-TIME gate from blocking forever when Mac dies (kill -9, panic,
+# crash before sending /abandon_consultation). 10 minutes is much longer than
+# any normal Mac→Spark Claude round-trip but short enough that a crashed Mac
+# self-heals before the user gives up.
+PENDING_TTL_SECONDS = 600
+
 # ONE consultation at a time. Period.
 # If one is pending, every code path returns it instead of creating another.
+
+
+def _pending_consult_is_blocking(meta: dict, consult_path: Path) -> bool:
+    """Return True if this metadata represents a pending consult that should
+    block new consultation creation. Auto-abandons stale pending consults
+    (timestamp older than PENDING_TTL_SECONDS) by writing status=abandoned
+    back to disk, matching the explicit /abandon_consultation endpoint behavior.
+    """
+    if meta.get("status") != "pending":
+        return False  # complete / abandoned / unknown — non-blocking
+    ts = meta.get("timestamp", "")
+    if not ts:
+        return True  # no timestamp, treat as blocking conservatively
+    try:
+        consult_time = datetime.fromisoformat(ts)
+    except Exception:
+        return True
+    age = (datetime.now() - consult_time).total_seconds()
+    if age <= PENDING_TTL_SECONDS:
+        return True  # fresh pending — blocks
+    # Stale pending — auto-abandon
+    meta["status"] = "abandoned"
+    meta["abandoned_at"] = datetime.now().isoformat()
+    meta["abandoned_reason"] = f"ttl_expired age={int(age)}s"
+    try:
+        atomic_write_json(consult_path / "metadata.json", meta)
+        logger.warning(
+            f"Auto-abandoned stale pending consult "
+            f"{meta.get('consultation_id', consult_path.name)} (age={int(age)}s)"
+        )
+    except Exception as e:
+        logger.warning(f"Failed to write auto-abandon metadata: {e}")
+    return False  # stale → no longer blocks
 
 
 def request_consultation(
@@ -57,10 +97,12 @@ def request_consultation(
     """
     CONSULT_DIR.mkdir(parents=True, exist_ok=True)
 
-    # ONE AT A TIME: If any consultation is pending AND not yet responded,
-    # return it. A consultation with response.json on disk is effectively
-    # complete even if metadata.status was never flipped (Spark Claude writes
-    # the response file directly without going through the API).
+    # ONE AT A TIME: If any consultation is pending AND not yet responded AND
+    # not stale (TTL), return it. A consultation with response.json on disk is
+    # effectively complete even if metadata.status was never flipped (Spark
+    # Claude writes the response file directly without going through the API).
+    # Status=="abandoned" (set by /abandon_consultation endpoint or TTL) is
+    # treated as terminal — does not block new consultations.
     for _p in CONSULT_DIR.iterdir():
         if not _p.is_dir() or not _p.name.startswith("consult_"):
             continue
@@ -70,7 +112,7 @@ def request_consultation(
         if _mf.exists():
             try:
                 _m = json.loads(_mf.read_text())
-                if _m.get("status") == "pending":
+                if _pending_consult_is_blocking(_m, _p):
                     existing_id = _m.get("consultation_id", "")
                     logger.info(
                         f"Consultation already pending: {existing_id}. "
@@ -308,10 +350,8 @@ def request_minimal_consultation(
     """
     CONSULT_DIR.mkdir(parents=True, exist_ok=True)
 
-    # ONE AT A TIME: if any consultation is pending AND not yet responded,
-    # return it. A consultation with response.json on disk is effectively
-    # complete even if metadata.status was never flipped (Spark Claude
-    # writes the response file directly without going through the API).
+    # ONE AT A TIME: if any consultation is pending AND not yet responded AND
+    # not stale (TTL), return it. abandoned status is non-blocking.
     for _p in CONSULT_DIR.iterdir():
         if not _p.is_dir() or not _p.name.startswith("consult_"):
             continue
@@ -321,7 +361,7 @@ def request_minimal_consultation(
         if _mf.exists():
             try:
                 _m = json.loads(_mf.read_text())
-                if _m.get("status") == "pending":
+                if _pending_consult_is_blocking(_m, _p):
                     existing_id = _m.get("consultation_id", "")
                     return {
                         "consultation_id": existing_id,

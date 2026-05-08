@@ -1,8 +1,11 @@
 # STATUS: FROZEN - V8 consultation routes. Verified 2026-02-19. Do not modify.
+# 2026-05-08 unfreeze: added /abandon_consultation/{id} endpoint to support
+# Mac lifecycle fix (CCM commit 084de95). Re-locked after.
 """Consultation CRUD endpoints."""
 
 import json
 import logging
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -15,8 +18,11 @@ from spark.tasks.handle_consultation import (
     escalate_consultation,
     get_pending_consultations,
 )
+from spark.tasks.atomic_write import atomic_write_json
 
 logger = logging.getLogger(__name__)
+
+CONSULT_DIR = Path("/tmp/taey-ed-consult")
 
 router = APIRouter(prefix="/api/v1")
 
@@ -113,3 +119,40 @@ def escalate(consultation_id: str, request: EscalateRequest):
 def list_pending_consultations():
     """List all pending consultations."""
     return {"pending": get_pending_consultations()}
+
+
+@router.post("/abandon_consultation/{consultation_id}")
+def abandon_consultation(consultation_id: str):
+    """Mark a consultation as abandoned.
+
+    Called by Mac on graceful shutdown (red X / Cmd+Q / pipeline stop) so that
+    the ONE-AT-A-TIME consultation gate releases instead of staying blocked on
+    a never-resolving consult. Idempotent: returns 200 if already completed,
+    abandoned, or missing.
+
+    Per CCM lifecycle fix (Mac commit 084de95).
+    """
+    consult_path = CONSULT_DIR / consultation_id
+    meta_file = consult_path / "metadata.json"
+
+    if not meta_file.exists():
+        # Idempotent: nothing to abandon.
+        return {"ok": True, "status": "not_found", "consultation_id": consultation_id}
+
+    try:
+        meta = json.loads(meta_file.read_text())
+    except Exception as e:
+        logger.warning(f"abandon_consultation: failed to read metadata for {consultation_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"metadata read failed: {e}")
+
+    current_status = meta.get("status", "")
+    if current_status in ("complete", "completed", "abandoned"):
+        # Idempotent: already terminal.
+        return {"ok": True, "status": current_status, "consultation_id": consultation_id}
+
+    meta["status"] = "abandoned"
+    meta["abandoned_at"] = datetime.now().isoformat()
+    atomic_write_json(meta_file, meta)
+
+    logger.info(f"Consultation {consultation_id} abandoned by Mac")
+    return {"ok": True, "status": "abandoned", "consultation_id": consultation_id}
