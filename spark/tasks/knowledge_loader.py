@@ -216,6 +216,156 @@ def save_learned_observation(platform: str, screen_type: str, observation: dict)
         logger.error(f"Failed to save learned observation: {e}")
 
 
+def get_operational_notes_for_screen(knowledge: dict, screen_type: str) -> str:
+    """Return markdown-formatted operational notes for all subtypes of a screen type.
+
+    Operational notes are concrete lessons-learned from previous claude-primary
+    consultations — exact roles, casing quirks, depth gotchas, BT templates that
+    worked. Injected into consultation prompts so next-Claude reads what
+    last-Claude figured out instead of rediscovering from scratch.
+
+    Returns empty string if no notes exist (caller can skip the section).
+    """
+    screen_info = knowledge.get("screen_types", {}).get(screen_type, {})
+    subtypes = screen_info.get("subtypes", [])
+    if not subtypes:
+        return ""
+
+    sections = []
+    for subtype in subtypes:
+        notes = subtype.get("operational_notes") or []
+        if not notes:
+            continue
+        name = subtype.get("name", "unknown")
+        lines = [f"### {name}"]
+        for n in notes:
+            disc = n.get("discovered_at", "")
+            by = n.get("by", "")
+            note = n.get("note", "")
+            template = n.get("bt_template_hint", "")
+            disambig = n.get("disambiguator", "")
+            v8 = n.get("v8_handler_required", "")
+            v7 = n.get("v7_workaround", "")
+            verified = n.get("verified_count", 0)
+
+            header = f"- *(discovered {disc} by {by}, verified×{verified})*"
+            lines.append(header)
+            if note:
+                lines.append(f"  **Note:** {note}")
+            if template:
+                lines.append(f"  **BT template hint:** {template}")
+            if disambig:
+                lines.append(f"  **Disambiguator:** {disambig}")
+            if v8:
+                lines.append(f"  **Requires v8 handler:** {v8}")
+            if v7:
+                lines.append(f"  **v7 workaround:** {v7}")
+        sections.append("\n".join(lines))
+
+    if not sections:
+        return ""
+    return "## Operational notes (lessons from prior consultations)\n\n" + "\n\n".join(sections)
+
+
+def record_operational_note(
+    platform: str,
+    screen_type: str,
+    subtype_name: str,
+    note: str,
+    *,
+    by: str = "claude-primary",
+    bt_template_hint: str | None = None,
+    disambiguator: str | None = None,
+    v8_handler_required: str | None = None,
+    v7_workaround: str | None = None,
+    verified_count: int = 1,
+) -> bool:
+    """Append an operational note to a screen subtype's `operational_notes` array.
+
+    Used after a claude-primary consultation successfully solves a tricky widget,
+    so the lesson persists for next-Claude. Idempotent on identical `note` text
+    (increments verified_count instead of duplicating).
+
+    Returns True if the knowledge.json was modified, False on failure or no-op.
+    """
+    knowledge_path = _platforms_dir() / platform / "knowledge.json"
+    if not knowledge_path.exists():
+        logger.error(f"record_operational_note: no knowledge.json for {platform}")
+        return False
+
+    try:
+        knowledge = json.loads(knowledge_path.read_text())
+        screen = knowledge.get("screen_types", {}).get(screen_type)
+        if not screen:
+            logger.error(
+                f"record_operational_note: screen_type {screen_type} not in {platform}"
+            )
+            return False
+        subtypes = screen.setdefault("subtypes", [])
+        subtype = next((s for s in subtypes if s.get("name") == subtype_name), None)
+        if subtype is None:
+            logger.error(
+                f"record_operational_note: subtype {subtype_name} not in "
+                f"{platform}/{screen_type}"
+            )
+            return False
+
+        notes = subtype.setdefault("operational_notes", [])
+        existing = next((n for n in notes if n.get("note") == note), None)
+        if existing:
+            existing["verified_count"] = existing.get("verified_count", 1) + 1
+            existing["last_verified_at"] = time.strftime(
+                "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
+            )
+        else:
+            entry = {
+                "discovered_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "by": by,
+                "note": note,
+                "verified_count": verified_count,
+            }
+            if bt_template_hint:
+                entry["bt_template_hint"] = bt_template_hint
+            if disambiguator:
+                entry["disambiguator"] = disambiguator
+            if v8_handler_required:
+                entry["v8_handler_required"] = v8_handler_required
+            if v7_workaround:
+                entry["v7_workaround"] = v7_workaround
+            notes.append(entry)
+
+        # Atomic write
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(knowledge_path.parent), suffix=".json.tmp"
+        )
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(knowledge, f, indent=2)
+            os.replace(tmp_path, str(knowledge_path))
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+
+        # Invalidate cache so next load_knowledge sees the update
+        cache_key = str(knowledge_path)
+        _knowledge_cache.pop(cache_key, None)
+        _knowledge_cache_mtime.pop(cache_key, None)
+
+        action = "incremented" if existing else "added"
+        logger.info(
+            f"record_operational_note: {action} note for "
+            f"{platform}/{screen_type}/{subtype_name}"
+        )
+        return True
+
+    except Exception as e:
+        logger.error(f"record_operational_note: failed: {e}")
+        return False
+
+
 def _generate_summary(observations: list) -> dict:
     """Rebuild latest_summary from observations array."""
     successful = [o for o in observations if o.get("bt_success")]

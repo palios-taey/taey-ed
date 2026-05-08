@@ -374,13 +374,19 @@ def request_minimal_consultation(
         f"Platform: {platform}\n"
         f"Screen-type hint: {screen_type}\n"
         f"Files: {consult_path}/screenshot.png, {consult_path}/tree.json\n"
-        f"Knowledge: spark/platforms/{platform}/knowledge.json\n"
+        f"Knowledge: spark/platforms/{platform}/knowledge.json — "
+        f"check the matching `subtype.operational_notes` for prior lessons "
+        f"(exact roles, casing quirks, BT templates that worked) before building.\n"
         f"{guidance_block}"
         f"Look at the screenshot, read the tree, build a behavior tree to advance "
         f"this screen, and write {consult_path}/response.json with shape:\n"
         f'  {{"tree": <BT>, "screen_type": "<TYPE>", '
         f'"expected_next": [], "extract": null}}\n'
-        f"BT format and handler list are in CLAUDE.md. Never click Skip or Up next."
+        f"BT format and handler list are in CLAUDE.md. Never click Skip or Up next.\n"
+        f"After successful resolution of a previously-unsolved widget, append a new "
+        f"entry under the matching subtype's `operational_notes` in knowledge.json "
+        f"so the next consultation reuses your insight (use record_operational_note "
+        f"helper in spark/tasks/knowledge_loader.py if writing programmatically)."
     )
     notify_spark_claude(notification)
 

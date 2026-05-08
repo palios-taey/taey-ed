@@ -1507,6 +1507,7 @@ def compile_prompt(
         load_knowledge, load_learned,
         get_handlers_for_screen, get_quirks_for_screen,
         get_question_types_for_screen,
+        get_operational_notes_for_screen,
     )
     knowledge = load_knowledge(platform)
     screen_type = context.get("screen_type", "UNKNOWN")
@@ -1519,6 +1520,13 @@ def compile_prompt(
         knowledge_ctx = _build_knowledge_context(knowledge, screen_type, quirks, learned)
         if knowledge_ctx:
             sections.append(knowledge_ctx)
+
+        # JIT: Operational notes — concrete lessons from prior consultations
+        # (exact roles, casing quirks, depth gotchas, BT templates that worked).
+        # Empty string returned when no notes exist for this screen_type.
+        op_notes = get_operational_notes_for_screen(knowledge, screen_type)
+        if op_notes:
+            sections.append(op_notes)
 
         # JIT: Selective handler/question type docs
         handler_names = get_handlers_for_screen(knowledge, screen_type, tags)

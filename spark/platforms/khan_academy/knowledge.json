@@ -74,7 +74,7 @@
       },
       {
         "id": "bonus_question",
-        "description": "After completing a practice exercise with exactly 1 incorrect answer, a 'Bonus question' button may appear. If offered, the bonus question MUST be either answered or skipped — leaving it unanswered means the exercise is NOT marked complete and no credit is given. Answering correctly upgrades score to Proficient. Some exercises (reading comprehension, teacher-locked, small question banks) do not offer bonus questions.",
+        "description": "After completing a practice exercise with exactly 1 incorrect answer, a 'Bonus question' button may appear. If offered, the bonus question MUST be either answered or skipped \u2014 leaving it unanswered means the exercise is NOT marked complete and no credit is given. Answering correctly upgrades score to Proficient. Some exercises (reading comprehension, teacher-locked, small question banks) do not offer bonus questions.",
         "affects": [
           "EXERCISE"
         ],
@@ -90,7 +90,7 @@
       },
       {
         "id": "video_completion_strict",
-        "description": "Videos must be watched in their entirety (every second) to be marked as complete. Skipping even a few seconds results in an incomplete status. Playback speed up to 2x is allowed and still counts for completion. For teacher-assigned videos, 90% must be watched at no greater than 2x speed. The video must play to the very end — closing early even with seconds remaining marks incomplete.",
+        "description": "Videos must be watched in their entirety (every second) to be marked as complete. Skipping even a few seconds results in an incomplete status. Playback speed up to 2x is allowed and still counts for completion. For teacher-assigned videos, 90% must be watched at no greater than 2x speed. The video must play to the very end \u2014 closing early even with seconds remaining marks incomplete.",
         "affects": [
           "VIDEO"
         ],
@@ -140,7 +140,7 @@
       },
       {
         "id": "quiz_unit_test_no_skip_back",
-        "description": "Quizzes, Unit Tests, and Course Challenges are sequential — once you advance past a question, you cannot go back to it. The 'Skip' button marks it as incorrect permanently for that attempt. Course Challenges contain 30 questions. Unit Tests cover all unit skills. Mastery Challenges have 6 questions.",
+        "description": "Quizzes, Unit Tests, and Course Challenges are sequential \u2014 once you advance past a question, you cannot go back to it. The 'Skip' button marks it as incorrect permanently for that attempt. Course Challenges contain 30 questions. Unit Tests cover all unit skills. Mastery Challenges have 6 questions.",
         "affects": [
           "EXERCISE"
         ],
@@ -156,7 +156,7 @@
       },
       {
         "id": "opens_a_modal_pattern",
-        "description": "On unit/course navigation pages, clicking video or article items may open content in a modal overlay rather than navigating to a new page. The modal has the video's title as a hyperlink at the top — clicking the title navigates to the full lesson page. This modal behavior is inconsistent and may differ between content types.",
+        "description": "On unit/course navigation pages, clicking video or article items may open content in a modal overlay rather than navigating to a new page. The modal has the video's title as a hyperlink at the top \u2014 clicking the title navigates to the full lesson page. This modal behavior is inconsistent and may differ between content types.",
         "affects": [
           "NAVIGATION",
           "VIDEO"
@@ -165,7 +165,7 @@
       }
     ],
     "completion_model": {
-      "video": "Must watch every second of the video (no skipping). Playback up to 2x is fine. Completion shown as full colored bar with checkmark icon in sidebar. For assignments: 90% watched at ≤2x speed.",
+      "video": "Must watch every second of the video (no skipping). Playback up to 2x is fine. Completion shown as full colored bar with checkmark icon in sidebar. For assignments: 90% watched at \u22642x speed.",
       "article": "Auto-completed when visited and scrolled through. No explicit 'Mark as complete' button. Simply opening and scrolling to the bottom registers as read. Green checkmark appears in sidebar.",
       "exercise": "Must answer all questions in the set (typically 4-7 questions). >70% correct = 'Practiced' level. All correct = 'Proficient'. With bonus question: 1 wrong + bonus correct = 'Proficient'. Exercise NOT complete until all questions (including bonus if offered) are answered or skipped.",
       "quiz": "Must answer all questions. Scored as percentage. Results affect mastery levels for skills covered. No going back to previous questions.",
@@ -223,7 +223,7 @@
           "name": "interactive_graph",
           "description": "Graphing widget where users plot points, draw lines, or manipulate graph elements. Built with Mafs React library. Supports keyboard and screen reader. Perseus widget: interactive-graphs. Includes number-line widget.",
           "tree_signal": "HAS_GROUP",
-          "interaction_pattern": "interact with graph (drag points, draw lines, use keyboard arrows) -> click 'Check'. Complex — likely needs screenshot + LLM visual analysis."
+          "interaction_pattern": "interact with graph (drag points, draw lines, use keyboard arrows) -> click 'Check'. Complex \u2014 likely needs screenshot + LLM visual analysis."
         },
         {
           "name": "sorter_orderer",
@@ -241,7 +241,17 @@
           "name": "label_image",
           "description": "Image with hotspots or blank labels to fill in. User clicks dots/regions and selects or types labels. Perseus widget: label-image.",
           "tree_signal": "HAS_IMAGE",
-          "interaction_pattern": "click labeled points on image -> select/type answer for each -> click 'Check'"
+          "interaction_pattern": "click labeled points on image -> select/type answer for each -> click 'Check'",
+          "operational_notes": [
+            {
+              "discovered_at": "2026-05-07T22:55:23Z",
+              "by": "claude-primary",
+              "note": "Wonder Blocks renders dropdowns as AXComboBox at depth ~32. Each combobox's value attribute carries the dot description (e.g. 'a sphere with a negative sign located outside the center of the atom'). find_and_click can match these by value substring + role=AXComboBox + match_mode=contains. After click, the dropdown options render as AXMenuItem at SHALLOW depth (~14, OUTSIDE the AXWebArea). handle_find_and_click for AXMenuItem first searches web-area scope (returns nothing for these popups), then falls through to find_element which walks full app and finds them. Menu item values are LOWERCASE ('electron', 'proton', 'neutron') \u2014 must use lowercase target text or matching fails.",
+              "bt_template_hint": "find_and_click target=<combobox value substring> role=AXComboBox match_mode=contains -> wait 1s -> find_and_click target=<lowercase-answer> role=AXMenuItem match_mode=exact",
+              "verified_count": 2,
+              "last_verified_at": "2026-05-08T01:02:28Z"
+            }
+          ]
         },
         {
           "name": "free_response",
@@ -253,7 +263,18 @@
           "name": "table_input",
           "description": "Table with editable cells for filling in values. Perseus widgets: table, matrix.",
           "tree_signal": "HAS_TEXT_FIELD",
-          "interaction_pattern": "click table cells -> type values -> click 'Check'"
+          "interaction_pattern": "click table cells -> type values -> click 'Check'",
+          "operational_notes": [
+            {
+              "discovered_at": "2026-05-08T00:35:00Z",
+              "by": "claude-primary",
+              "note": "CRITICAL GOTCHA: All cell text fields share IDENTICAL name='Your answer:' AND description='Your answer:' AND initial value=''. Comboboxes likewise share name='Select an answer'. find_element only checks Title/Description/Value attributes \u2014 so find_and_type ALWAYS returns the FIRST AXTextField in tree order. Two consecutive find_and_type calls overwrite the same first cell. Tested: click element=$tf.element via for_each does NOT make find_and_type respect focus.",
+              "disambiguator": "find_all role=AXTextField returns each item with a 'label' field (preceding AXStaticText computed by _find_preceding_label). For chemistry table_input: input 1 (Row 1 col atomic-num) label='strontium', input 2 (Row 2 col atomic-num) label='Zn'. Inputs 3-4 are wrapper duplicates with label='Atomic number' (column header) \u2014 skip via lookup miss in lookup_match.",
+              "v8_handler_required": "find_and_type must accept 'element' parameter (parallel to click handler). With v8 the working pattern is: find_all role=AXTextField -> $textfields, for_each $tf in $textfields: lookup_match {row_label: value} key=$tf.label -> $answer, conditional $answer: find_and_type element=$tf.element text=$answer. Same shape works for the comboboxes after an analogous 'element' parameter is added \u2014 though comboboxes have label collisions (both row 1 and row 2 may resolve to same row label depending on tree-walk timing); prefer position-aware disambiguation or sequential 'Select an answer' contains-match relying on Wonder Blocks updating combobox accessible name post-fill.",
+              "v7_workaround": "None reliable. Sequential find_and_click 'Select an answer' AXComboBox contains may work IF Wonder Blocks updates the combobox name to the selected value after fill (untested). Even then, text fields cannot be disambiguated. Best v7 outcome is partial fill (1-2 cells correct) with Check disabled. Do NOT click Skip.",
+              "verified_count": 0
+            }
+          ]
         },
         {
           "name": "passage_based",
@@ -315,7 +336,7 @@
         "role": "AXButton",
         "strategy": "mouse_click",
         "post_delay": 2.5,
-        "notes": "Located at bottom-right of exercise area. After clicking, the system grades the answer and shows feedback (green/ding for correct, red for incorrect). A brief animation plays. After feedback, a 'Next question' button may appear OR the next question auto-loads. In quizzes/unit tests, the button may show as 'Next' instead of 'Check' after answering. The 'Skip' button appears to the LEFT of 'Check' — do NOT confuse them. Check is the rightmost primary-colored button."
+        "notes": "Located at bottom-right of exercise area. After clicking, the system grades the answer and shows feedback (green/ding for correct, red for incorrect). A brief animation plays. After feedback, a 'Next question' button may appear OR the next question auto-loads. In quizzes/unit tests, the button may show as 'Next' instead of 'Check' after answering. The 'Skip' button appears to the LEFT of 'Check' \u2014 do NOT confuse them. Check is the rightmost primary-colored button."
       },
       "extraction": {
         "text": [
@@ -379,7 +400,7 @@
         },
         "PLAYING": {
           "tree_signal": "Video actively playing; YouTube progress bar advancing; energy points incrementing in real-time; no play button overlay visible; elapsed time counter increasing",
-          "action": "video_poll ONLY — monitor progress. Do NOT interact with the page. Let the video play to completion. Optionally set speed to 2x via gear icon -> Playback speed -> 2x (this is safe and still counts for completion). Do not scrub/skip forward.",
+          "action": "video_poll ONLY \u2014 monitor progress. Do NOT interact with the page. Let the video play to completion. Optionally set speed to 2x via gear icon -> Playback speed -> 2x (this is safe and still counts for completion). Do not scrub/skip forward.",
           "expected_next": [
             "VIDEO"
           ]
@@ -434,7 +455,7 @@
       "completion_button": {
         "text": "Up next",
         "role": "AXLink",
-        "notes": "Not a completion button per se — articles auto-complete on view/scroll. 'Up next' is a navigation link at the bottom of the article or visible in the sidebar that advances to the next activity in the lesson. May also appear as a right-arrow icon or as the next item's title as a clickable link in the sidebar."
+        "notes": "Not a completion button per se \u2014 articles auto-complete on view/scroll. 'Up next' is a navigation link at the bottom of the article or visible in the sidebar that advances to the next activity in the lesson. May also appear as a right-arrow icon or as the next item's title as a clickable link in the sidebar."
       },
       "extraction": {
         "text": [
@@ -485,7 +506,7 @@
       "extraction": null,
       "completion_indicators": {
         "done": [
-          "Checkmark icon (✓) on item",
+          "Checkmark icon (\u2713) on item",
           "Full colored progress bar under item",
           "Green checkmark badge",
           "'Mastered' label with crown icon",
@@ -594,7 +615,7 @@
       "AXTextField": "Numeric or expression input field in Perseus. Also appears in search bars (ignore). Exercise inputs are within perseus-renderer or framework-perseus containers.",
       "AXTextArea": "Free-response text input. Rare in exercises. Also used for 'Ask a question' discussion box below videos (ignore discussion areas).",
       "AXButton": "Interactive buttons. Key: 'Check' (submit), 'Skip' (skip, marks incorrect), 'Next question' (advance), 'Bonus question' (post-exercise). Also: sidebar collapse arrow, video player controls (fallback player).",
-      "AXLink": "Navigation links. Sidebar lesson items, 'Up next' advancement, breadcrumbs, course/unit/lesson links. DANGER: 'Video on YouTube' and 'Report a problem' are also AXLink — never click these.",
+      "AXLink": "Navigation links. Sidebar lesson items, 'Up next' advancement, breadcrumbs, course/unit/lesson links. DANGER: 'Video on YouTube' and 'Report a problem' are also AXLink \u2014 never click these.",
       "AXPopUpButton": "Dropdown select widget in Perseus exercises. Click to open, then select from popup menu items.",
       "AXGroup": "Container for grouped content. Video player = AXGroup containing YouTube iframe AXWebArea. Graph widgets = AXGroup. Question blocks = AXGroup within Perseus renderer.",
       "AXImage": "Images within exercises, articles, or as icons. Exercise images may contain visual info needed to answer questions. Type icons in sidebar navigation.",
@@ -890,7 +911,7 @@
       "text": "Teacher",
       "location": "Welcome/onboarding modal",
       "safe": "never",
-      "behavior": "Selects 'Teacher' role — wrong role for student coursework automation. Sets UI for teacher dashboard.",
+      "behavior": "Selects 'Teacher' role \u2014 wrong role for student coursework automation. Sets UI for teacher dashboard.",
       "screen_types": [
         "TRANSITION"
       ]
@@ -899,7 +920,7 @@
       "text": "Parent",
       "location": "Welcome/onboarding modal",
       "safe": "never",
-      "behavior": "Selects 'Parent' role — wrong role for student coursework automation. Sets UI for parent/coach view.",
+      "behavior": "Selects 'Parent' role \u2014 wrong role for student coursework automation. Sets UI for parent/coach view.",
       "screen_types": [
         "TRANSITION"
       ]
