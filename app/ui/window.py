@@ -916,7 +916,7 @@ class TaeyEdWindow:
         """
         import time
         self.logger.info("Window close: shutting down")
-        # Tell pipeline to stop. It will send /abandon_consultation/{id}
+        # Tell pipeline to stop. It will send /api/v1/abandon_consultation/{id}
         # in its exit path if there's an active consultation.
         self.stop_event.set()
         # Unblock pipeline if it was waiting on user input

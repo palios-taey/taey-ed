@@ -228,7 +228,7 @@ def run_continuous(
         never-resolving consultation. Called from every return path."""
         if active_consultation_id:
             try:
-                call_spark(f"/abandon_consultation/{active_consultation_id}", method="POST")
+                call_spark(f"/api/v1/abandon_consultation/{active_consultation_id}", method="POST")
                 logger.info(f"Abandoned consultation {active_consultation_id}")
             except Exception as e:
                 logger.warning(f"Failed to abandon consultation {active_consultation_id}: {e}")
