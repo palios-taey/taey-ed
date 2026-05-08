@@ -244,8 +244,8 @@ def get_operational_notes_for_screen(knowledge: dict, screen_type: str) -> str:
             note = n.get("note", "")
             template = n.get("bt_template_hint", "")
             disambig = n.get("disambiguator", "")
-            v8 = n.get("v8_handler_required", "")
-            v7 = n.get("v7_workaround", "")
+            handler_req = n.get("handler_required", "")
+            prior = n.get("prior_workaround", "")
             verified = n.get("verified_count", 0)
 
             header = f"- *(discovered {disc} by {by}, verified×{verified})*"
@@ -256,10 +256,10 @@ def get_operational_notes_for_screen(knowledge: dict, screen_type: str) -> str:
                 lines.append(f"  **BT template hint:** {template}")
             if disambig:
                 lines.append(f"  **Disambiguator:** {disambig}")
-            if v8:
-                lines.append(f"  **Requires v8 handler:** {v8}")
-            if v7:
-                lines.append(f"  **v7 workaround:** {v7}")
+            if handler_req:
+                lines.append(f"  **Requires handler:** {handler_req}")
+            if prior:
+                lines.append(f"  **Prior workaround:** {prior}")
         sections.append("\n".join(lines))
 
     if not sections:
@@ -276,8 +276,8 @@ def record_operational_note(
     by: str = "claude-primary",
     bt_template_hint: str | None = None,
     disambiguator: str | None = None,
-    v8_handler_required: str | None = None,
-    v7_workaround: str | None = None,
+    handler_required: str | None = None,
+    prior_workaround: str | None = None,
     verified_count: int = 1,
 ) -> bool:
     """Append an operational note to a screen subtype's `operational_notes` array.
@@ -328,11 +328,12 @@ def record_operational_note(
                 entry["bt_template_hint"] = bt_template_hint
             if disambiguator:
                 entry["disambiguator"] = disambiguator
-            if v8_handler_required:
-                entry["v8_handler_required"] = v8_handler_required
-            if v7_workaround:
-                entry["v7_workaround"] = v7_workaround
+            if handler_required:
+                entry["handler_required"] = handler_required
+            if prior_workaround:
+                entry["prior_workaround"] = prior_workaround
             notes.append(entry)
+
 
         # Atomic write
         fd, tmp_path = tempfile.mkstemp(
