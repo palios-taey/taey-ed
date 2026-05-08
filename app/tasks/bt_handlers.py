@@ -119,17 +119,23 @@ def register_all_handlers(ctx: ExecutionContext):
         role = params.get("role")
         text = params.get("text", "")
         focus_strategy = params.get("focus_strategy")
+        # v8: accept pre-resolved element ref (from find_all + for_each).
+        # AXSetValue writes to the specific element passed, so plumbing
+        # the ref through here lets per-iteration BTs target distinct
+        # fields when name/role collide (e.g. table_input "Your answer:").
+        element = params.get("element")
 
-        # When target is empty and searching by role only, use web-area-scoped
-        # find_all_elements to avoid hitting browser chrome (e.g., address bar
-        # is an AXTextField at depth ~10, before web content at depth ~31).
-        if not target and role:
-            results = find_all_elements(ctx.app_name, role=role)
-            element = results[0][0] if results else None
-        else:
-            element = find_element(ctx.app_name, target, role=role)
+        if element is None:
+            # When target is empty and searching by role only, use web-area-scoped
+            # find_all_elements to avoid hitting browser chrome (e.g., address bar
+            # is an AXTextField at depth ~10, before web content at depth ~31).
+            if not target and role:
+                results = find_all_elements(ctx.app_name, role=role)
+                element = results[0][0] if results else None
+            else:
+                element = find_element(ctx.app_name, target, role=role)
         if not element:
-            logger.error(f"find_and_type: field not found (role={role})")
+            logger.error(f"find_and_type: field not found (role={role}, element_provided={params.get('element') is not None})")
             return None
 
         if focus_strategy:
@@ -533,6 +539,107 @@ def register_all_handlers(ctx: ExecutionContext):
         btlog(f"press_key: {key_name} modifiers={modifiers}")
         return {"success": True}
 
+    # --- click_at: left-click at point coords (v8) ---
+    # For Perseus widgets where targets are SVG/canvas not in AX tree
+    # (label_image dot regions, interactive_graph plot points). BTs compute
+    # coords from find_all results' visible_bbox. Coords are POINTS (logical),
+    # same space as visible_bbox — no Retina scale-factor math needed.
+    def handle_click_at(ctx, params):
+        from Quartz import (
+            CGEventCreateMouseEvent, CGEventPost, kCGHIDEventTap,
+            kCGEventLeftMouseDown, kCGEventLeftMouseUp, kCGMouseButtonLeft,
+        )
+        try:
+            x = float(params["x"])
+            y = float(params["y"])
+        except (KeyError, TypeError, ValueError) as e:
+            btlog(f"click_at: missing/invalid coords: {e}")
+            return None
+        pos = (x, y)
+        down = CGEventCreateMouseEvent(None, kCGEventLeftMouseDown, pos, kCGMouseButtonLeft)
+        CGEventPost(kCGHIDEventTap, down)
+        time.sleep(0.05)
+        up = CGEventCreateMouseEvent(None, kCGEventLeftMouseUp, pos, kCGMouseButtonLeft)
+        CGEventPost(kCGHIDEventTap, up)
+        btlog(f"click_at: ({x:.0f},{y:.0f})")
+        return {"success": True}
+
+    # --- drag: mouse drag from start → end (v8) ---
+    # Closes sorter, orderer, matcher, interactive_graph drag interactions.
+    # Works for mouse-event-based drag libraries (react-dnd mouse backend,
+    # Perseus widgets). HTML5-native drag (dragstart/dragover events) is NOT
+    # produced by CGEvents — those widgets would need a different mechanism.
+    # Khan widgets observed to use mouse-event-based drag.
+    # Timing tuned for React handlers: 80ms press hold lets "drag activate"
+    # fire; 15-20 intermediate moves at ~20ms align with rAF batching;
+    # 50ms hold before release lets drop targets register hover.
+    def handle_drag(ctx, params):
+        from Quartz import (
+            CGEventCreateMouseEvent, CGEventPost, kCGHIDEventTap,
+            kCGEventLeftMouseDown, kCGEventLeftMouseUp,
+            kCGEventLeftMouseDragged, kCGMouseButtonLeft,
+        )
+        start = params.get("start") or {}
+        end = params.get("end") or {}
+        try:
+            sx = float(start["x"]); sy = float(start["y"])
+            ex = float(end["x"]); ey = float(end["y"])
+        except (KeyError, TypeError, ValueError) as e:
+            btlog(f"drag: missing/invalid start/end coords: {e}")
+            return None
+
+        steps = int(params.get("steps", 18))
+        if steps < 2:
+            steps = 2
+        step_delay = float(params.get("step_delay", 0.020))
+        press_hold = float(params.get("press_hold", 0.080))
+        release_hold = float(params.get("release_hold", 0.050))
+
+        # 1. Mouse down at start, hold to let drag handlers activate
+        down = CGEventCreateMouseEvent(None, kCGEventLeftMouseDown, (sx, sy), kCGMouseButtonLeft)
+        CGEventPost(kCGHIDEventTap, down)
+        time.sleep(press_hold)
+
+        # 2. Intermediate dragged moves
+        for i in range(1, steps + 1):
+            t = i / steps
+            x = sx + (ex - sx) * t
+            y = sy + (ey - sy) * t
+            move = CGEventCreateMouseEvent(None, kCGEventLeftMouseDragged, (x, y), kCGMouseButtonLeft)
+            CGEventPost(kCGHIDEventTap, move)
+            time.sleep(step_delay)
+
+        # 3. Hold at end so drop targets register hover, then release
+        time.sleep(release_hold)
+        up = CGEventCreateMouseEvent(None, kCGEventLeftMouseUp, (ex, ey), kCGMouseButtonLeft)
+        CGEventPost(kCGHIDEventTap, up)
+        btlog(f"drag: ({sx:.0f},{sy:.0f}) -> ({ex:.0f},{ey:.0f}) steps={steps}")
+        return {"success": True}
+
+    # --- type_keys: type arbitrary Unicode text into the focused element (v8) ---
+    # Uses CGEventKeyboardSetUnicodeString so any codepoint works without a
+    # keymap — math symbols (× ÷ ° π), Greek (α β γ), subscripts (H₂O), accents.
+    # Falls back path: caller must focus the target element first (click).
+    def handle_type_keys(ctx, params):
+        from Quartz import (
+            CGEventCreateKeyboardEvent, CGEventKeyboardSetUnicodeString,
+            CGEventPost, kCGHIDEventTap,
+        )
+        text = params.get("text", "")
+        if not text:
+            return {"success": True}
+        per_char_delay = float(params.get("per_char_delay", 0.010))
+        for ch in text:
+            e_down = CGEventCreateKeyboardEvent(None, 0, True)
+            CGEventKeyboardSetUnicodeString(e_down, 1, ch)
+            CGEventPost(kCGHIDEventTap, e_down)
+            e_up = CGEventCreateKeyboardEvent(None, 0, False)
+            CGEventKeyboardSetUnicodeString(e_up, 1, ch)
+            CGEventPost(kCGHIDEventTap, e_up)
+            time.sleep(per_char_delay)
+        btlog(f"type_keys: {len(text)} chars")
+        return {"success": True}
+
     # --- scroll: scroll by direction + amount ---
     def handle_scroll(ctx, params):
         from Quartz import (
@@ -595,3 +702,7 @@ def register_all_handlers(ctx: ExecutionContext):
     ctx.register("press_key", handle_press_key)
     ctx.register("scroll", handle_scroll)
     ctx.register("wait_for_element", handle_wait_for_element)
+    # v8 additions
+    ctx.register("click_at", handle_click_at)
+    ctx.register("drag", handle_drag)
+    ctx.register("type_keys", handle_type_keys)
