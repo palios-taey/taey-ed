@@ -186,7 +186,10 @@ ESCALATION LEVEL: {escalation_level} (attempt {spark_attempts})
 - NEVER auto-click "Try again" on wrong answers — creates bot detection risk
 - NEVER use `duration` param on wait handler — the param is `seconds`
 - NEVER put for_each/conditional params under `params:` — top-level keys only
-- NEVER use discover_menu on ARIA comboboxes — AXMenu doesn't exist for them"""
+- NEVER use discover_menu on ARIA comboboxes — AXMenu doesn't exist for them
+- NEVER compose raw click + press_key arrows for ARIA comboboxes — the
+  React-portaled options live outside the keyboard handler's wrapper.
+  Use select_dropdown_option, which owns focus_press + verification."""
 
 
 def build_section_2(consultation_id: str, is_reconsultation: bool,
@@ -610,21 +613,33 @@ PATTERN_HAS_COMBOBOX = """\
 === DETECTED: COMBOBOX / DROPDOWN (matching or selection exercise) ===
 
 Your tree has AXComboBox or AXPopUpButton elements. These are dropdown
-selection exercises (common in Khan Academy matching/sorting).
+selection exercises (common in Khan Academy matching/sorting / Wonder Blocks
+single-select).
 
-IMPORTANT: ARIA comboboxes do NOT create AXMenu. discover_menu WILL FAIL.
-Use keyboard navigation instead.
+DO NOT compose raw clicks + arrow keys for these. ARIA comboboxes
+(specifically Wonder Blocks SingleSelect / DropdownCore) keep the keyboard
+handler on a wrapper element and portal the option list outside it via
+ReactDOM.createPortal. Synthetic clicks on AXMenuItem and synthetic Down/
+Enter to the document do NOT propagate to React's selection state because
+DOM focus is on the opener button while options live in a separate subtree.
 
-COMPLETE BT PATTERN (Khan Academy combobox):
+USE THE SEMANTIC HANDLER: select_dropdown_option
+
+It activates Chrome → opens the trigger → walks the FULL app AX tree
+(NOT scoped to AXWebArea — Wonder Blocks portals options outside it) →
+normalizes "not selected"/"selected" suffixes → tries strategies in order
+(focus_press = AX focus + AXPress, then focus_space, focus_enter,
+mouse_click, ax_press) → after each, verifies trigger AXValue contains
+the chosen option → returns success only on observed state change.
+
+COMPLETE BT PATTERN (use this for any combobox/popup widget):
 {
   "type": "sequence",
   "children": [
     {
       "type": "action",
       "action": "find_all",
-      "params": {
-        "role": "AXPopUpButton"
-      },
+      "params": {"role": "AXComboBox"},
       "store": "popups"
     },
     {
@@ -646,19 +661,6 @@ COMPLETE BT PATTERN (Khan Academy combobox):
         "children": [
           {
             "type": "action",
-            "action": "click",
-            "params": {
-              "element": "$popup.element",
-              "strategy": "mouse_click"
-            }
-          },
-          {
-            "type": "action",
-            "action": "wait",
-            "params": {"seconds": 0.7}
-          },
-          {
-            "type": "action",
             "action": "lookup_match",
             "params": {
               "matches": "$matches.matches",
@@ -668,12 +670,14 @@ COMPLETE BT PATTERN (Khan Academy combobox):
           },
           {
             "type": "action",
-            "action": "find_and_click",
+            "action": "select_dropdown_option",
             "params": {
-              "target": "$chosen",
-              "role": "AXMenuItem",
-              "strategy": "mouse_click",
-              "match_mode": "contains"
+              "trigger_element": "$popup.element",
+              "option": "$chosen",
+              "trigger_role": "AXComboBox",
+              "open_strategy": "mouse_click",
+              "open_wait": 0.7,
+              "verify_wait": 0.4
             }
           }
         ]
@@ -686,21 +690,23 @@ COMPLETE BT PATTERN (Khan Academy combobox):
         "target": "Check",
         "role": "AXButton",
         "strategy": "mouse_click",
-        "post_delay": 2.0
+        "post_delay": 2.5
       }
     }
   ]
 }
 
-KEYBOARD NAVIGATION ALTERNATIVE (for React Portal comboboxes):
-Instead of click + find_and_click on menu items:
-1. click the popup → opens dropdown
-2. press_key: down (repeat N times to reach desired option)
-3. press_key: return (select)
-This avoids React Portal click-capture issues.
+If the trigger role is AXPopUpButton (native Mac popup) instead of
+AXComboBox, set trigger_role accordingly. select_dropdown_option falls
+back across both.
 
-WARNING: Combobox options may render in a React Portal (separate subtree).
-The AT-SPI tree may show them at a different nesting level."""
+DISCOVERY-FIRST: For exercises where you don't know the option set ahead
+of time (most cases — content can be wrong, randomized, or non-obvious),
+use the find_all + send_to_llm + lookup_match + select_dropdown_option
+chain above. The system enumerates options first, matches them against
+the answer set, then acts. Do NOT generate BTs that hardcode answers when
+you happen to know them — that pattern breaks the moment Khan content
+varies."""
 
 
 PATTERN_TRANSITION = """\
@@ -1073,6 +1079,36 @@ discover_menu:
   Filters out system menus (Apple, Window, Help)
   NOTE: Only works for native menus. FAILS on ARIA comboboxes.""",
 
+    "select_dropdown_option": """\
+select_dropdown_option:
+  Purpose: Semantic ARIA combobox/listbox selection with verification.
+    Use this for ANY combobox or popup widget — Wonder Blocks SingleSelect,
+    React Aria combobox, native AXPopUpButton. Do NOT compose raw click +
+    press_key arrows for these.
+  Params:
+    trigger_element (AXUIElement, optional): Combobox AX element ref
+      (preferred — pass via $popup.element from find_all + for_each)
+    trigger_target (str, optional): Text to find combobox by, default
+      "Select an answer"
+    trigger_role (str): "AXComboBox" (default) or "AXPopUpButton"
+    trigger_match_mode (str): "contains" (default) or "exact"
+    option (str, REQUIRED): Option text to select (e.g. "Kr", "Carbon")
+    open_strategy (str): Default "mouse_click"
+    open_wait (float): Default 0.5
+    verify_wait (float): Default 0.35
+    strategies (list, optional): Override fallback ladder. Default
+      ["focus_press", "focus_space", "focus_enter", "mouse_click",
+      "ax_press"]
+  Returns: {"success": bool, "strategy": str, "option": str} on success,
+    or {"success": False, "error": str, "seen": [...], "errors": [...]}
+    on failure.
+  NOTES:
+    - Activates Chrome before raw events (frontmost-routing safe)
+    - Walks FULL app AX tree (Wonder Blocks portals options outside webarea)
+    - Normalizes "<text> not selected" / "<text> selected" suffixes
+    - Verifies trigger AXValue changed before returning success — no silent
+      ACTION RETURNED NONE failures""",
+
     "lookup_match": """\
 lookup_match:
   Purpose: Dictionary lookup with partial matching fallback
@@ -1335,12 +1371,15 @@ SECTION_7_STRATEGIES = """\
 | mouse_click | Browser elements (DEFAULT, safest) | CGEvent mouse at element center |
 | focus_space | Radio buttons, checkboxes         | Focus element → press Space      |
 | focus_enter | Standard browser buttons          | Focus element → press Enter      |
+| focus_press | ARIA listbox options, portaled    | AX focus → AXPress (VoiceOver path) |
 | ax_press    | Native Mac apps (JavaFX, Cocoa)   | AXPress accessibility action     |
 
 DEFAULT: mouse_click for all browser platforms (Khan Academy, Coursera, etc.)
 EXCEPTION: Radio/checkbox use focus_space (mouse_click doesn't reliably toggle)
-EXCEPTION: React Portal elements — mouse_click on portal elements may not fire
-  React synthetic events. Use keyboard navigation instead (see HAS_COMBOBOX).
+EXCEPTION: ARIA combobox/listbox (Wonder Blocks SingleSelect, React Aria
+  combobox, etc.) — do NOT click options or arrow-key navigate. Use the
+  semantic select_dropdown_option handler (see HAS_COMBOBOX), which uses
+  the focus_press strategy under the hood.
 
 find_and_click has a 4-tier fallback chain:
 1. Exact match with specified role

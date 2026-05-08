@@ -567,9 +567,12 @@ HOW TO BUILD GOOD EXTRACTION:
 6. NAVIGATION/TRANSITION screens: omit extract (no unique content to capture)
 """
 
-# Valid handler names for BT validation
+# Valid handler names for BT validation. Must stay in sync with
+# Mac-side bt_handlers.py register_all_handlers() — handler drift between
+# the two ends silently rejects valid BTs at Spark before they reach Mac.
 _VALID_HANDLERS = {
-    "find_and_click", "find_and_type", "find_all", "click",
+    "find_and_click", "find_and_type", "find_all", "click", "click_element",
+    "click_at", "drag", "type_keys", "select_dropdown_option",
     "extract_question", "send_to_llm", "video_poll", "wait",
     "press_key", "scroll", "wait_for_element", "discover_menu",
     "lookup_match", "store_qa", "solve_assessment_page",
