@@ -283,6 +283,13 @@
               "disambiguator": "Wonder Blocks does NOT update combobox accessible name/title/description after selection \u2014 only the value attribute changes. So after combobox 1 is filled, find_and_click target='Select an answer' match_mode=contains still matches it. To target a still-empty combobox, use Tab navigation: focus a known filled combobox by exact value match, then press_key tab to advance through form fields until reaching the next empty one. Probe by opening the dropdown with press_key 'down' and capturing the open-dropdown tree to count options.",
               "v8_handler_required": "find_and_type accepts 'element' parameter (parallel to click). Then for_each + find_all + element-aware find_and_type fills text cells by element ref. type_keys handler (CGEventKeyboardSetUnicodeString) provides typing fallback if AXSetValue is rejected.",
               "v7_workaround": "The keyboard-nav pattern documented above is the v7 workaround for the dropdown half. The text-field half (filling row 2 atomic-number cell after row 1 is filled) has NO v7 workaround \u2014 find_and_type always finds first AXTextField in tree order, and press_key cannot type digits/letters (only special keys). User must fill remaining text cells manually OR wait for v8 find_and_type with element parameter."
+            },
+            {
+              "discovered_at": "2026-05-08T02:48:33Z",
+              "by": "claude-primary",
+              "note": "Partial-submission UX (verified 2026-05-08): Clicking Check on a table_input with one or more empty cells does NOT mark the question wrong. Khan shows a soft modal in lower-right: 'You're almost there. There are still more parts of this question to answer. Give it another try!' with a 'Try again' AXButton (and 'Skip' still visible). The fills are PRESERVED \u2014 clicking 'Try again' dismisses the modal without resetting any cell values. Useful when the BT has filled some cells but not all (e.g. dropdowns done via keyboard nav but text fields blocked by v7 disambiguation gap). To dismiss: find_and_click target='Try again' role=AXButton match_mode=exact -> wait 1.5s. Form returns to fillable state with Check button visible.",
+              "verified_count": 1,
+              "bt_template_hint": "If Check fires with empty cells: find_and_click target='Try again' role=AXButton match_mode=exact -> wait 1.5s -> resume fill. Recoverable, not destructive."
             }
           ]
         },
