@@ -152,6 +152,17 @@ class TaeyEdWindow:
         # Setup menu bar status icon
         self._setup_menu_bar()
 
+        # Wire ALL exit paths to graceful shutdown. Without this, exit
+        # paths bypass _on_close → pipeline keeps polling, consultation
+        # stays pending, lockfile may persist.
+        # - WM_DELETE_WINDOW: red X close button
+        # - ::tk::mac::Quit: Cmd+Q + Apple Event "Quit" (osascript, dock menu)
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        try:
+            self.root.createcommand("::tk::mac::Quit", self._on_close)
+        except Exception as e:
+            self.logger.warning(f"Could not register tk::mac::Quit handler: {e}")
+
         # Start queue processors
         self.root.after(100, self._process_log_queue)
         self.root.after(100, self._process_chat_queue)
@@ -895,6 +906,43 @@ class TaeyEdWindow:
                 NSStatusBar.systemStatusBar().removeStatusItem_(self._status_item)
             except Exception:
                 pass
+
+    def _on_close(self):
+        """Graceful close: stop pipeline, wait for abandon-consultation, exit.
+
+        Wired to WM_DELETE_WINDOW. Without this hook, clicking red X just
+        tore down the window while the pipeline kept polling Spark, leaving
+        any active consultation pending forever.
+        """
+        import time
+        self.logger.info("Window close: shutting down")
+        # Tell pipeline to stop. It will send /abandon_consultation/{id}
+        # in its exit path if there's an active consultation.
+        self.stop_event.set()
+        # Unblock pipeline if it was waiting on user input
+        if not self._chat_event.is_set():
+            self._chat_event.set()
+        # Give the pipeline thread up to 5s to exit cleanly so the abandon
+        # POST has time to land. Daemon threads die with the process — no
+        # graceful abandon if we exit too fast.
+        if self._is_running:
+            self.logger.info("Waiting up to 5s for pipeline to abandon active consultation...")
+            for _ in range(50):
+                if not self._is_running:
+                    break
+                time.sleep(0.1)
+            if self._is_running:
+                self.logger.warning("Pipeline thread did not exit in 5s; abandon may not have landed")
+        # Tk + AppKit teardown
+        self.destroy()
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
+        # Force-exit the process. Without this, AppKit/NSApplication can
+        # keep the process alive (the hotkey monitor / status bar item).
+        import sys
+        sys.exit(0)
 
 
 if __name__ == "__main__":

@@ -54,6 +54,9 @@ spark/tasks/call_ollama.py
 app/tasks/bt_core.py
 # bt_handlers.py — v8 unfreeze 2026-05-08 for click_at/drag/type_keys +
 # find_and_type element-ref param. Re-locked after v8 commit.
+# pipeline.py — 2026-05-08 lifecycle unfreeze: _abandon_if_active() helper
+# released active_consultation_id from every return path so Spark's
+# ONE-AT-A-TIME gate doesn't block on a dead client.
 app/tasks/bt_handlers.py
 app/tasks/extract_question.py
 app/tasks/handle_extraction.py

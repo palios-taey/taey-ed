@@ -222,6 +222,17 @@ def run_continuous(
 
     logger.info(f"=== V8 Continuous mode: {platform} ({app_name}) session={session_id} ===")
 
+    def _abandon_if_active():
+        """Release Spark's ONE-AT-A-TIME consultation gate before exit.
+        Without this, a dead/closed client leaves the gate blocked on a
+        never-resolving consultation. Called from every return path."""
+        if active_consultation_id:
+            try:
+                call_spark(f"/abandon_consultation/{active_consultation_id}", method="POST")
+                logger.info(f"Abandoned consultation {active_consultation_id}")
+            except Exception as e:
+                logger.warning(f"Failed to abandon consultation {active_consultation_id}: {e}")
+
     while not stop_event.is_set():
         try:
             # ── Capture current screen ──
@@ -400,6 +411,7 @@ def run_continuous(
 
                     if max_screens > 0 and screens_completed >= max_screens:
                         logger.info(f"Reached max_screens ({max_screens})")
+                        _abandon_if_active()
                         clear_checkpoint(platform, course_id, app_name)
                         return {
                             "success": True,
@@ -492,6 +504,7 @@ def run_continuous(
             elif dtype == "stop":
                 reason = directive.get("reason", "server_stop")
                 logger.info(f"Stop directive: {reason}")
+                _abandon_if_active()
                 return {
                     "success": directive.get("success", False),
                     "reason": reason,
@@ -518,6 +531,7 @@ def run_continuous(
             logger.error(f"Pipeline error #{consecutive_errors}: {e}", exc_info=True)
             if consecutive_errors >= 2:
                 logger.error(f"PIPELINE FAILED: {consecutive_errors} consecutive errors. Stopping.")
+                _abandon_if_active()
                 clear_checkpoint(platform, course_id, app_name)
                 return {
                     "success": False,
@@ -529,7 +543,8 @@ def run_continuous(
             time.sleep(5.0)
             continue
 
-    # User stopped
+    # User stopped (loop exited because stop_event was set)
+    _abandon_if_active()
     clear_checkpoint(platform, course_id, app_name)
     logger.info(f"=== Stopped by user. Screens: {screens_completed} ===")
     return {
