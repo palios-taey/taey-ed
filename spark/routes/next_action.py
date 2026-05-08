@@ -339,7 +339,7 @@ def _build_screen_directive(request, platform: str, tree: dict, screen_type: str
     if _claude_directive:
         return _claude_directive
 
-    from spark.tasks.classify_screen import get_click_target, build_bt_from_tree
+    from spark.tasks.classify_screen import build_bt_from_tree
 
     # PRIMARY PATH: Gemini 2.5 Pro builds a BT specific to THIS screen
     if request.screenshot_b64:

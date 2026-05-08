@@ -240,12 +240,3 @@ def validate_config(config: dict) -> list[ConfigError]:
     return errors
 
 
-def validate_config_strict(config: dict) -> Optional[str]:
-    """
-    Validate config and return error string, or None if valid.
-    Convenience wrapper for use in load_yaml.
-    """
-    errors = validate_config(config)
-    if errors:
-        return "; ".join(str(e) for e in errors)
-    return None

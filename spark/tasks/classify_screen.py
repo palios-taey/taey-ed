@@ -1,8 +1,7 @@
 """
-Screen classification, click target selection, and BT building via Gemini API.
+Screen classification + BT building via Gemini API.
 
   classify_screen()     — "What type of screen is this?" → one of 6 categories
-  get_click_target()    — "What text should I click?" → simple string answer
   build_bt_from_tree()  — Gemini builds a screen-specific BT from tree + screenshot
 """
 
@@ -285,85 +284,6 @@ def _gemini_api_call(prompt: str, screenshot_b64: Optional[str] = None,
         logger.error(f"Gemini API error ({model_name}): {e}")
         return None
 
-
-# ── Click Target Selection ──
-# Gemini answers ONE simple question: "what text should I click?"
-# No BT construction, no roles, no strategies — just the target text.
-
-CLICK_TARGET_PROMPT = """\
-You are looking at a {screen_type} screen on {platform} (educational LMS).
-
-Look at the screenshot and accessibility tree. Answer ONE question:
-What is the exact text of the element I should click to proceed?
-
-Rules:
-- For NAVIGATION: identify the next INCOMPLETE content item (not completed ones).
-  Look for items WITHOUT checkmarks or "Completed" indicators.
-- For TRANSITION: identify the button that advances (e.g., "Next", "Continue", "Start quiz").
-  NEVER click "Skip" or "Up next".
-- Return ONLY the exact text as it appears on screen. Nothing else.
-- If there's a "Resume" link/button, return its associated content item text instead
-  (the item name, not the word "Resume").
-
-=== ACCESSIBILITY TREE ===
-{tree_json}
-
-Return ONLY the exact click target text, no JSON, no explanation.
-"""
-
-
-def get_click_target(
-    tree: dict,
-    screenshot_b64: Optional[str],
-    platform: str,
-    screen_type: str,
-) -> Optional[str]:
-    """
-    Ask Gemini: "what text should I click?" Returns just a string.
-
-    Used for NAVIGATION and TRANSITION screens where the BT structure
-    is fixed but the click target varies per screen.
-    """
-    scoped_tree = _find_web_area(tree)
-    pruned = prune_tree_for_prompt(scoped_tree)
-    tree_json = json.dumps(pruned, indent=None, ensure_ascii=False)
-    prompt = CLICK_TARGET_PROMPT.format(
-        screen_type=screen_type,
-        platform=platform,
-        tree_json=tree_json,
-    )
-
-    logger.info(f"get_click_target: asking Gemini for {screen_type} click target")
-    raw = _gemini_api_call(prompt, screenshot_b64)
-
-    if not raw:
-        return None
-
-    # Strip any quotes or whitespace
-    target = raw.strip().strip('"').strip("'").strip()
-    logger.info(f"get_click_target: Gemini says click '{target}'")
-    return target
-
-
-# Screen types that should NEVER have extraction (no unique content).
-_NO_EXTRACT_TYPES = {"NAVIGATION", "TRANSITION"}
-
-
-def _should_extract(screen_type: str) -> bool:
-    """Return False for screen types that have no unique content to extract."""
-    if screen_type in _NO_EXTRACT_TYPES:
-        return False
-    from spark.tasks.screen_type_util import get_master_category
-    master = get_master_category(screen_type)
-    return master not in _NO_EXTRACT_TYPES
-
-
-def _get_extract_default(screen_type: str):
-    """Get extract config for a screen type. Returns None for non-content screens."""
-    if not _should_extract(screen_type):
-        return None
-    # No hardcoded fallback — caller should use build_extract_config() instead
-    return None
 
 
 # ── Dedicated Gemini extraction call ──

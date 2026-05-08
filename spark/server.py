@@ -2,14 +2,13 @@
 """
 Taey-Ed V8 API Server
 
-Split from V7 monolith (1062 lines) into modular routes:
-  routes/health.py       — GET /health, /screen-memory/stats
-  routes/next_action.py  — POST /next_action (state machine)
-  routes/consultation.py — Consultation CRUD
-  routes/compute.py      — VLM, embeddings, LLM generation
-  routes/review.py       — Action review endpoints
-  routes/spinal_cord.py  — /route, /collapse, /match
-  routes/validation.py   — Post-action validation + learning loop
+Active routes:
+  routes/health.py        — GET /health
+  routes/next_action.py   — POST /next_action (state machine, V21)
+  routes/consultation.py  — Consultation CRUD + /abandon_consultation
+  routes/compute.py       — VLM, embeddings, LLM generation
+  routes/review.py        — Action review endpoints
+  routes/chat.py          — Mac UI chat history
 """
 
 import logging
@@ -108,17 +107,6 @@ app.add_middleware(
 )
 
 
-@app.on_event("startup")
-def startup_event():
-    """Initialize Weaviate schema on startup."""
-    try:
-        from spark.tasks.screen_memory import ensure_schema
-        ensure_schema()
-        logger.info("ScreenEmbedding collection ready")
-    except Exception as e:
-        logger.warning(f"Could not initialize screen memory: {e}")
-
-
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     """Log validation errors so we can diagnose 422s."""
@@ -135,8 +123,6 @@ from spark.routes.next_action import router as next_action_router
 from spark.routes.consultation import router as consultation_router
 from spark.routes.compute import router as compute_router
 from spark.routes.review import router as review_router
-from spark.routes.spinal_cord import router as spinal_cord_router
-from spark.routes.validation import router as validation_router
 from spark.routes.chat import router as chat_router
 
 app.include_router(health_router)
@@ -144,8 +130,6 @@ app.include_router(next_action_router)
 app.include_router(consultation_router)
 app.include_router(compute_router)
 app.include_router(review_router)
-app.include_router(spinal_cord_router)
-app.include_router(validation_router)
 app.include_router(chat_router)
 
 
