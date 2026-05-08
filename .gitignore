@@ -17,3 +17,10 @@ venv/
 
 # Learned data — runtime-generated, not committed
 spark/platforms/*/learned/
+.gitnexus
+
+# venv (we use .venv/ on Mira side)
+.venv/
+
+# Jupyter checkpoint cruft
+.ipynb_checkpoints/
