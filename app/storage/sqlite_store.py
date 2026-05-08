@@ -1,6 +1,6 @@
-# STATUS: FROZEN - Proven in v7. Verified 2026-02-19. Do not modify.
+# STATUS: FROZEN. Verified 2026-02-19. Do not modify.
 """
-SQLite Storage for Taey-Ed V7.
+SQLite Storage for Taey-Ed.
 Zero external dependencies, py2app-friendly.
 Stores extracted content for Phase 6 question answering.
 Exportable to DeepTutor JSON format.
@@ -340,7 +340,7 @@ class TaeyEdStorage:
         # Build export structure
         export_data = {
             "metadata": {
-                "source": "Taey-Ed V7",
+                "source": "Taey-Ed",
                 "exported_at": datetime.now().isoformat(),
                 "platform": platform,
                 "course_id": course_id

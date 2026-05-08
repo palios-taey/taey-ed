@@ -649,7 +649,7 @@ async def generate_answer(
     """
     Generate answer for educational question.
 
-    V8: When screen_config is provided, returns action_sequence
+    When screen_config is provided, returns action_sequence
     that Mac can execute as a dumb sequence of primitives.
 
     Args:
@@ -905,7 +905,7 @@ async def generate_answer(
                 "question_type": question_type,
                 "model": model_used,
             }
-            # V8: Build action_sequence for checkbox if screen_config provided
+            # Build action_sequence for checkbox if screen_config provided
             if screen_config:
                 result["action_sequence"] = build_action_sequence(
                     answer="",
@@ -956,7 +956,7 @@ async def generate_answer(
         if text_response:
             result["text_response"] = text_response
 
-        # V8: Build action_sequence if screen_config provided
+        # Build action_sequence if screen_config provided
         if screen_config:
             result["action_sequence"] = build_action_sequence(
                 answer=answer,

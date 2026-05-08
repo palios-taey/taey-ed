@@ -119,7 +119,7 @@ def register_all_handlers(ctx: ExecutionContext):
         role = params.get("role")
         text = params.get("text", "")
         focus_strategy = params.get("focus_strategy")
-        # v8: accept pre-resolved element ref (from find_all + for_each).
+        # Accept pre-resolved element ref (from find_all + for_each).
         # AXSetValue writes to the specific element passed, so plumbing
         # the ref through here lets per-iteration BTs target distinct
         # fields when name/role collide (e.g. table_input "Your answer:").
@@ -539,7 +539,7 @@ def register_all_handlers(ctx: ExecutionContext):
         btlog(f"press_key: {key_name} modifiers={modifiers}")
         return {"success": True}
 
-    # --- click_at: left-click at point coords (v8) ---
+    # --- click_at: left-click at point coords ---
     # For Perseus widgets where targets are SVG/canvas not in AX tree
     # (label_image dot regions, interactive_graph plot points). BTs compute
     # coords from find_all results' visible_bbox. Coords are POINTS (logical),
@@ -564,7 +564,7 @@ def register_all_handlers(ctx: ExecutionContext):
         btlog(f"click_at: ({x:.0f},{y:.0f})")
         return {"success": True}
 
-    # --- drag: mouse drag from start → end (v8) ---
+    # --- drag: mouse drag from start → end ---
     # Closes sorter, orderer, matcher, interactive_graph drag interactions.
     # Works for mouse-event-based drag libraries (react-dnd mouse backend,
     # Perseus widgets). HTML5-native drag (dragstart/dragover events) is NOT
@@ -616,7 +616,7 @@ def register_all_handlers(ctx: ExecutionContext):
         btlog(f"drag: ({sx:.0f},{sy:.0f}) -> ({ex:.0f},{ey:.0f}) steps={steps}")
         return {"success": True}
 
-    # --- type_keys: type arbitrary Unicode text into the focused element (v8) ---
+    # --- type_keys: type arbitrary Unicode text into the focused element ---
     # Uses CGEventKeyboardSetUnicodeString so any codepoint works without a
     # keymap — math symbols (× ÷ ° π), Greek (α β γ), subscripts (H₂O), accents.
     # Falls back path: caller must focus the target element first (click).
@@ -702,7 +702,6 @@ def register_all_handlers(ctx: ExecutionContext):
     ctx.register("press_key", handle_press_key)
     ctx.register("scroll", handle_scroll)
     ctx.register("wait_for_element", handle_wait_for_element)
-    # v8 additions
     ctx.register("click_at", handle_click_at)
     ctx.register("drag", handle_drag)
     ctx.register("type_keys", handle_type_keys)

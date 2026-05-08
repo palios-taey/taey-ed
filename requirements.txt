@@ -1,4 +1,4 @@
-# Taey-Ed V7 Dependencies
+# Taey-Ed Dependencies
 # py2app for building macOS .app bundle
 py2app
 setuptools==70.0.0

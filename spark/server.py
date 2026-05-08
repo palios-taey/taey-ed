@@ -1,6 +1,6 @@
-# Post-V8 fix (2026-02-20): Added localhost bypass for /api/v1/consult* endpoints
+# 2026-02-20: Added localhost bypass for /api/v1/consult* endpoints
 """
-Taey-Ed V8 API Server
+Taey-Ed API Server
 
 Active routes:
   routes/health.py        — GET /health
@@ -96,7 +96,7 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
 
 # ── App Setup ──
 
-app = FastAPI(title="Taey-Ed V8", version="8.0.0")
+app = FastAPI(title="Taey-Ed", version="1.0.0")
 app.add_middleware(APIKeyMiddleware)
 app.add_middleware(
     CORSMiddleware,

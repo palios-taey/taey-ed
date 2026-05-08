@@ -1,4 +1,4 @@
-# STATUS: FROZEN - V8 action review routes. Verified 2026-02-19. Do not modify.
+# STATUS: FROZEN. Action review routes. Verified 2026-02-19. Do not modify.
 """Action review endpoints — post-action validation failure handling."""
 
 from fastapi import APIRouter, HTTPException

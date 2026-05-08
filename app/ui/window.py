@@ -1,5 +1,5 @@
 """
-Taey-Ed V7 - Main Window
+Taey-Ed - Main Window
 
 Uses pipeline.py to run automation.
 All tests go through this UI.
@@ -109,7 +109,7 @@ class QueueHandler(logging.Handler):
 
 
 class TaeyEdWindow:
-    """Main application window for Taey-Ed V7."""
+    """Main application window for Taey-Ed."""
 
     def __init__(self):
         # Check permissions FIRST before building UI
@@ -120,7 +120,7 @@ class TaeyEdWindow:
             prompt_for_accessibility()
 
         self.root = tk.Tk()
-        self.root.title("Taey-Ed V7")
+        self.root.title("Taey-Ed")
         self.root.geometry("700x700")
 
         # Message queue for thread-safe logging
@@ -186,7 +186,7 @@ class TaeyEdWindow:
         main_frame.pack(fill=tk.BOTH, expand=True)
 
         # Title
-        title_label = ttk.Label(main_frame, text="Taey-Ed V7", font=("Helvetica", 16, "bold"))
+        title_label = ttk.Label(main_frame, text="Taey-Ed", font=("Helvetica", 16, "bold"))
         title_label.pack(pady=(0, 10))
 
         # Status label

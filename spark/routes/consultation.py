@@ -1,4 +1,4 @@
-# STATUS: FROZEN - V8 consultation routes. Verified 2026-02-19. Do not modify.
+# STATUS: FROZEN. Consultation routes. Verified 2026-02-19. Do not modify.
 # 2026-05-08 unfreeze: added /abandon_consultation/{id} endpoint to support
 # Mac lifecycle fix (CCM commit 084de95). Re-locked after.
 """Consultation CRUD endpoints."""

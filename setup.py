@@ -1,5 +1,5 @@
 """
-Taey-Ed V7 - py2app Setup
+Taey-Ed - py2app Setup
 
 Build with:
     python3 -m venv venv
@@ -21,9 +21,9 @@ OPTIONS = {
     "packages": find_packages(),
     "plist": {
         "CFBundleName": "Taey-Ed",
-        "CFBundleDisplayName": "Taey-Ed V7",
-        "CFBundleVersion": "7.0.0",
-        "CFBundleShortVersionString": "7.0.0",
+        "CFBundleDisplayName": "Taey-Ed",
+        "CFBundleVersion": "1.0.0",
+        "CFBundleShortVersionString": "1.0.0",
         "CFBundleIdentifier": "com.paliostaey.taey-ed",
         "NSHighResolutionCapable": True,
         "NSAppleEventsUsageDescription": "Taey-Ed needs to control your Mac to automate educational platforms.",
@@ -35,7 +35,7 @@ OPTIONS = {
 
 setup(
     name="Taey-Ed",
-    version="7.0.0",
+    version="1.0.0",
     packages=find_packages(),
     app=APP,
     data_files=DATA_FILES,

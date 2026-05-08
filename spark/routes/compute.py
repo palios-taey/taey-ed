@@ -1,4 +1,4 @@
-# STATUS: FROZEN - V8 compute routes. Verified 2026-02-19. Do not modify.
+# STATUS: FROZEN. Compute routes. Verified 2026-02-19. Do not modify.
 """Compute endpoints: VLM, embeddings, LLM answer generation."""
 
 import logging

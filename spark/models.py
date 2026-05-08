@@ -1,8 +1,8 @@
-# STATUS: FROZEN - V8 request models. Verified 2026-02-19. Do not modify.
+# STATUS: FROZEN. Request models. Verified 2026-02-19. Do not modify.
 """
-Pydantic request models for Taey-Ed V8 API.
+Pydantic request models for the Taey-Ed API.
 
-Extracted from V7 server.py monolith.
+Pydantic request/response shapes for the API.
 """
 
 from pydantic import BaseModel
@@ -128,7 +128,7 @@ class CollapseRequest(BaseModel):
     skeleton_hash: str = ""
 
 
-# ── Next Action (V8 Directive Model) ──
+# ── Next Action (Directive Model) ──
 
 class ClientState(BaseModel):
     screens_completed: int = 0

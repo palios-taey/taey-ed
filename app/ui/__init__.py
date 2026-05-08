@@ -1,1 +1,1 @@
-# Taey-Ed V7 UI Package
+# Taey-Ed UI Package

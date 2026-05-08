@@ -4,7 +4,7 @@ Consultation request handling.
 Creates and checks consultation requests for unknown screens.
 Includes knowledge gate: no knowledge.json = research-first notification.
 
-V8 change: Uses prompt_codex.compile_prompt() for comprehensive prompts.
+Uses prompt_codex.compile_prompt() for comprehensive prompts.
 V21 change: Gate checks knowledge.json instead of RESEARCH.md.
 """
 
@@ -283,7 +283,7 @@ def request_consultation(
             "path": str(consult_path),
         }
 
-    # V8: Comprehensive self-contained prompt via prompt_codex
+    # Comprehensive self-contained prompt via prompt_codex
     from .prompt_codex import compile_prompt
 
     consultation_context = {

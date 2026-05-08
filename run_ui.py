@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """
-Taey-Ed V7 - Application Entry Point
+Taey-Ed - Application Entry Point
 
 CRITICAL: This file MUST be at project root for py2app accessibility to work.
 Entry points inside packages (e.g., app/main.py) fail with AX error -25211.
 
-Single-instance lock at /tmp/taey-ed.pid prevents the multi-process zoo that
-ate state on 2026-05-08 (source-mode + v7-archive + v8-prod all polling Mira
-in parallel). On startup: if lockfile exists and PID is alive → refuse to
+Single-instance lock at /tmp/taey-ed.pid prevents multiple Taey-Ed processes
+running in parallel and double-polling the server. On startup: if lockfile exists and PID is alive → refuse to
 start. Else write current PID; atexit cleans up.
 """
 

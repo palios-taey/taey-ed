@@ -2,9 +2,9 @@
 # Re-sign already-built app (skip py2app build)
 set -euo pipefail
 
-APP_PATH="/Users/user/taey-ed-v7/dist/Taey-Ed.app"
+APP_PATH="/Users/user/taey-ed/dist/Taey-Ed.app"
 IDENTITY="Developer ID Application: Jesse LaRose (SQNKR6587Y)"
-ENTITLEMENTS="/Users/user/taey-ed-v7/entitlements.plist"
+ENTITLEMENTS="/Users/user/taey-ed/entitlements.plist"
 
 echo "=== Signing all .so, .dylib, .bundle files ==="
 find "$APP_PATH" \( -name "*.so" -o -name "*.dylib" -o -name "*.bundle" \) | while read -r lib; do

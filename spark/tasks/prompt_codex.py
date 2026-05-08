@@ -1,11 +1,11 @@
-# Post-V8 fix (2026-02-20): Fixed $var.items → $var in BT examples (find_all returns list directly)
+# 2026-02-20: Fixed $var.items → $var in BT examples (find_all returns list directly)
 """
 Prompt Codex — Comprehensive self-contained consultation prompt builder.
 
-Replaces V7's build_consultation_prompt.py (147 lines, empty recipe files)
+Compiles the consultation prompt for the BT-builder agent
 and classify_archetype.py (182 lines, simple heuristic).
 
-V8 philosophy: Include EVERYTHING the consultation agent needs in one prompt.
+Philosophy: Include EVERYTHING the consultation agent needs in one prompt.
 ~40K characters is ~5% of a 200K context window. No external file reads needed.
 
 The prompt has 9 sections:

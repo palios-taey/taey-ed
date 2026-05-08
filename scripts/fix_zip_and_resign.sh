@@ -2,9 +2,9 @@
 # Fix PIL dylibs inside python312.zip, sign main executable, and re-notarize
 set -euo pipefail
 
-APP_PATH="/Users/user/taey-ed-v7/dist/Taey-Ed.app"
+APP_PATH="/Users/user/taey-ed/dist/Taey-Ed.app"
 IDENTITY="Developer ID Application: Jesse LaRose (SQNKR6587Y)"
-ENTITLEMENTS="/Users/user/taey-ed-v7/entitlements.plist"
+ENTITLEMENTS="/Users/user/taey-ed/entitlements.plist"
 ZIP_FILE="$APP_PATH/Contents/Resources/lib/python312.zip"
 
 echo "=== Step 1: Extract python312.zip and sign PIL dylibs ==="
@@ -73,7 +73,7 @@ echo "Signature valid."
 
 echo ""
 echo "=== Step 8: Notarize ==="
-NOTARIZE_ZIP="/Users/user/taey-ed-v7/dist/Taey-Ed.zip"
+NOTARIZE_ZIP="/Users/user/taey-ed/dist/Taey-Ed.zip"
 rm -f "$NOTARIZE_ZIP"
 ditto -c -k --keepParent "$APP_PATH" "$NOTARIZE_ZIP"
 echo "Submitting to Apple..."

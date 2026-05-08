@@ -1,4 +1,4 @@
-# STATUS: FROZEN - Proven in v7. Verified 2026-02-19. Do not modify.
+# STATUS: FROZEN. Verified 2026-02-19. Do not modify.
 """
 Send tmux notification to Spark Claude session.
 Single-purpose file - FREEZE once working.

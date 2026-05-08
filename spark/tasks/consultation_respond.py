@@ -1,7 +1,7 @@
 """
 Consultation response handling.
 
-Post-V8 fix (2026-02-20): updates metadata.json status to "complete" after
+2026-02-20: updates metadata.json status to "complete" after
 writing response.json (fixes 1-at-a-time deadlock where new consultations
 were blocked forever).
 """

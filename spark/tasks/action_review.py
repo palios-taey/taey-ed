@@ -1,4 +1,4 @@
-# STATUS: FROZEN - Copied from v7. Verified 2026-02-19. Do not modify.
+# STATUS: FROZEN. Verified 2026-02-19. Do not modify.
 """
 Post-action validation review.
 Phase 7: Mac sends escalation when action didn't produce expected screen.

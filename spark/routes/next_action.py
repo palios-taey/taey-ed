@@ -446,7 +446,7 @@ def _validate_last_action(platform: str, config: dict, lr, current_tree: dict) -
 @router.post("/next_action")
 def next_action(request: NextActionRequest):
     """
-    V8 Directive Model: Mac sends state, Spark returns ONE directive.
+    Directive Model: Mac sends state, Spark returns ONE directive.
 
     Replaces /match + /consult + /validate + /action_review from Mac's perspective.
     """

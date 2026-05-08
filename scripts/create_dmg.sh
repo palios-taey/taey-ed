@@ -12,7 +12,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 APP_PATH="$PROJECT_DIR/dist/Taey-Ed.app"
-VERSION="7.0.0"
+VERSION="1.0.0"
 DMG_NAME="Taey-Ed-${VERSION}"
 DMG_PATH="$PROJECT_DIR/dist/${DMG_NAME}.dmg"
 DMG_TEMP="$PROJECT_DIR/dist/dmg-staging"

@@ -3,9 +3,9 @@
 # Used when py2app build is already done but signing needs fixing
 set -euo pipefail
 
-APP_PATH="/Users/user/taey-ed-v7/dist/Taey-Ed.app"
+APP_PATH="/Users/user/taey-ed/dist/Taey-Ed.app"
 IDENTITY="Developer ID Application: Jesse LaRose (SQNKR6587Y)"
-ENTITLEMENTS="/Users/user/taey-ed-v7/entitlements.plist"
+ENTITLEMENTS="/Users/user/taey-ed/entitlements.plist"
 
 echo "=== Step 1: Fix Homebrew dylibs in Frameworks/ ==="
 for lib in "$APP_PATH"/Contents/Frameworks/*.dylib; do
@@ -76,7 +76,7 @@ echo "Signature valid."
 
 echo ""
 echo "=== Step 6: Notarize ==="
-ZIP_PATH="/Users/user/taey-ed-v7/dist/Taey-Ed.zip"
+ZIP_PATH="/Users/user/taey-ed/dist/Taey-Ed.zip"
 rm -f "$ZIP_PATH"
 ditto -c -k --keepParent "$APP_PATH" "$ZIP_PATH"
 echo "Submitting to Apple notary service..."

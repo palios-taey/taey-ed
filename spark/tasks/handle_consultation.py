@@ -1,11 +1,11 @@
-# STATUS: FROZEN - V8 re-export module. Verified 2026-02-19. Do not modify.
+# STATUS: FROZEN. Re-export module. Verified 2026-02-19. Do not modify.
 """
 Handle consultation requests for unknown screens.
 
 Re-export module for backwards compatibility.
 The actual implementation is split into:
 - consultation_state.py - State tracking
-- consultation_request.py - Request handling (uses prompt_codex for V8)
+- consultation_request.py - Request handling (uses prompt_codex)
 - consultation_respond.py - Response handling
 - consultation_escalate.py - Escalation handling
 """

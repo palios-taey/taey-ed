@@ -1,5 +1,5 @@
 """
-Pipeline V8 - Directive-based execution loop.
+Pipeline - Directive-based execution loop.
 
 Mac is a dumb executor. Spark makes ALL decisions via /next_action.
 No escalation logic. No retry logic. No validation logic. No consultation
@@ -220,7 +220,7 @@ def run_continuous(
         if not url_check["ok"]:
             logger.warning(f"URL check: {url_check['message']}")
 
-    logger.info(f"=== V8 Continuous mode: {platform} ({app_name}) session={session_id} ===")
+    logger.info(f"=== Continuous mode: {platform} ({app_name}) session={session_id} ===")
 
     def _abandon_if_active():
         """Release Spark's ONE-AT-A-TIME consultation gate before exit.
