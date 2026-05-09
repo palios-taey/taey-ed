@@ -204,7 +204,10 @@ class TaeyEdWindow:
         self._label_to_key = {v["label"]: k for k, v in PLATFORMS.items()}
         platform_labels = list(self._label_to_key.keys())
 
-        self.platform_var = tk.StringVar(value=platform_labels[0])
+        # Default to khan_academy (current production target). Falls back
+        # to first available label if the key has been removed.
+        _default_label = PLATFORMS.get("khan_academy", {}).get("label") or platform_labels[0]
+        self.platform_var = tk.StringVar(value=_default_label)
         self.platform_combo = ttk.Combobox(
             platform_frame,
             textvariable=self.platform_var,
