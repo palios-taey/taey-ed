@@ -363,15 +363,23 @@ def register_all_handlers(ctx: ExecutionContext):
         return result
 
     # --- lookup_match: dict lookup with partial matching ---
+    # Returns the matched value on hit, the `default` param on miss (default None).
+    # When `default` is provided (even as an empty string), the handler returns
+    # success and writes the default to blackboard so for_each loops can skip
+    # non-matching items via a downstream conditional instead of failing the
+    # whole iteration. Without `default`, no-match returns None which fails the
+    # action — preserve for callers that rely on that.
     def handle_lookup_match(ctx, params):
         matches = params.get("matches", {})
         key = params.get("key", "")
+        has_default = "default" in params
+        default = params.get("default")
 
         btlog(f"lookup_match: key='{key}', matches_keys={list(matches.keys()) if matches else 'None'}")
 
         if not matches or not key:
             btlog(f"lookup_match: FAIL empty matches={bool(matches)} or key='{key}'")
-            return None
+            return default if has_default else None
 
         # Direct match
         result = matches.get(key)
@@ -385,7 +393,7 @@ def register_all_handlers(ctx: ExecutionContext):
                 return mval
 
         logger.warning(f"lookup_match: no match for '{key}' in {list(matches.keys())}")
-        return None
+        return default if has_default else None
 
     # --- store_qa: save Q&A pair ---
     def handle_store_qa(ctx, params):
