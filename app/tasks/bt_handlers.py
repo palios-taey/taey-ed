@@ -177,6 +177,11 @@ def register_all_handlers(ctx: ExecutionContext):
     def handle_find_all(ctx, params):
         from app.tasks.find_element import find_all_elements
         from app.tasks.capture_tree import capture_tree
+        from ApplicationServices import (
+            AXUIElementCopyAttributeValue,
+            kAXValueAttribute,
+            kAXErrorSuccess,
+        )
 
         role = params.get("role", "")
         desc_contains = params.get("description_contains")
@@ -187,17 +192,47 @@ def register_all_handlers(ctx: ExecutionContext):
         # Capture tree for label finding
         tree = capture_tree(ctx.app_name)
 
+        # Dedupe by element identity. find_all_elements walks AXWebArea and
+        # can revisit the same element via multiple parent paths (Wonder
+        # Blocks wraps elements in many React containers), producing
+        # duplicates. Iteration cost compounds in for_each loops. Identity
+        # of AXUIElement is via the underlying CFEqual, but we can dedupe
+        # by id() since same Python wrapper is returned for same element.
+        seen_ids = set()
         items = []
         for element, desc in results:
+            elem_id = id(element)
+            if elem_id in seen_ids:
+                continue
+            seen_ids.add(elem_id)
+
             label = _find_preceding_label(tree, desc, target_role=role)
+
+            # Fetch the element's value attribute separately. find_all_elements
+            # collapses Description/Title/Value into a single `desc` field,
+            # which loses the actual value when description is non-empty
+            # (e.g. AXComboBox always has description='Select an answer'
+            # even when value='Kr'). Capture value separately so for_each
+            # loops can dispatch on it.
+            err, val = AXUIElementCopyAttributeValue(
+                element, kAXValueAttribute, None,
+            )
+            value_str = (
+                str(val) if (err == kAXErrorSuccess and val is not None) else ""
+            )
+
             items.append({
                 "element": element,
                 "description": desc,
                 "popup_desc": desc,  # Alias for LLM compatibility
                 "label": label,
+                "value": value_str,
             })
 
-        logger.info(f"find_all: {len(items)} elements (role={role})")
+        logger.info(
+            f"find_all: {len(items)} unique elements (role={role}; "
+            f"raw_results={len(results)})"
+        )
         return items
 
     # --- wait: sleep ---
