@@ -199,6 +199,17 @@ def _tick_action(node_def: dict, ctx: ExecutionContext) -> str:
             # Re-resolve directly
             params[key] = ctx.blackboard.resolve(raw_params[key])
 
+    # Honor pre_delay / post_delay centrally so handlers don't each have to.
+    # Knowledge.json + Spark prompts both reference these — silently ignoring
+    # them was a contract drift caught during the Wonder Blocks audit.
+    pre_delay = params.pop("pre_delay", None)
+    post_delay = params.pop("post_delay", None)
+    if pre_delay is not None:
+        try:
+            time.sleep(float(pre_delay))
+        except (TypeError, ValueError):
+            btlog(f"invalid pre_delay ignored: {pre_delay}")
+
     try:
         result = handler(ctx, params)
     except Exception as e:
@@ -231,6 +242,13 @@ def _tick_action(node_def: dict, ctx: ExecutionContext) -> str:
     if isinstance(result, dict) and result.get("success") is False:
         btlog(f"ACTION success=False: {action_name} result_keys={list(result.keys())}")
         return Status.FAILURE
+
+    # Post-delay honored centrally (paired with pre_delay above).
+    if post_delay is not None:
+        try:
+            time.sleep(float(post_delay))
+        except (TypeError, ValueError):
+            btlog(f"invalid post_delay ignored: {post_delay}")
 
     return Status.SUCCESS
 

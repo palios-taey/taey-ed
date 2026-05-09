@@ -25,6 +25,29 @@ def register_all_handlers(ctx: ExecutionContext):
     """Register all action handlers. Imports are inside functions
     so this file can be tested without Mac-specific dependencies."""
 
+    def _activate_ctx_app():
+        """Bring ctx.app_name to frontmost. Raw HID handlers (press_key,
+        click_at, type_keys, press_escape, scroll) need this because
+        CGEventPost(kCGHIDEventTap) targets the frontmost app — if our
+        Python window or another app stole focus, our keys go nowhere
+        useful. find_and_click already activates via element PID, but raw
+        handlers don't have an element to derive PID from.
+        """
+        from AppKit import (
+            NSWorkspace, NSApplicationActivateIgnoringOtherApps,
+        )
+        target = (ctx.app_name or "").lower()
+        if not target:
+            return False
+        for app in NSWorkspace.sharedWorkspace().runningApplications():
+            name = (app.localizedName() or "").lower()
+            if target in name:
+                app.activateWithOptions_(NSApplicationActivateIgnoringOtherApps)
+                time.sleep(0.10)
+                return True
+        btlog(f"_activate_ctx_app: app not found: {ctx.app_name}")
+        return False
+
     # --- click: click an element (from blackboard or by finding it) ---
     def handle_click(ctx, params):
         from app.tasks.find_element import find_element
@@ -259,6 +282,7 @@ def register_all_handlers(ctx: ExecutionContext):
         from Quartz import (
             CGEventCreateKeyboardEvent, CGEventPost, kCGHIDEventTap
         )
+        _activate_ctx_app()
         event_down = CGEventCreateKeyboardEvent(None, 53, True)
         CGEventPost(kCGHIDEventTap, event_down)
         time.sleep(0.05)
@@ -525,6 +549,7 @@ def register_all_handlers(ctx: ExecutionContext):
             flag = MODIFIER_FLAGS.get(mod.lower().strip(), 0)
             flags |= flag
 
+        _activate_ctx_app()
         event_down = CGEventCreateKeyboardEvent(None, code, True)
         if flags:
             CGEventSetFlags(event_down, flags)
@@ -555,6 +580,7 @@ def register_all_handlers(ctx: ExecutionContext):
         except (KeyError, TypeError, ValueError) as e:
             btlog(f"click_at: missing/invalid coords: {e}")
             return None
+        _activate_ctx_app()
         pos = (x, y)
         down = CGEventCreateMouseEvent(None, kCGEventLeftMouseDown, pos, kCGMouseButtonLeft)
         CGEventPost(kCGHIDEventTap, down)
@@ -629,6 +655,7 @@ def register_all_handlers(ctx: ExecutionContext):
         if not text:
             return {"success": True}
         per_char_delay = float(params.get("per_char_delay", 0.010))
+        _activate_ctx_app()
         for ch in text:
             e_down = CGEventCreateKeyboardEvent(None, 0, True)
             CGEventKeyboardSetUnicodeString(e_down, 1, ch)
@@ -685,6 +712,224 @@ def register_all_handlers(ctx: ExecutionContext):
         except RuntimeError:
             return None
 
+    # --- select_dropdown_option: semantic ARIA combobox/listbox selection ---
+    # Owns the full local strategy ladder for ARIA listboxes. Spark tells us
+    # WHICH option to pick; we own HOW. Strategy ladder: focus_press
+    # (VoiceOver path — drives real DOM focus then AXPress) → focus_space
+    # → focus_enter → mouse_click → ax_press. After each attempt, verifies
+    # the trigger combobox AXValue contains the chosen option text. Only
+    # returns success when state change is observed.
+    #
+    # Walks the FULL app AX tree, NOT scoped to AXWebArea — Wonder Blocks
+    # portals options OUTSIDE the web area via ReactDOM.createPortal.
+    # Excludes the macOS menu bar branch to avoid matching system menus.
+    def handle_select_dropdown_option(ctx, params):
+        from AppKit import (
+            NSWorkspace, NSApplicationActivateIgnoringOtherApps,
+        )
+        from ApplicationServices import (
+            AXUIElementCreateApplication,
+            AXUIElementCopyAttributeValue,
+            AXUIElementSetAttributeValue,
+            AXUIElementPerformAction,
+            kAXErrorSuccess,
+            kAXChildrenAttribute,
+            kAXRoleAttribute,
+            kAXTitleAttribute,
+            kAXDescriptionAttribute,
+            kAXValueAttribute,
+            kAXFocusedAttribute,
+            kAXPressAction,
+        )
+        from CoreFoundation import (
+            CFArrayGetCount, CFArrayGetValueAtIndex,
+        )
+        from app.tasks.find_element import find_element
+        from app.tasks.click_element import click_element, StaleElementError
+
+        option_text = (
+            params.get("option") or params.get("option_text") or params.get("target")
+        )
+        if not option_text:
+            btlog("select_dropdown_option: missing 'option' param")
+            return {"success": False, "error": "missing option"}
+
+        trigger = params.get("trigger_element") or params.get("element")
+        trigger_target = (
+            params.get("trigger_target")
+            or params.get("combobox")
+            or "Select an answer"
+        )
+        trigger_role = params.get("trigger_role", "AXComboBox")
+        trigger_match_mode = params.get("trigger_match_mode", "contains")
+        open_strategy = params.get("open_strategy", "mouse_click")
+        open_wait = float(params.get("open_wait", 0.5))
+        verify_wait = float(params.get("verify_wait", 0.35))
+        strategies = params.get("strategies") or [
+            "focus_press", "focus_space", "focus_enter", "mouse_click", "ax_press",
+        ]
+
+        # If trigger is a dict from find_all, unwrap.
+        if isinstance(trigger, dict):
+            trigger = trigger.get("element")
+
+        def norm(s):
+            s = str(s or "").strip()
+            for suffix in (" not selected", " selected"):
+                if s.lower().endswith(suffix):
+                    s = s[: -len(suffix)].strip()
+            return s.lower()
+
+        wanted = norm(option_text)
+
+        def attr(el, ax_attr):
+            err, val = AXUIElementCopyAttributeValue(el, ax_attr, None)
+            if err == kAXErrorSuccess and val is not None:
+                return str(val)
+            return ""
+
+        def verify_selected():
+            time.sleep(verify_wait)
+            value = attr(trigger, kAXValueAttribute)
+            title = attr(trigger, kAXTitleAttribute)
+            desc = attr(trigger, kAXDescriptionAttribute)
+            haystack = " ".join([value, title, desc])
+            normalized = norm(haystack)
+            ok = bool(wanted) and (wanted in normalized)
+            btlog(f"select_dropdown_option: verify value={value!r} ok={ok}")
+            return ok
+
+        # Activate browser app before any synthesis.
+        _activate_ctx_app()
+
+        # Resolve trigger if not pre-supplied.
+        if trigger is None:
+            trigger = find_element(
+                ctx.app_name, trigger_target,
+                role=trigger_role, match_mode=trigger_match_mode,
+            )
+        if trigger is None and trigger_role != "AXPopUpButton":
+            # Some Khan widgets use native popup. Fall back.
+            trigger = find_element(
+                ctx.app_name, trigger_target,
+                role="AXPopUpButton", match_mode=trigger_match_mode,
+            )
+        if trigger is None:
+            btlog(
+                f"select_dropdown_option: trigger not found "
+                f"target={trigger_target!r} role={trigger_role}"
+            )
+            return {"success": False, "error": "trigger not found"}
+
+        # Open the dropdown.
+        try:
+            click_element(trigger, strategy=open_strategy)
+        except Exception as e:
+            btlog(f"select_dropdown_option: open failed: {e}")
+            return {"success": False, "error": f"open failed: {e}"}
+        time.sleep(open_wait)
+
+        # Build full-app root for menu-item discovery.
+        target_app = None
+        for app in NSWorkspace.sharedWorkspace().runningApplications():
+            name = (app.localizedName() or "").lower()
+            if (ctx.app_name or "").lower() in name:
+                target_app = app
+                break
+        if target_app is None:
+            return {
+                "success": False,
+                "error": f"app not found: {ctx.app_name}",
+            }
+        root = AXUIElementCreateApplication(target_app.processIdentifier())
+
+        def iter_ax(el, under_menu_bar=False):
+            role = attr(el, kAXRoleAttribute)
+            now_under = under_menu_bar or role == "AXMenuBar"
+            if not now_under:
+                yield el
+            if role == "AXMenuBar":
+                return
+            err, children = AXUIElementCopyAttributeValue(
+                el, kAXChildrenAttribute, None,
+            )
+            if err == kAXErrorSuccess and children:
+                count = CFArrayGetCount(children)
+                for i in range(count):
+                    yield from iter_ax(
+                        CFArrayGetValueAtIndex(children, i), now_under,
+                    )
+
+        def menu_texts(el):
+            return [
+                v for v in (
+                    attr(el, kAXTitleAttribute),
+                    attr(el, kAXDescriptionAttribute),
+                    attr(el, kAXValueAttribute),
+                ) if v
+            ]
+
+        menu_item = None
+        seen = []
+        for el in iter_ax(root):
+            if attr(el, kAXRoleAttribute) != "AXMenuItem":
+                continue
+            texts = menu_texts(el)
+            display = texts[0] if texts else ""
+            seen.append(display)
+            normalized = [norm(t) for t in texts]
+            if any(wanted == t or (wanted and wanted in t) for t in normalized):
+                menu_item = el
+                break
+
+        btlog(f"select_dropdown_option: menu_items_seen={seen[:12]}")
+        if menu_item is None:
+            return {
+                "success": False,
+                "error": f"option not found: {option_text}",
+                "seen": seen[:20],
+            }
+
+        # Strategy ladder. Stop only on observed state change.
+        errors = []
+        for strategy in strategies:
+            try:
+                btlog(
+                    f"select_dropdown_option: trying {strategy} "
+                    f"option={option_text!r}"
+                )
+                if strategy == "focus_press":
+                    err = AXUIElementSetAttributeValue(
+                        menu_item, kAXFocusedAttribute, True,
+                    )
+                    if err != kAXErrorSuccess:
+                        raise RuntimeError(f"AX focus failed: {err}")
+                    time.sleep(0.20)
+                    err = AXUIElementPerformAction(menu_item, kAXPressAction)
+                    if err != kAXErrorSuccess:
+                        raise RuntimeError(f"AXPress failed: {err}")
+                else:
+                    click_element(menu_item, strategy=strategy)
+
+                if verify_selected():
+                    return {
+                        "success": True,
+                        "option": option_text,
+                        "strategy": strategy,
+                    }
+            except StaleElementError as e:
+                errors.append(f"{strategy}: stale {e}")
+            except Exception as e:
+                errors.append(f"{strategy}: {e}")
+
+        return {
+            "success": False,
+            "error": "no strategy produced verified selection",
+            "option": option_text,
+            "errors": errors,
+            "seen": seen[:20],
+        }
+
     # --- Register all ---
     ctx.register("click", handle_click)
     ctx.register("find_and_click", handle_find_and_click)
@@ -705,3 +950,5 @@ def register_all_handlers(ctx: ExecutionContext):
     ctx.register("click_at", handle_click_at)
     ctx.register("drag", handle_drag)
     ctx.register("type_keys", handle_type_keys)
+    ctx.register("select_dropdown_option", handle_select_dropdown_option)
+    ctx.register("click_element", handle_click)  # alias for legacy/consultation BTs

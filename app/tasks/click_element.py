@@ -1,13 +1,17 @@
 """
 Click element using accessibility actions or mouse/keyboard simulation.
 
-Four strategies:
+Five strategies:
 - "ax_press" (default): AXUIElementPerformAction with kAXPressAction.
   Works for native Mac apps (Acellus, etc.)
 - "focus_enter": Set focus, simulate Enter keypress.
   For browser buttons/links.
 - "focus_space": Set focus, simulate Space keypress.
   For standard radio buttons/checkboxes.
+- "focus_press": Set AX focus on the element first (drives real DOM focus),
+  then AXPress. The VoiceOver path. For ARIA listbox options where the
+  keyboard handler lives on a wrapper element and options are React-portaled
+  outside it (e.g. Khan Wonder Blocks SingleSelect / DropdownCore).
 - "mouse_click": Move mouse to element center, click.
   Most reliable for browser elements. Works for custom React components
   (Coursera radio buttons, etc.) where keyboard events don't fire handlers.
@@ -15,6 +19,7 @@ Four strategies:
 Discovery history:
   Jan 2026 - AXPress returns success on Chrome but JS doesn't respond.
   Feb 2026 - AXPosition returns AXValueRef, not NSPoint. Must str() + regex parse.
+  May 2026 - Wonder Blocks listbox needed focus_press (kAXFocused → AXPress).
 """
 
 import logging
@@ -71,6 +76,8 @@ def click_element(element, strategy: str = "ax_press") -> bool:
         return _focus_and_key(element, keycode=49)  # Space
     elif strategy == "focus_enter":
         return _focus_and_key(element, keycode=36)  # Enter/Return
+    elif strategy in ("focus_press", "vo_press"):
+        return _focus_then_press(element)
     else:
         return _ax_press(element)
 
@@ -80,6 +87,35 @@ def _ax_press(element) -> bool:
     err = AXUIElementPerformAction(element, kAXPressAction)
     if err != kAXErrorSuccess:
         raise RuntimeError(f"AXPress failed with error code: {err}")
+    return True
+
+
+def _focus_then_press(element) -> bool:
+    """VoiceOver path: AX focus first, then AXPress.
+
+    For ARIA listbox options (Wonder Blocks SingleSelect, React Aria
+    combobox listitems). Setting kAXFocused on the AXMenuItem drives real
+    DOM focus onto the underlying portaled <div>; the subsequent AXPress
+    triggers element.click() on the now-focused element, which propagates
+    through React's normal event chain.
+
+    Synthetic mouse-clicks and synthetic Down/Enter to the document fail
+    on these widgets because the keyboard handler lives on a wrapper that
+    is not the active descendant — see WONDER_FIX.md research note.
+    """
+    _activate_element_app(element)
+
+    err = AXUIElementSetAttributeValue(element, kAXFocusedAttribute, True)
+    if err != kAXErrorSuccess:
+        raise RuntimeError(f"focus_press: setting AX focus failed (err={err})")
+
+    # Allow Chrome's accessibility shim to drive DOM focus + React re-render.
+    time.sleep(0.25)
+
+    err = AXUIElementPerformAction(element, kAXPressAction)
+    if err != kAXErrorSuccess:
+        raise RuntimeError(f"focus_press: AXPress after focus failed (err={err})")
+
     return True
 
 
