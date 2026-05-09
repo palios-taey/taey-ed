@@ -832,14 +832,25 @@ def register_all_handlers(ctx: ExecutionContext):
             return ""
 
         def verify_selected():
+            # Verify the trigger's AXValue exactly matches the chosen option
+            # after a strategy attempt. Substring matching false-positives on
+            # combobox placeholders that contain the option text — e.g.
+            # placeholder '+/-' substring-contains wanted '+' even though
+            # nothing was actually selected. Exact match against AXValue is
+            # the correct check: before commit value is the placeholder
+            # (different from wanted); after commit value is the chosen
+            # option text (equal to wanted after norm).
             time.sleep(verify_wait)
-            value = attr(trigger, kAXValueAttribute)
-            title = attr(trigger, kAXTitleAttribute)
-            desc = attr(trigger, kAXDescriptionAttribute)
-            haystack = " ".join([value, title, desc])
-            normalized = norm(haystack)
-            ok = bool(wanted) and (wanted in normalized)
-            btlog(f"select_dropdown_option: verify value={value!r} ok={ok}")
+            value = norm(attr(trigger, kAXValueAttribute))
+            title = norm(attr(trigger, kAXTitleAttribute))
+            desc = norm(attr(trigger, kAXDescriptionAttribute))
+            if not wanted:
+                return False
+            ok = wanted in (value, title, desc)
+            btlog(
+                f"select_dropdown_option: verify value={value!r} "
+                f"wanted={wanted!r} ok={ok}"
+            )
             return ok
 
         # Activate browser app before any synthesis.
@@ -912,8 +923,14 @@ def register_all_handlers(ctx: ExecutionContext):
                 ) if v
             ]
 
+        # Two-pass match: prefer exact match over substring. Without this,
+        # tree-walk order picks placeholder "+/-" before the real "+" item
+        # because '+' is a substring of '+/-' (caught during Khan Apply: Ions
+        # ion-charge sign dropdown — option='+' was matching '+/-' placeholder
+        # then false-positive verifying because '+' is in '+/-').
         menu_item = None
         seen = []
+        candidates = []
         for el in iter_ax(root):
             if attr(el, kAXRoleAttribute) != "AXMenuItem":
                 continue
@@ -921,9 +938,20 @@ def register_all_handlers(ctx: ExecutionContext):
             display = texts[0] if texts else ""
             seen.append(display)
             normalized = [norm(t) for t in texts]
-            if any(wanted == t or (wanted and wanted in t) for t in normalized):
-                menu_item = el
-                break
+            candidates.append((el, normalized))
+
+        # Pass 1: exact match.
+        if wanted:
+            for el, normalized in candidates:
+                if any(wanted == t for t in normalized):
+                    menu_item = el
+                    break
+        # Pass 2: substring match (fallback for descriptive option text).
+        if menu_item is None and wanted:
+            for el, normalized in candidates:
+                if any(wanted in t for t in normalized):
+                    menu_item = el
+                    break
 
         btlog(f"select_dropdown_option: menu_items_seen={seen[:12]}")
         if menu_item is None:
