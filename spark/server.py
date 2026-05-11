@@ -47,18 +47,41 @@ logger = logging.getLogger(__name__)
 
 # ── Authentication ──
 
-API_KEY = os.environ.get(
-    "TAEY_ED_API_KEY",
-    "***REMOVED-INTERNAL-API-KEY***",
+from spark.secrets_loader import (
+    get_taey_ed_secrets,
+    validate_for_production,
+    is_production,
 )
-JWT_SECRET = os.environ.get("TAEY_ED_SECRET", "dev-secret-change-in-production")
+
+# Eager production-secret validation. Raises SecretsError before app accepts
+# any request if TAEY_ED_PRODUCTION=1 and required secrets are missing/weak.
+validate_for_production()
+
+_TAEY_ED_SECRETS = get_taey_ed_secrets()
+JWT_SECRET = _TAEY_ED_SECRETS.jwt_secret
 JWT_ALGORITHM = "HS256"
+
+# Internal API key path is localhost/dev-only. Never accepted from non-loopback
+# clients. In production, the secrets loader may yield None and the X-API-Key
+# branch simply rejects all callers (correct behavior).
+INTERNAL_API_KEY = _TAEY_ED_SECRETS.internal_api_key
+
+logger.info(
+    f"Auth initialized: mode={'PRODUCTION' if is_production() else 'DEV'}, "
+    f"internal_api_key={'set' if INTERNAL_API_KEY else 'not-set'}"
+)
 
 import jwt as pyjwt
 
 
 class APIKeyMiddleware(BaseHTTPMiddleware):
-    """Authenticate via API key (Mac) OR JWT Bearer token (web users)."""
+    """Authenticate via JWT Bearer (user-facing) or loopback-scoped internal
+    API key (dev / server-to-server only).
+
+    The X-API-Key branch is restricted to loopback callers; it must never be
+    accepted from the public internet. User-billable endpoints require a
+    Bearer JWT tied to a real user_id.
+    """
 
     async def dispatch(self, request: Request, call_next):
         # Public endpoints + consultation respond (Spark Claude from localhost)
@@ -68,13 +91,21 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
             request.state.user_id = "spark_claude"
             return await call_next(request)
 
-        # Try API key first (Mac pipeline)
+        # Internal API key:
+        #   - PRODUCTION: loopback only (Mac/web must use JWT).
+        #   - DEV: any client (preserves Jesse's LAN dev workflow until Mac
+        #          switches to Bearer JWT in Phase 4).
+        # With no internal_api_key configured at all, this branch is unreachable.
         key = request.headers.get("X-API-Key", "")
-        if key and secrets.compare_digest(key, API_KEY):
-            request.state.user_id = "mac_pipeline"
-            return await call_next(request)
+        if INTERNAL_API_KEY and key and secrets.compare_digest(key, INTERNAL_API_KEY):
+            if is_production() and request.client.host not in ("127.0.0.1", "::1", "localhost"):
+                # Production: X-API-Key from non-loopback is rejected.
+                pass
+            else:
+                request.state.user_id = "internal"
+                return await call_next(request)
 
-        # Try JWT Bearer token (web users)
+        # JWT Bearer token (the real user-facing auth path)
         auth = request.headers.get("Authorization", "")
         if auth.startswith("Bearer "):
             token = auth[7:]
@@ -90,7 +121,7 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
 
         return JSONResponse(
             status_code=401,
-            content={"detail": "Missing API key or Bearer token"},
+            content={"detail": "Authentication required"},
         )
 
 
