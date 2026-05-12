@@ -84,8 +84,21 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
     """
 
     async def dispatch(self, request: Request, call_next):
-        # Public endpoints + consultation respond (Spark Claude from localhost)
-        if request.url.path in ("/health", "/screen-memory/stats"):
+        # Public endpoints that bypass auth.
+        if request.url.path in (
+            "/health",
+            "/screen-memory/stats",
+            # Auth endpoints: signup, login, refresh must work pre-auth.
+            # /auth/me requires auth (handled below).
+            "/auth/signup",
+            "/auth/login",
+            "/auth/refresh",
+            "/auth/logout",  # client may have lost access token but still wants to revoke refresh
+            "/auth/verify-email",
+            # Stripe webhook is public; route handler verifies the
+            # webhook signature for authenticity.
+            "/billing/webhook",
+        ):
             return await call_next(request)
         if request.url.path.startswith("/api/v1/consult") and request.client.host == "127.0.0.1":
             request.state.user_id = "spark_claude"
@@ -147,6 +160,12 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     return JSONResponse(status_code=422, content={"detail": exc.errors()})
 
 
+# ── DB Initialization ──
+
+from spark.db import init_db
+init_db()
+
+
 # ── Route Registration ──
 
 from spark.routes.health import router as health_router
@@ -155,6 +174,9 @@ from spark.routes.consultation import router as consultation_router
 from spark.routes.compute import router as compute_router
 from spark.routes.review import router as review_router
 from spark.routes.chat import router as chat_router
+from spark.routes.auth import router as auth_router
+from spark.routes.credits import router as credits_router
+from spark.routes.billing import router as billing_router
 
 app.include_router(health_router)
 app.include_router(next_action_router)
@@ -162,6 +184,9 @@ app.include_router(consultation_router)
 app.include_router(compute_router)
 app.include_router(review_router)
 app.include_router(chat_router)
+app.include_router(auth_router)
+app.include_router(credits_router)
+app.include_router(billing_router)
 
 
 # ── Entry Point ──
