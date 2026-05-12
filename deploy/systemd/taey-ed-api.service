@@ -9,6 +9,7 @@ User=mira
 Group=mira
 WorkingDirectory=/home/user/taey-ed
 Environment=TAEY_ED_USE_WORKER=1
+Environment=TAEY_ED_PRODUCTION=1
 Environment=PYTHONUNBUFFERED=1
 ExecStart=/home/user/taey-ed/.venv/bin/python3 /home/user/taey-ed/.venv/bin/uvicorn spark.server:app --host 0.0.0.0 --port 5003
 Restart=on-failure
