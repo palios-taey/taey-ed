@@ -28,6 +28,8 @@ import sys
 import time
 import datetime
 
+import httpx  # for login modal exception types
+
 
 # Platform registry: each entry defines how to find the app in macOS accessibility.
 # - "app_name": The process name macOS uses (what shows in Activity Monitor)
@@ -122,6 +124,18 @@ class TaeyEdWindow:
         self.root = tk.Tk()
         self.root.title("Taey-Ed")
         self.root.geometry("700x700")
+
+        # Require login before building the main UI. If the user already
+        # has a Keychain refresh token and the server still trusts it, the
+        # silent path runs. Otherwise a modal email/password dialog comes
+        # up. We deliberately don't withdraw root — withdrawing it hides
+        # Toplevel children too on macOS Tk. The empty root flashing
+        # behind the modal for a frame is acceptable.
+        if not self._ensure_logged_in():
+            # User canceled login — quit cleanly.
+            self.root.destroy()
+            import sys
+            sys.exit(0)
 
         # Message queue for thread-safe logging
         self.log_queue = queue.Queue()
@@ -909,6 +923,145 @@ class TaeyEdWindow:
                 NSStatusBar.systemStatusBar().removeStatusItem_(self._status_item)
             except Exception:
                 pass
+
+    def _ensure_logged_in(self) -> bool:
+        """Return True iff the user is signed in (existing session or fresh login).
+        Returns False if the user cancels the login dialog → caller quits app.
+
+        Tries the silent path first: if Keychain has a refresh token, hit
+        /auth/me; if that 401s, try /auth/refresh; if either succeeds, no UI.
+        Otherwise pop the login modal.
+        """
+        from app.tasks import auth
+
+        if auth.is_logged_in():
+            me = auth.whoami()  # this internally refreshes once on 401
+            if me:
+                self.logger.info(f"signed in as {me.get('email', '?')}")
+                return True
+
+        # Need fresh credentials. Pop the modal.
+        return self._show_login_modal()
+
+    def _show_login_modal(self) -> bool:
+        """Modal email/password dialog. Returns True on success."""
+        from app.tasks import auth
+
+        top = tk.Toplevel(self.root)
+        top.title("Sign in to Taey-Ed")
+        top.geometry("420x320")
+        top.resizable(False, False)
+        top.transient(self.root)
+        top.grab_set()
+
+        # Center over root
+        top.update_idletasks()
+        x = self.root.winfo_x() + (self.root.winfo_width() - 420) // 2
+        y = self.root.winfo_y() + (self.root.winfo_height() - 320) // 2
+        if x < 0 or y < 0:
+            x = 200; y = 200  # screen positioning fallback when root hidden
+        top.geometry(f"+{x}+{y}")
+
+        outcome = {"ok": False}
+        mode = {"signup": False}  # toggled by "Create account"
+
+        frame = ttk.Frame(top, padding=20)
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        title_lbl = ttk.Label(frame, text="Sign in", font=("Helvetica", 16, "bold"))
+        title_lbl.pack(pady=(0, 12))
+
+        ttk.Label(frame, text="Email").pack(anchor=tk.W)
+        email_var = tk.StringVar()
+        email_entry = ttk.Entry(frame, textvariable=email_var, width=40)
+        email_entry.pack(fill=tk.X, pady=(2, 10))
+
+        ttk.Label(frame, text="Password").pack(anchor=tk.W)
+        pw_var = tk.StringVar()
+        pw_entry = ttk.Entry(frame, textvariable=pw_var, show="•", width=40)
+        pw_entry.pack(fill=tk.X, pady=(2, 12))
+
+        status_var = tk.StringVar(value="")
+        status_lbl = ttk.Label(frame, textvariable=status_var, foreground="#a00")
+        status_lbl.pack(fill=tk.X, pady=(0, 8))
+
+        btn_frame = ttk.Frame(frame)
+        btn_frame.pack(fill=tk.X)
+
+        submit_btn = ttk.Button(btn_frame, text="Sign in")
+        submit_btn.pack(side=tk.RIGHT, padx=(8, 0))
+        toggle_btn = ttk.Button(btn_frame, text="Create account")
+        toggle_btn.pack(side=tk.RIGHT)
+
+        def _set_mode_signup(signup: bool):
+            mode["signup"] = signup
+            if signup:
+                title_lbl.config(text="Create account")
+                submit_btn.config(text="Create account")
+                toggle_btn.config(text="Have an account? Sign in")
+            else:
+                title_lbl.config(text="Sign in")
+                submit_btn.config(text="Sign in")
+                toggle_btn.config(text="Create account")
+
+        def _on_toggle():
+            _set_mode_signup(not mode["signup"])
+            status_var.set("")
+
+        def _on_submit(*_):
+            email = email_var.get().strip()
+            pw = pw_var.get()
+            if not email or not pw:
+                status_var.set("Email and password are required.")
+                return
+            submit_btn.config(state=tk.DISABLED)
+            toggle_btn.config(state=tk.DISABLED)
+            status_var.set("Signing in…" if not mode["signup"] else "Creating account…")
+            top.update_idletasks()
+            try:
+                if mode["signup"]:
+                    auth.signup(email, pw)
+                else:
+                    auth.login(email, pw)
+                outcome["ok"] = True
+                top.destroy()
+            except httpx.HTTPStatusError as e:
+                # Server rejected — surface its detail message if present
+                try:
+                    detail = e.response.json().get("detail", "")
+                    if isinstance(detail, list) and detail:
+                        detail = detail[0].get("msg", str(detail))
+                except Exception:
+                    detail = e.response.text[:200] if e.response.text else ""
+                msg = detail or f"HTTP {e.response.status_code}"
+                if e.response.status_code == 401:
+                    msg = "Email or password is incorrect."
+                status_var.set(msg)
+            except httpx.HTTPError as e:
+                status_var.set(f"Could not reach the server: {e}")
+            except Exception as e:
+                status_var.set(f"Unexpected error: {e}")
+            finally:
+                # Guard against config() on widgets destroyed by the
+                # success path's top.destroy().
+                if top.winfo_exists():
+                    try:
+                        submit_btn.config(state=tk.NORMAL)
+                        toggle_btn.config(state=tk.NORMAL)
+                    except tk.TclError:
+                        pass
+
+        submit_btn.config(command=_on_submit)
+        toggle_btn.config(command=_on_toggle)
+        top.bind("<Return>", _on_submit)
+
+        def _on_modal_close():
+            top.destroy()
+        top.protocol("WM_DELETE_WINDOW", _on_modal_close)
+
+        email_entry.focus_set()
+        self.root.wait_window(top)
+        return outcome["ok"]
 
     def _on_close(self):
         """Graceful close: stop pipeline, wait for abandon-consultation, exit.

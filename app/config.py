@@ -24,9 +24,13 @@ logger = logging.getLogger("taey-ed")
 CONFIG_DIR = Path.home() / ".taey-ed"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 
-# Defaults (development - Jesse's local network)
+# Defaults — production endpoint via Cloudflare Tunnel.
+# A fresh install with no ~/.taey-ed/config.json hits the public URL.
+# Auth is Bearer JWT obtained via the in-app login flow; api_key is no
+# longer required on the user path (kept as empty fallback for transitional
+# non-user endpoints).
 _DEFAULTS = {
-    "spark_url": "http://10.0.0.68:5002",
+    "spark_url": "https://taey-ed-api.taey.ai",
     "api_key": "",
 }
 
