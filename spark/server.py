@@ -185,7 +185,11 @@ app.add_middleware(APIKeyMiddleware)
 app.add_middleware(RequestSizeLimitMiddleware)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://academy.taey.ai", "http://localhost:8080"],
+    allow_origins=[
+        "https://app.taey.ai",        # consumer-facing site (signup/login/credits/billing UI)
+        "https://academy.taey.ai",    # legacy academy front, retained for back-compat
+        "http://localhost:8080",      # CCM local dev cycle
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
