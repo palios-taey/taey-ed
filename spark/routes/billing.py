@@ -56,7 +56,10 @@ def _price_id_to_credits() -> dict[str, int]:
 # ── Request / response models ──
 
 class CreateCheckoutRequest(BaseModel):
-    price_id: str
+    # Optional: if omitted, the server picks the single configured price tier.
+    # With one tier active this is what the site always wants; with multiple
+    # tiers callers should pass an explicit price_id.
+    price_id: Optional[str] = None
     success_url: Optional[str] = None
     cancel_url: Optional[str] = None
 
@@ -84,11 +87,33 @@ def create_checkout_session(req: CreateCheckoutRequest, request: Request):
         raise HTTPException(status_code=401, detail="User not found")
 
     mapping = _price_id_to_credits()
-    if req.price_id not in mapping:
+    if not mapping:
         raise HTTPException(
-            status_code=400,
-            detail=f"Unknown price_id (not configured for credit grant): {req.price_id}",
+            status_code=500,
+            detail="No price tiers configured (stripe.price_ids is empty in secrets)",
         )
+
+    # Resolve price_id: explicit if given, otherwise the single configured
+    # tier. If the caller passes one that isn't configured, reject — never
+    # silently substitute, because price_id determines how many credits
+    # the webhook will grant.
+    if req.price_id is None:
+        if len(mapping) > 1:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Multiple price tiers configured; client must pass an "
+                    f"explicit price_id. Available: {sorted(mapping.keys())}"
+                ),
+            )
+        price_id = next(iter(mapping.keys()))
+    else:
+        if req.price_id not in mapping:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown price_id (not configured for credit grant): {req.price_id}",
+            )
+        price_id = req.price_id
 
     # Find or create Stripe customer for this user.
     if user.stripe_customer_id:
@@ -107,17 +132,17 @@ def create_checkout_session(req: CreateCheckoutRequest, request: Request):
     session = stripe.checkout.Session.create(
         mode="payment",  # one-time, NOT subscription
         customer=stripe_customer_id,
-        line_items=[{"price": req.price_id, "quantity": 1}],
+        line_items=[{"price": price_id, "quantity": 1}],
         success_url=success_url,
         cancel_url=cancel_url,
         metadata={
             "taey_ed_user_id": user.id,
-            "taey_ed_credits": str(mapping[req.price_id]),
+            "taey_ed_credits": str(mapping[price_id]),
         },
     )
     logger.info(
         f"Stripe checkout created: session={session.id} user={user.id} "
-        f"price={req.price_id} credits={mapping[req.price_id]}"
+        f"price={price_id} credits={mapping[price_id]}"
     )
     return CheckoutResponse(checkout_url=session.url, session_id=session.id)
 
