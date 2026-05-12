@@ -662,8 +662,32 @@ def _build_knowledge_context(
         )
         parts.append(f"=== PLATFORM QUIRKS (affecting {screen_type}) ===\n{q_text}")
 
-    # 4. Screen type specifics from knowledge
-    screen_info = knowledge.get("screen_types", {}).get(screen_type, {})
+    # 4. Screen type specifics from knowledge.
+    #
+    # knowledge.json keys screen types by their MASTER category (VIDEO,
+    # EXERCISE, ARTICLE, NAVIGATION, TRANSITION, UNKNOWN), but the
+    # classifier returns variants (VIDEO_COMPLETE, EXERCISE_RADIO,
+    # ARTICLE_READING, etc). A direct lookup on the variant misses, and
+    # the whole screen_info block (submit_button, completion_mechanism,
+    # states, completion_indicators) silently drops out of the prompt —
+    # the model loses the most important platform-specific guidance.
+    #
+    # Try the variant first (in case some platform explicitly keys it),
+    # then fall back to the master category. Verified 2026-05-12: prompt
+    # context for VIDEO_COMPLETE goes from 1608 chars (no STATES) to
+    # 4572 chars (full VIDEO STATES section with "click Up next" rule).
+    from spark.tasks.screen_type_util import get_master_category
+    types_section = knowledge.get("screen_types", {})
+    screen_info = types_section.get(screen_type, {})
+    if not screen_info:
+        master = get_master_category(screen_type)
+        if master and master != screen_type:
+            screen_info = types_section.get(master, {})
+            if screen_info:
+                logger.info(
+                    f"knowledge: variant '{screen_type}' has no entry; "
+                    f"falling back to master '{master}'"
+                )
     if screen_info:
         # Submit button
         submit = screen_info.get("submit_button")
