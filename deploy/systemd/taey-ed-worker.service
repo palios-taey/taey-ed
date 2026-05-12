@@ -1,0 +1,27 @@
+[Unit]
+Description=Taey-Ed Consultation Worker (headless Claude CLI -> BT generator)
+After=network-online.target taey-ed-api.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mira
+Group=mira
+WorkingDirectory=/home/user/taey-ed
+Environment=TAEY_ED_USE_WORKER=1
+Environment=PYTHONUNBUFFERED=1
+# Inherit mira's HOME so `claude` CLI finds the Max-subscription OAuth state
+# under ~/.claude/
+Environment=HOME=/home/user
+ExecStart=/home/user/taey-ed/.venv/bin/python3 -m spark.worker.run
+Restart=on-failure
+RestartSec=5
+
+StandardOutput=append:/home/user/taey-ed/logs/worker.log
+StandardError=append:/home/user/taey-ed/logs/worker.log
+
+KillSignal=SIGINT
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

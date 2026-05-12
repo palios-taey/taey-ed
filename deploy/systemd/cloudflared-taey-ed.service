@@ -1,0 +1,22 @@
+[Unit]
+Description=Cloudflare Tunnel (taey-ed) — taey-ed-api.taey.ai, isma-api, orch-api, academy-api, academy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mira
+Group=mira
+WorkingDirectory=/home/user
+ExecStart=/usr/local/bin/cloudflared --no-autoupdate --config /home/user/.cloudflared/config.yml tunnel run
+Restart=on-failure
+RestartSec=10
+
+StandardOutput=append:/home/user/taey-ed/logs/cloudflared.log
+StandardError=append:/home/user/taey-ed/logs/cloudflared.log
+
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

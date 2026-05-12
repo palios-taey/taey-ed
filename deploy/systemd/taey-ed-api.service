@@ -1,0 +1,25 @@
+[Unit]
+Description=Taey-Ed Spark API (FastAPI/uvicorn on :5003)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mira
+Group=mira
+WorkingDirectory=/home/user/taey-ed
+Environment=TAEY_ED_USE_WORKER=1
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/user/taey-ed/.venv/bin/python3 /home/user/taey-ed/.venv/bin/uvicorn spark.server:app --host 0.0.0.0 --port 5003
+Restart=on-failure
+RestartSec=5
+
+StandardOutput=append:/home/user/taey-ed/logs/api.log
+StandardError=append:/home/user/taey-ed/logs/api.log
+
+# Process hygiene
+KillSignal=SIGINT
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target
