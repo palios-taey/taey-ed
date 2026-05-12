@@ -87,8 +87,16 @@ def send_email(
 
 
 def send_verification_email(to: str, token: str, base_url: str = "https://app.taey.ai") -> None:
-    """Send the post-signup email verification link."""
-    verify_url = f"{base_url}/verify-email?token={token}"
+    """Send the post-signup email verification link.
+
+    The link points at the static verify.html page on app.taey.ai (NOT at
+    the API). That page reads the token from the query string and calls
+    GET https://taey-ed-api.taey.ai/auth/verify-email?token=…
+    in the user's browser. This way the user lands on a friendly
+    "Email confirmed" page with a button back to their account, not on
+    a raw API JSON response.
+    """
+    verify_url = f"{base_url}/verify.html?token={token}"
     html = f"""
     <p>Welcome to Taey-Ed.</p>
     <p>Click the link below to verify your email address:</p>
