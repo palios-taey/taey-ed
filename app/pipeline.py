@@ -37,7 +37,89 @@ from app.tasks.checkpoint import save_checkpoint, load_checkpoint, clear_checkpo
 # Browser URL verification (V1)
 from app.tasks.browser_url import verify_browser_url
 
+# Local KB integration (Phase 3 — Gap E)
+from app.tasks import local_kb
+from app.tasks.extract_text import extract_text
+
 logger = logging.getLogger("taey-ed")
+
+
+def _build_kb_chunks(*, course_id: str, tree: dict, top_k: int = 5) -> list:
+    """Query the local KB with the current screen's visible text and return
+    a list of KBChunk dicts ready to drop into NextActionRequest.relevant_kb_chunks.
+
+    Always called on /next_action; cheap when the KB is empty (returns []).
+    Best-effort: any failure returns [] — never blocks the consultation.
+    """
+    try:
+        if not local_kb.list_courses() or course_id not in local_kb.list_courses():
+            return []
+    except Exception:
+        return []
+    try:
+        texts = extract_text(tree)
+    except Exception as e:
+        logger.warning(f"local_kb retrieval: extract_text failed: {e}")
+        return []
+    body = "\n".join(t for t in texts if t and t.strip())
+    if not body or len(body.strip()) < 20:
+        return []
+    # Cap the query length — embedding the entire page wastes signal.
+    # The model averages tokens; long queries dilute the relevant terms.
+    query_text = body[:2000]
+    try:
+        chunks = local_kb.query(course_id=course_id, question_text=query_text, top_k=top_k)
+    except Exception as e:
+        logger.warning(f"local_kb retrieval: query failed: {e}")
+        return []
+    if not chunks:
+        return []
+    out = [c.to_dict() for c in chunks]
+    logger.info(
+        f"local_kb retrieval: course={course_id} {len(out)} chunks "
+        f"(top score {chunks[0].score:.3f})"
+    )
+    return out
+
+
+def _capture_screen_content(
+    *, course_id: str, screen_type: str, screen_signature: str, tree: dict
+) -> None:
+    """After a successful VIDEO or ARTICLE screen, save its text to the
+    local KB for later retrieval at EXERCISE time.
+
+    Best-effort: any failure logs and returns. Never propagates — the
+    pipeline must not be blocked by a KB issue.
+    """
+    if screen_type not in ("VIDEO", "ARTICLE"):
+        return
+    try:
+        texts = extract_text(tree)
+    except Exception as e:
+        logger.warning(f"local_kb capture: extract_text failed: {e}")
+        return
+    # Concatenate visible text into one document. The embedding model
+    # handles long context; chunking inside the KB is unnecessary for
+    # course-page-sized content (Khan transcripts ≈ 3-8KB, articles ≈
+    # 5-15KB — well below the 4096-token cap).
+    body = "\n".join(t for t in texts if t and t.strip())
+    if not body or len(body.strip()) < 40:
+        # Too short to embed meaningfully.
+        return
+    ssid = local_kb.make_source_screen_id(course_id, screen_signature)
+    try:
+        kb_chunk_id = local_kb.add_document(
+            course_id=course_id,
+            text=body,
+            source_screen_type=screen_type,
+            source_screen_id=ssid,
+        )
+        logger.info(
+            f"local_kb capture: course={course_id} {screen_type} {ssid} "
+            f"→ {kb_chunk_id} ({len(body)} chars)"
+        )
+    except Exception as e:
+        logger.warning(f"local_kb capture: add_document failed: {e}")
 
 
 def _strip_tree_for_validation(tree: dict) -> dict:
@@ -265,6 +347,13 @@ def run_continuous(
                 except Exception:
                     pass
 
+            # Phase 3 Gap E: attach top-K relevant chunks from the local KB.
+            # Cheap when KB is empty (returns []) — adds ~200ms when populated.
+            # Spark's worker injects these into the consultation prompt.
+            kb_chunks = _build_kb_chunks(course_id=course_id, tree=tree)
+            if kb_chunks:
+                payload["relevant_kb_chunks"] = kb_chunks
+
             # ── Ask Spark what to do ──
             directive = call_spark("/next_action", payload)
             dtype = directive.get("directive", "stop")
@@ -396,6 +485,14 @@ def run_continuous(
                 if bt_result.get("success") and not bt_result.get("continue_loop"):
                     screens_completed += 1
                     logger.info(f"Screen completed: {screens_completed} ({screen})")
+                    # Phase 3 Gap E: stash content for VIDEO/ARTICLE so the
+                    # next EXERCISE can retrieve relevant chunks. Best-effort.
+                    _capture_screen_content(
+                        course_id=directive.get("course_id", course_id),
+                        screen_type=screen,
+                        screen_signature=before_hash,
+                        tree=after_tree,
+                    )
 
                     save_checkpoint(
                         platform, course_id, app_name, screens_completed,
