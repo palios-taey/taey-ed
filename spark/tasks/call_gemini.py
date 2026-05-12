@@ -30,8 +30,8 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
-GEMINI_MODELS = ["gemini-2.5-pro"]  # Paid tier — primary for all Q&A
-CLAUDE_CLI_MODEL = "sonnet"  # Claude CLI fallback only
+GEMINI_MODELS = ["gemini-2.5-pro"]  # DEPRECATED 2026-05-12 (Jesse: no Gemini path). Kept for back-compat refs.
+CLAUDE_CLI_MODEL = "claude-opus-4-7"  # Primary (and only) LLM per Jesse 2026-05-12.
 
 
 # =============================================================================
@@ -169,43 +169,13 @@ async def _solve_complex_with_gemini(
     screenshot_b64: Optional[str] = None,
 ) -> dict:
     """
-    Route complex screen to Gemini 2.5 Pro for vision-based solving.
+    Route complex screen to Claude CLI Opus 4.7 for vision-based solving.
 
+    Per Jesse 2026-05-12, no Gemini path; function name retained for callers.
     Uses screenshot (if available) + question + options to determine answers.
     Returns in solve_checkbox format (selected list) for for_each compatibility.
     """
     try:
-        import base64
-        import google.generativeai as genai
-        from pathlib import Path
-
-        # Load Gemini API key
-        from .paths import SECRETS_PATH
-        secrets_path = SECRETS_PATH
-        if not secrets_path.exists():
-            return {
-                "success": False,
-                "error": "Gemini API key not configured (palios-taey-secrets.json missing)",
-                "answer": "",
-                "question_type": "solve_complex",
-                "model": "gemini-2.5-pro"
-            }
-
-        import json as _json
-        secrets = _json.loads(secrets_path.read_text())
-        api_key = secrets.get("gemini_api_key", "")
-        if not api_key:
-            return {
-                "success": False,
-                "error": "Gemini API key empty in secrets file",
-                "answer": "",
-                "question_type": "solve_complex",
-                "model": "gemini-2.5-pro"
-            }
-
-        genai.configure(api_key=api_key)
-
-        # Build options block
         letters = "ABCDEFGHIJ"
         if options:
             options_block = "\n".join(
@@ -220,52 +190,16 @@ async def _solve_complex_with_gemini(
             options_block=options_block,
         )
 
-        # Build content parts: prompt + optional screenshot
-        content_parts = [prompt]
-        if screenshot_b64:
-            image_data = base64.b64decode(screenshot_b64)
-            mime_type = "image/png" if image_data[:8] == b'\x89PNG\r\n\x1a\n' else "image/jpeg"
-            content_parts.append({"mime_type": mime_type, "data": image_data})
-            logger.info("solve_complex: sending screenshot + text to Gemini")
-        else:
-            logger.info("solve_complex: no screenshot, sending text only to Gemini")
-
-        # Call Gemini
-        raw_answer = ""
-
-        for model_name in GEMINI_MODELS:
-            try:
-                model = genai.GenerativeModel(model_name)
-                response = model.generate_content(content_parts)
-                raw_answer = response.text.strip()
-                logger.info(f"solve_complex: Gemini ({model_name}) raw='{raw_answer}'")
-                break
-            except Exception as e:
-                if "429" in str(e) or "quota" in str(e).lower():
-                    logger.warning(f"solve_complex: {model_name} rate limited, trying next")
-                    continue
-                raise
+        raw_answer = await _solve_with_claude_cli_image(prompt, screenshot_b64)
 
         if not raw_answer:
-            # Gemini exhausted — fall back to Claude CLI (text-only, no vision)
-            logger.warning("solve_complex: all Gemini models rate-limited → Claude CLI fallback")
-            text_prompt = SOLVE_COMPLEX_PROMPT.format(
-                context_block=context_block,
-                question=question,
-                options_block=options_block,
-            )
-            cli_answer = await _solve_with_claude_cli(text_prompt, timeout=60)
-            if cli_answer:
-                raw_answer = cli_answer
-                logger.info(f"solve_complex: Claude CLI answered, len={len(raw_answer)}")
-            else:
-                return {
-                    "success": False,
-                    "error": "All models failed (Gemini rate-limited, Claude CLI failed)",
-                    "answer": "",
-                    "question_type": "solve_complex",
-                    "model": "claude-cli-haiku"
-                }
+            return {
+                "success": False,
+                "error": "Empty response from Claude CLI",
+                "answer": "",
+                "question_type": "solve_complex",
+                "model": CLAUDE_CLI_MODEL,
+            }
 
         # Parse response: same as solve_checkbox (letter-based)
         if options:
@@ -283,7 +217,10 @@ async def _solve_complex_with_gemini(
         else:
             selected = [raw_answer]
 
-        logger.info(f"solve_complex: selected {len(selected)} answers: {[s[:40] for s in selected]}")
+        logger.info(
+            f"solve_complex: selected {len(selected)} answers: "
+            f"{[s[:40] for s in selected]}"
+        )
 
         return {
             "success": True,
@@ -291,17 +228,17 @@ async def _solve_complex_with_gemini(
             "selected": selected,
             "raw_response": raw_answer,
             "question_type": "solve_complex",
-            "model": GEMINI_MODELS[0],
+            "model": CLAUDE_CLI_MODEL,
         }
 
     except Exception as e:
-        logger.error(f"solve_complex Gemini error: {e}")
+        logger.error(f"solve_complex Claude CLI error: {e}")
         return {
             "success": False,
-            "error": f"Gemini solve_complex failed: {e}",
+            "error": f"solve_complex failed: {e}",
             "answer": "",
             "question_type": "solve_complex",
-            "model": "gemini-2.5-pro"
+            "model": CLAUDE_CLI_MODEL,
         }
 
 
@@ -334,42 +271,13 @@ async def _solve_matching_with_gemini(
     screenshot_b64: str = None,
 ) -> dict:
     """
-    Route matching exercise to Gemini 2.5 Pro for vision-based solving.
+    Route matching exercise to Claude CLI (Opus 4.7) for vision-based solving.
 
-    Uses screenshot to understand visual context (diagrams, positions) that
-    text-only Llama cannot interpret. Returns matches dict like Ollama path.
+    Per Jesse 2026-05-12, no Gemini path; function name retained for callers.
+    Uses screenshot to understand visual context (diagrams, positions).
+    Returns matches dict like the legacy Ollama/Gemini path.
     """
     try:
-        import base64
-        import google.generativeai as genai
-        from pathlib import Path
-
-        from .paths import SECRETS_PATH
-        secrets_path = SECRETS_PATH
-        if not secrets_path.exists():
-            return {
-                "success": False,
-                "error": "Gemini API key not configured",
-                "answer": "",
-                "question_type": "solve_matching",
-                "model": "gemini-2.5-pro"
-            }
-
-        import json as _json
-        secrets = _json.loads(secrets_path.read_text())
-        api_key = secrets.get("gemini_api_key", "")
-        if not api_key:
-            return {
-                "success": False,
-                "error": "Gemini API key empty",
-                "answer": "",
-                "question_type": "solve_matching",
-                "model": "gemini-2.5-pro"
-            }
-
-        genai.configure(api_key=api_key)
-
-        # Build items block
         items_block_parts = []
         for i, item in enumerate(items):
             label = item.get("label", f"Item {i+1}")
@@ -384,40 +292,21 @@ async def _solve_matching_with_gemini(
             items_block=items_block,
         )
 
-        content_parts = [prompt]
-        if screenshot_b64:
-            image_data = base64.b64decode(screenshot_b64)
-            mime_type = "image/png" if image_data[:8] == b'\x89PNG\r\n\x1a\n' else "image/jpeg"
-            content_parts.append({"mime_type": mime_type, "data": image_data})
-            logger.info("solve_matching: sending screenshot + text to Gemini")
-
-        raw_answer = ""
-
-        for model_name in GEMINI_MODELS:
-            try:
-                model = genai.GenerativeModel(model_name)
-                response = model.generate_content(content_parts)
-                raw_answer = response.text.strip()
-                logger.info(f"solve_matching: Gemini ({model_name}) raw='{raw_answer}'")
-                break
-            except Exception as e:
-                if "429" in str(e) or "quota" in str(e).lower():
-                    logger.warning(f"solve_matching: {model_name} rate limited, trying next")
-                    continue
-                raise
+        raw_answer = await _solve_with_claude_cli_image(prompt, screenshot_b64)
 
         if not raw_answer:
             return {
                 "success": False,
-                "error": "Empty response from Gemini",
+                "error": "Empty response from Claude CLI",
                 "answer": "",
                 "question_type": "solve_matching",
-                "model": "gemini-2.5-pro"
+                "model": CLAUDE_CLI_MODEL,
             }
 
-        # Parse using same logic as Ollama path
         matches = parse_matching_response(raw_answer, items)
-        logger.info(f"solve_matching Gemini: {len(matches)} matches from {len(items)} items")
+        logger.info(
+            f"solve_matching: {len(matches)} matches from {len(items)} items"
+        )
 
         return {
             "success": True,
@@ -425,17 +314,17 @@ async def _solve_matching_with_gemini(
             "matches": matches,
             "raw_response": raw_answer,
             "question_type": "solve_matching",
-            "model": GEMINI_MODELS[0],
+            "model": CLAUDE_CLI_MODEL,
         }
 
     except Exception as e:
-        logger.error(f"solve_matching Gemini error: {e}")
+        logger.error(f"solve_matching Claude CLI error: {e}")
         return {
             "success": False,
-            "error": f"Gemini solve_matching failed: {e}",
+            "error": f"solve_matching failed: {e}",
             "answer": "",
             "question_type": "solve_matching",
-            "model": "gemini-2.5-pro"
+            "model": CLAUDE_CLI_MODEL,
         }
 
 
@@ -448,8 +337,12 @@ _gemini_api_key = None
 
 
 def _ensure_gemini():
-    """Load Gemini API key once. Returns True if available."""
-    global _gemini_configured, _gemini_api_key
+    """DEPRECATED 2026-05-12. Kept as a no-op to keep this module importable
+    without the google.generativeai dependency present in the venv. Returns
+    False so any legacy caller falls through cleanly."""
+    return False
+    # ── unreachable below; preserved for archaeology ──
+    global _gemini_configured, _gemini_api_key  # noqa: F821
     if _gemini_configured:
         return _gemini_api_key is not None
 
@@ -476,63 +369,29 @@ def _ensure_gemini():
 
 async def _solve_with_gemini(prompt: str, screenshot_b64: str = None) -> Optional[str]:
     """
-    Send a prompt to Gemini 2.5 Pro and return raw response.
-    Optionally includes screenshot for vision-based reasoning.
+    Send a prompt (and optional screenshot) to Claude CLI Opus 4.7.
 
-    Primary model for all Q&A (paid tier, no rate limits).
-    Returns None on failure so caller can fall back to Claude CLI.
+    Name retained for back-compat with all the existing callers in this
+    file; per Jesse 2026-05-12 there is no Gemini path. Delegates to
+    `_solve_with_claude_cli_image`, which handles the text-only fast
+    path internally when screenshot_b64 is None.
     """
-    if not _ensure_gemini():
-        return None
-
-    try:
-        import base64
-        import google.generativeai as genai
-
-        # Build content: text + optional screenshot
-        content_parts = [prompt]
-        if screenshot_b64:
-            image_data = base64.b64decode(screenshot_b64)
-            mime_type = "image/png" if image_data[:8] == b'\x89PNG\r\n\x1a\n' else "image/jpeg"
-            content_parts.append({"mime_type": mime_type, "data": image_data})
-            logger.info(f"_solve_with_gemini: including screenshot ({len(image_data)} bytes)")
-
-        for model_name in GEMINI_MODELS:
-            try:
-                model = genai.GenerativeModel(model_name)
-                response = model.generate_content(content_parts)
-                raw = response.text.strip()
-                if raw and len(raw) >= 1:
-                    logger.info(f"Gemini ({model_name}) answered, len={len(raw)}")
-                    return raw
-                else:
-                    logger.warning(f"Gemini {model_name} empty/too-short response, trying next")
-                    continue
-            except Exception as e:
-                if "429" in str(e) or "quota" in str(e).lower():
-                    logger.warning(f"Gemini {model_name} rate limited, trying next")
-                    continue
-                logger.error(f"Gemini {model_name} error: {e}")
-                return None
-
-        logger.warning("All Gemini models exhausted or rate-limited → Claude CLI fallback")
-        return None
-
-    except Exception as e:
-        logger.error(f"Gemini text error: {e}")
-        return None
+    return await _solve_with_claude_cli_image(prompt, screenshot_b64)
 
 
 async def _solve_with_claude_cli(prompt: str, timeout: int = 120) -> Optional[str]:
     """
-    Primary: send prompt to Claude CLI (sonnet) for text-based Q&A.
+    Send a text-only prompt to Claude CLI (Opus 4.7) and return the raw answer.
 
     Uses the Claude Code CLI installed on this machine. Strips CLAUDECODE env
     var to avoid nested-session issues.
     """
     try:
         proc = await asyncio.create_subprocess_exec(
-            "env", "-u", "CLAUDECODE", "claude", "--print", "--model", CLAUDE_CLI_MODEL,
+            "env", "-u", "CLAUDECODE", "claude",
+            "--print",
+            "--model", CLAUDE_CLI_MODEL,
+            "--permission-mode", "bypassPermissions",
             "-p", prompt,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -550,6 +409,93 @@ async def _solve_with_claude_cli(prompt: str, timeout: int = 120) -> Optional[st
     except Exception as e:
         logger.error(f"Claude CLI error: {e}")
         return None
+
+
+async def _solve_with_claude_cli_image(
+    prompt: str,
+    screenshot_b64: Optional[str],
+    timeout: int = 180,
+) -> Optional[str]:
+    """
+    Send a prompt + optional screenshot to Claude CLI (Opus 4.7) and return
+    the raw answer.
+
+    Per Jesse 2026-05-12: this is the only LLM path; Gemini is not used.
+    For VLM cases, the screenshot is written to /tmp/ and the prompt
+    instructs Claude to Read it. Permission-mode bypass lets Read fire
+    without prompting. The temp file is unlinked after the call.
+    """
+    if not screenshot_b64:
+        return await _solve_with_claude_cli(prompt, timeout=timeout)
+
+    import base64
+    import tempfile
+    import os as _os
+
+    try:
+        image_data = base64.b64decode(screenshot_b64)
+    except Exception as e:
+        logger.error(f"_solve_with_claude_cli_image: bad b64: {e}")
+        return None
+
+    is_png = image_data[:8] == b"\x89PNG\r\n\x1a\n"
+    suffix = ".png" if is_png else ".jpg"
+
+    fd, img_path = tempfile.mkstemp(prefix="taey-llm-", suffix=suffix, dir="/tmp")
+    try:
+        with _os.fdopen(fd, "wb") as f:
+            f.write(image_data)
+
+        full_prompt = (
+            f"Use your Read tool on this image first: {img_path}\n"
+            f"After reading it, answer the following based on BOTH the image "
+            f"and the text below. Output ONLY the answer in the exact format "
+            f"the instructions request — no preamble, no markdown fences.\n\n"
+            f"{prompt}"
+        )
+
+        logger.info(
+            f"_solve_with_claude_cli_image: invoking Claude CLI "
+            f"({CLAUDE_CLI_MODEL}) with image {img_path} "
+            f"({len(image_data)} bytes)"
+        )
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "env", "-u", "CLAUDECODE", "claude",
+                "--print",
+                "--model", CLAUDE_CLI_MODEL,
+                "--permission-mode", "bypassPermissions",
+                "-p", full_prompt,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=timeout
+            )
+            raw = stdout.decode().strip()
+            if raw:
+                logger.info(
+                    f"_solve_with_claude_cli_image: answered, len={len(raw)}"
+                )
+                return raw
+            logger.warning(
+                f"_solve_with_claude_cli_image: empty response, "
+                f"stderr={stderr.decode()[:200]}"
+            )
+            return None
+        except asyncio.TimeoutError:
+            logger.error(
+                f"_solve_with_claude_cli_image: timed out after {timeout}s"
+            )
+            return None
+        except Exception as e:
+            logger.error(f"_solve_with_claude_cli_image: error: {e}")
+            return None
+    finally:
+        try:
+            _os.unlink(img_path)
+        except OSError:
+            pass
 
 
 # =============================================================================
@@ -816,18 +762,17 @@ async def generate_answer(
         )
 
     # =========================================================================
-    # MODEL ROUTING: Gemini 2.5 Pro (primary) → Claude CLI (fallback)
-    # Gemini 2.5 Pro: $0.30/MTok in, $2.50/MTok out (paid tier, no rate limits)
-    # Claude Sonnet: $3/MTok in, $15/MTok out (fallback only)
+    # MODEL ROUTING: Claude CLI Opus 4.7 only (Jesse 2026-05-12: no Gemini).
+    # The legacy `_solve_with_gemini` name is preserved as a thin shim that
+    # delegates to `_solve_with_claude_cli_image`; rename can come later.
     # =========================================================================
-    model_used = "gemini-2.5-pro"
+    model_used = CLAUDE_CLI_MODEL
     raw_answer = ""
 
-    gemini_response = await _solve_with_gemini(prompt, screenshot_b64=screenshot_b64)
-    if gemini_response:
-        raw_answer = gemini_response
-        model_used = "gemini-2.5-pro"
-    # No fallback — if Gemini fails, return error. Caller decides.
+    llm_response = await _solve_with_gemini(prompt, screenshot_b64=screenshot_b64)
+    if llm_response:
+        raw_answer = llm_response
+    # No fallback — if Claude CLI fails, return error. Caller decides.
 
     try:
         if not raw_answer:
