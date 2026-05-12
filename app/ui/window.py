@@ -201,12 +201,38 @@ class TaeyEdWindow:
 
         # Title
         title_label = ttk.Label(main_frame, text="Taey-Ed", font=("Helvetica", 16, "bold"))
-        title_label.pack(pady=(0, 10))
+        title_label.pack(pady=(0, 6))
+
+        # Signed-in header: email · credits · Buy more
+        header_frame = ttk.Frame(main_frame)
+        header_frame.pack(fill=tk.X, pady=(0, 8))
+
+        from app.tasks import auth as _auth
+        _email = _auth.get_user_email() or "—"
+        self.user_email_var = tk.StringVar(value=_email)
+        ttk.Label(header_frame, textvariable=self.user_email_var,
+                  font=("Helvetica", 11)).pack(side=tk.LEFT)
+
+        self.credit_balance_var = tk.StringVar(value="Credits: —")
+        ttk.Label(header_frame, textvariable=self.credit_balance_var,
+                  font=("Helvetica", 11, "bold")).pack(side=tk.LEFT, padx=(20, 0))
+
+        # "Buy more" link to the billing page. ttk doesn't ship a link
+        # widget, so use a clickable Label.
+        self.buy_link = ttk.Label(
+            header_frame, text="Buy more credits",
+            foreground="#2266dd", cursor="pointinghand",
+        )
+        self.buy_link.pack(side=tk.RIGHT)
+        self.buy_link.bind("<Button-1>", lambda _e: self._open_billing_page())
 
         # Status label
         self.status_var = tk.StringVar(value="Ready")
         status_label = ttk.Label(main_frame, textvariable=self.status_var)
         status_label.pack(pady=(0, 10))
+
+        # Schedule first credit balance fetch after the window settles
+        self.root.after(800, self._refresh_credit_balance_async)
 
         # === Platform Selection Frame ===
         platform_frame = ttk.LabelFrame(main_frame, text="Platform", padding="5")
@@ -255,6 +281,31 @@ class TaeyEdWindow:
             course_frame, text="(e.g., intro_banking, cs101)",
             font=("Helvetica", 9)
         ).pack(side=tk.LEFT, padx=(10, 0))
+
+        # === Local memory (KB) frame ===
+        # User-facing controls per LAUNCH_PLAN §4 Gap E. KB lives on this
+        # Mac under ~/Library/Application Support/taey-ed/kb/<course>/.
+        kb_frame = ttk.LabelFrame(main_frame, text="Local course memory", padding="5")
+        kb_frame.pack(fill=tk.X, pady=(0, 10))
+
+        self.kb_status_var = tk.StringVar(value="—")
+        ttk.Label(kb_frame, textvariable=self.kb_status_var,
+                  font=("Helvetica", 10)).pack(side=tk.LEFT, padx=(0, 16))
+
+        self.use_local_kb_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            kb_frame, text="Use local memory for answers",
+            variable=self.use_local_kb_var,
+        ).pack(side=tk.LEFT, padx=(0, 12))
+
+        ttk.Button(
+            kb_frame, text="Delete this course's memory",
+            command=self._on_delete_course_kb,
+        ).pack(side=tk.RIGHT)
+
+        # Refresh KB status whenever course_id changes; also on startup.
+        self.course_id_var.trace_add("write", lambda *_: self._refresh_kb_status())
+        self.root.after(900, self._refresh_kb_status)
 
         # === Screen Count Frame ===
         screen_frame = ttk.LabelFrame(main_frame, text="Screen Limit", padding="5")
@@ -677,6 +728,10 @@ class TaeyEdWindow:
             status = f"Running ({screens_completed} screens)..."
         self.root.after(0, lambda: self.progress_var.set(text))
         self.root.after(0, lambda: self.status_var.set(status))
+        # Refresh balance — credit ledger debits on screen completion.
+        self.root.after(0, self._refresh_credit_balance_async)
+        # Refresh KB status — VIDEO/ARTICLE completion adds chunks.
+        self.root.after(0, self._refresh_kb_status)
         # Update menu bar
         if max_screens > 0:
             self._update_menu_bar_title(f"T: {screens_completed}/{max_screens}")
@@ -713,6 +768,7 @@ class TaeyEdWindow:
                 chat_message_callback=self.deliver_chat_messages,
                 user_input_callback=self.wait_for_user_input,
                 pending_chat_messages=self,
+                use_local_kb=self.use_local_kb_var.get(),
             )
             self.logger.info(f"Continuous result: {result}")
 
@@ -720,20 +776,39 @@ class TaeyEdWindow:
             reason = result.get("reason", "unknown")
 
             if reason == "max_screens_reached":
-                result_text = f"Completed {screens} screens (limit reached)"
+                result_text = f"Completed {screens} screens (reached your limit)"
                 self._update_status(f"Done ({screens}/{max_screens} screens)")
             elif reason == "stopped_by_user":
-                result_text = f"Stopped by user. Screens completed: {screens}"
+                result_text = f"Stopped at your request. {screens} screens completed."
                 self._update_status(f"Stopped ({screens} screens)")
             elif reason == "safety_halt":
-                result_text = f"SAFETY HALT: {result.get('detected', '?')}. Screens: {screens}"
-                self._update_status("Safety halt!")
+                # Spark detected something it wasn't willing to click through
+                # (e.g. a "Skip" link, a destructive action). Tell the user
+                # what was seen, in plain words.
+                detected = result.get("detected", "an action it shouldn't take")
+                result_text = (
+                    f"I paused because the next step looked like: {detected}. "
+                    f"Completed {screens} screens before this. You can guide me, "
+                    f"skip automation for this screen, or stop."
+                )
+                self._update_status("Paused — needs your input")
+            elif reason == "consecutive_errors":
+                result_text = (
+                    f"I ran into repeated errors and stopped to avoid making things worse. "
+                    f"I won't charge for the screen I couldn't complete. "
+                    f"Completed {screens} screens before this."
+                )
+                self._update_status("Paused — repeated errors")
             elif result.get("success"):
-                result_text = f"Completed. Screens: {screens}"
+                result_text = f"Done. Completed {screens} screens."
                 self._update_status(f"Done ({screens} screens)")
             else:
-                result_text = f"Stopped: {reason}. Screens completed: {screens}"
-                self._update_status(f"Failed: {reason}")
+                result_text = (
+                    f"I couldn't complete this screen. I won't charge you for it. "
+                    f"Completed {screens} screens before this. You can: try the "
+                    f"screen yourself, then click Run Continuous again — or stop."
+                )
+                self._update_status("Paused — needs your input")
 
             self._show_result(result_text)
 
@@ -923,6 +998,100 @@ class TaeyEdWindow:
                 NSStatusBar.systemStatusBar().removeStatusItem_(self._status_item)
             except Exception:
                 pass
+
+    # ------------------------------------------------------------------
+    # Local KB controls
+    # ------------------------------------------------------------------
+
+    def _refresh_kb_status(self) -> None:
+        """Update the small status label showing chunk count for the
+        currently-selected course."""
+        try:
+            from app.tasks import local_kb
+            course_id = self.course_id_var.get().strip() or "unknown"
+            st = local_kb.status(course_id)
+            n = st.get("chunk_count", 0)
+            if n == 0:
+                self.kb_status_var.set("No saved content yet for this course")
+            else:
+                self.kb_status_var.set(f"{n} saved chunk{'s' if n != 1 else ''}")
+        except Exception as e:
+            self.logger.warning(f"kb status refresh failed: {e}")
+            self.kb_status_var.set("—")
+
+    def _on_delete_course_kb(self) -> None:
+        """Delete the local KB for the currently-selected course."""
+        try:
+            from app.tasks import local_kb
+            course_id = self.course_id_var.get().strip() or "unknown"
+            if not messagebox.askyesno(
+                "Delete local memory?",
+                f"This removes all saved videos and articles for course '{course_id}' "
+                f"from this Mac. Nothing leaves your machine. The course can re-populate "
+                f"its memory on the next run.\n\nDelete now?",
+                parent=self.root,
+            ):
+                return
+            removed = local_kb.delete_course(course_id)
+            msg = "Local memory cleared." if removed else "No local memory to clear."
+            self._show_result(msg)
+            self._refresh_kb_status()
+        except Exception as e:
+            self.logger.error(f"delete course kb failed: {e}")
+            self._show_error(f"Could not delete local memory: {e}")
+
+    # ------------------------------------------------------------------
+    # Header helpers (credits + billing link)
+    # ------------------------------------------------------------------
+
+    def _refresh_credit_balance_async(self) -> None:
+        """Fetch /credits/balance off the UI thread and update the label.
+        Called on startup, after each screen completion, and when the user
+        clicks the buy link as a quick refresh."""
+        def _worker():
+            try:
+                from app.tasks import credits
+                bal = credits.get_balance()
+            except Exception:
+                bal = None
+            self.root.after(0, lambda: self._set_credit_balance(bal))
+        t = threading.Thread(target=_worker, daemon=True)
+        t.start()
+
+    def _set_credit_balance(self, bal):
+        """Update the header label. None → '—' (couldn't reach server)."""
+        if bal is None:
+            self.credit_balance_var.set("Credits: —")
+            return
+        # Low-balance nudge: surfaces but doesn't block.
+        if bal <= 3:
+            self.credit_balance_var.set(f"Credits: {bal} (low)")
+        else:
+            self.credit_balance_var.set(f"Credits: {bal}")
+
+    def _open_billing_page(self) -> None:
+        """Open the user's billing/checkout flow in their browser.
+        Server route mints a Stripe Checkout session; we just open the
+        URL the server hands back. Best-effort: log on failure, no crash."""
+        def _worker():
+            try:
+                from app.tasks.call_spark import call_spark
+                # Server creates a Stripe Checkout session for this user
+                # (default credit-pack amount). Returns {url, session_id}.
+                resp = call_spark("/billing/create-checkout-session",
+                                  payload={}, method="POST")
+                url = resp.get("url") if isinstance(resp, dict) else None
+                if not url:
+                    self.logger.warning(f"billing: no url in response: {resp!r}")
+                    return
+                subprocess.run(["open", url], check=False)
+            except Exception as e:
+                self.logger.warning(f"billing: open failed: {e}")
+        t = threading.Thread(target=_worker, daemon=True)
+        t.start()
+        # Also refresh balance shortly after — Stripe webhook is fast and
+        # often the user is back on this window before we know it.
+        self.root.after(15000, self._refresh_credit_balance_async)
 
     def _ensure_logged_in(self) -> bool:
         """Return True iff the user is signed in (existing session or fresh login).

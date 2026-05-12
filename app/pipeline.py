@@ -255,6 +255,7 @@ def run_continuous(
     chat_message_callback=None,
     user_input_callback=None,
     pending_chat_messages=None,
+    use_local_kb: bool = True,
 ) -> dict:
     """
     Run automation continuously via /next_action directive loop.
@@ -348,11 +349,13 @@ def run_continuous(
                     pass
 
             # Phase 3 Gap E: attach top-K relevant chunks from the local KB.
+            # Skipped if the user toggled "Use local memory" off in the UI.
             # Cheap when KB is empty (returns []) — adds ~200ms when populated.
             # Spark's worker injects these into the consultation prompt.
-            kb_chunks = _build_kb_chunks(course_id=course_id, tree=tree)
-            if kb_chunks:
-                payload["relevant_kb_chunks"] = kb_chunks
+            if use_local_kb:
+                kb_chunks = _build_kb_chunks(course_id=course_id, tree=tree)
+                if kb_chunks:
+                    payload["relevant_kb_chunks"] = kb_chunks
 
             # ── Ask Spark what to do ──
             directive = call_spark("/next_action", payload)
@@ -487,12 +490,15 @@ def run_continuous(
                     logger.info(f"Screen completed: {screens_completed} ({screen})")
                     # Phase 3 Gap E: stash content for VIDEO/ARTICLE so the
                     # next EXERCISE can retrieve relevant chunks. Best-effort.
-                    _capture_screen_content(
-                        course_id=directive.get("course_id", course_id),
-                        screen_type=screen,
-                        screen_signature=before_hash,
-                        tree=after_tree,
-                    )
+                    # Gated by the same toggle as retrieval so capture and
+                    # use stay consistent — toggling off mid-run stops both.
+                    if use_local_kb:
+                        _capture_screen_content(
+                            course_id=directive.get("course_id", course_id),
+                            screen_type=screen,
+                            screen_signature=before_hash,
+                            tree=after_tree,
+                        )
 
                     save_checkpoint(
                         platform, course_id, app_name, screens_completed,
