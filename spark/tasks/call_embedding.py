@@ -1,25 +1,30 @@
-# STATUS: FROZEN. Verified 2026-02-19. Do not modify.
+# STATUS: contract for Mac-side DeepTutor. Updated 2026-05-12 — native 4096-dim.
 """
 Qwen3-Embedding-8B for content embeddings.
 
-Phase 5: Generate embeddings for LightRAG storage on Mac.
-Spark provides COMPUTE only - Mac stores results locally.
+Mira provides the embedding endpoint; the Mac stores results locally in
+DeepTutor (KB content + vectors live on the user's machine — see CLAUDE.md
+"Hard architectural line"). Per Jesse 2026-05-12: NO truncation, ever.
 
-LOCKED FILE - Do not modify without Jesse's approval.
-This file defines the embedding contract between Spark and Mac.
-Changes break DeepTutor compatibility.
+The upstream service at 127.0.0.1:8089 emits the model's native 4096-dim
+vectors and ignores OpenAI-style MRL `dimensions` requests. DeepTutor's
+embedding-dim is fully configurable via EMBEDDING_DIMENSION env var (its
+FAISS indexer is data-driven via IndexFlatIP(embeddings.shape[1])), so
+shipping 4096 natively requires no client-side adaptation — the Mac just
+templates DeepTutor's .env with EMBEDDING_DIMENSION=4096.
 """
 
 import httpx
 from typing import List, Union
 
 # =============================================================================
-# LOCKED CONSTANTS - These define the API contract with Mac/DeepTutor
-# DO NOT CHANGE without updating all consumers (Mac LightRAG, DeepTutor)
+# LOCKED CONSTANTS — Mac/DeepTutor bundle must template DeepTutor's .env to
+# match (EMBEDDING_DIMENSION=4096, EMBEDDING_MODEL=Qwen/Qwen3-Embedding-8B).
+# Vectors are emitted native-shape; no truncation, no MRL adaptation.
 # =============================================================================
-EMBED_URL = "http://127.0.0.1:8089"  # Mira-local Qwen3-Embedding (was NCCL nginx LB)
-MODEL = "Qwen/Qwen3-Embedding-8B"          # LOCKED: Model name
-EMBEDDING_DIM = 3072                        # LOCKED: MRL dimension (DeepTutor compatible)
+EMBED_URL = "http://127.0.0.1:8089"         # Mira-local Qwen3-Embedding service
+MODEL = "Qwen/Qwen3-Embedding-8B"           # LOCKED: model id sent in API payload
+EMBEDDING_DIM = 4096                        # LOCKED: native model dim (was 3072 — wrong; service ignored MRL)
 
 
 async def get_embeddings(
@@ -34,9 +39,9 @@ async def get_embeddings(
     Returns:
         {
             "success": True,
-            "embeddings": [[...], [...], ...],  # List of 3072-dim vectors
+            "embeddings": [[...], [...], ...],  # List of 4096-dim vectors
             "model": "Qwen/Qwen3-Embedding-8B",
-            "dimension": 3072
+            "dimension": 4096
         }
     """
     # Normalize to list
@@ -52,11 +57,13 @@ async def get_embeddings(
             "dimension": EMBEDDING_DIM
         }
 
-    # OpenAI-compatible endpoint with MRL dimensions parameter
+    # OpenAI-compatible endpoint. Note: this upstream build ignores the
+    # `dimensions` MRL parameter and always returns the native 4096-dim
+    # vector; we send the value for documentation but rely on native dim.
     payload = {
         "input": texts,
         "model": MODEL,
-        "dimensions": EMBEDDING_DIM  # Request specific dimension via MRL
+        "dimensions": EMBEDDING_DIM,
     }
 
     try:
@@ -106,9 +113,9 @@ async def get_single_embedding(text: str) -> dict:
     Returns:
         {
             "success": True,
-            "embedding": [...],  # Single 3072-dim vector
+            "embedding": [...],  # Single 4096-dim vector
             "model": "...",
-            "dimension": 3072
+            "dimension": 4096
         }
     """
     result = await get_embeddings([text])

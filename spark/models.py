@@ -158,7 +158,8 @@ class KBChunk(BaseModel):
     """A relevant chunk retrieved from the user's local DeepTutor KB.
 
     The Mac app captures content during VIDEO/ARTICLE screens, embeds via
-    /api/v1/embed (Qwen3 3072d), and stores (text, vector) pairs locally.
+    /api/v1/embed (Qwen3-Embedding-8B native 4096d), and stores (text,
+    vector) pairs locally in DeepTutor (per Jesse 2026-05-12: NO truncation).
     At EXERCISE time, the Mac embeds the question, runs local similarity
     search, and attaches the top-K matching chunks to the consultation
     request as `relevant_kb_chunks`. The BT generator includes them in the
