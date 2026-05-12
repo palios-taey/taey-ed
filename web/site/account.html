@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Your account — Taey-Ed</title>
+  <link rel="stylesheet" href="/css/main.css">
+</head>
+<body>
+  <header>
+    <a class="logo" href="/">Taey-Ed</a>
+    <nav>
+      <span id="account-email" style="color:var(--muted); margin-right:12px"></span>
+      <button id="logout-btn" class="btn ghost">Sign out</button>
+    </nav>
+  </header>
+
+  <main>
+    <div class="account-card">
+      <div class="balance-label">Credit balance</div>
+      <div class="balance" id="balance">—</div>
+      <p class="form-help" id="balance-help">1 credit = 1 completed screen.</p>
+      <div class="row-actions">
+        <button id="buy-btn" class="btn primary">Buy more credits</button>
+        <a href="/download/Taey-Ed.dmg" class="btn ghost" download>Download Mac app</a>
+      </div>
+      <div id="account-error" class="form-error" style="margin-top:14px"></div>
+    </div>
+  </main>
+
+  <script src="/js/api.js"></script>
+  <script>
+    const emailEl = document.getElementById("account-email");
+    const balanceEl = document.getElementById("balance");
+    const balanceHelpEl = document.getElementById("balance-help");
+    const buyBtn = document.getElementById("buy-btn");
+    const logoutBtn = document.getElementById("logout-btn");
+    const errEl = document.getElementById("account-error");
+
+    function showErr(msg) { errEl.textContent = msg; errEl.classList.add("show"); }
+
+    async function refreshBalance() {
+      const bal = await TaeyAPI.getBalance();
+      if (bal === null) { balanceEl.textContent = "—"; return; }
+      balanceEl.textContent = String(bal);
+      if (bal <= 3) balanceHelpEl.textContent = `1 credit = 1 completed screen. Running low?`;
+    }
+
+    async function bootstrap() {
+      // Verify we have a usable session.
+      if (!TaeyAPI.getAccess() && !TaeyAPI.getRefresh()) {
+        window.location.href = "/login.html";
+        return;
+      }
+      const user = await TaeyAPI.me();
+      if (!user) {
+        TaeyAPI.clearTokens();
+        window.location.href = "/login.html";
+        return;
+      }
+      emailEl.textContent = user.email;
+      await refreshBalance();
+    }
+
+    buyBtn.addEventListener("click", async () => {
+      buyBtn.disabled = true;
+      try {
+        const { url } = await TaeyAPI.createCheckoutSession();
+        if (!url) { showErr("Could not start checkout."); return; }
+        window.location.href = url;
+      } catch (e) {
+        showErr(e.message || "Could not start checkout.");
+        buyBtn.disabled = false;
+      }
+    });
+
+    logoutBtn.addEventListener("click", async () => {
+      await TaeyAPI.logout();
+      window.location.href = "/";
+    });
+
+    bootstrap();
+  </script>
+</body>
+</html>

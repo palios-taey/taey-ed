@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in to Taey-Ed</title>
+  <link rel="stylesheet" href="/css/main.css">
+</head>
+<body>
+  <header>
+    <a class="logo" href="/">Taey-Ed</a>
+    <nav><a href="/signup.html" class="btn ghost">Create account</a></nav>
+  </header>
+
+  <main>
+    <form class="form-card" id="login-form" novalidate>
+      <h1>Sign in</h1>
+      <div class="form-group">
+        <label for="email">Email</label>
+        <input id="email" name="email" type="email" autocomplete="email" required>
+      </div>
+      <div class="form-group">
+        <label for="password">Password</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required>
+      </div>
+      <div id="form-error" class="form-error"></div>
+      <button type="submit" class="btn primary" id="submit-btn">Sign in</button>
+      <p class="form-help">No account yet? <a href="/signup.html">Create one</a>.</p>
+    </form>
+  </main>
+
+  <script src="/js/api.js"></script>
+  <script>
+    const form = document.getElementById("login-form");
+    const err = document.getElementById("form-error");
+    const btn = document.getElementById("submit-btn");
+
+    function showErr(msg) {
+      err.textContent = msg;
+      err.classList.add("show");
+    }
+    function clearErr() {
+      err.textContent = "";
+      err.classList.remove("show");
+    }
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      clearErr();
+      const email = form.email.value.trim();
+      const password = form.password.value;
+      if (!email || !password) { showErr("Email and password are required."); return; }
+      btn.disabled = true;
+      btn.textContent = "Signing in…";
+      try {
+        await TaeyAPI.login(email, password);
+        window.location.href = "/account.html";
+      } catch (e) {
+        showErr(e.message || "Sign-in failed. Please try again.");
+        btn.disabled = false;
+        btn.textContent = "Sign in";
+      }
+    });
+  </script>
+</body>
+</html>

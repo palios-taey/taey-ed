@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Create your Taey-Ed account</title>
+  <link rel="stylesheet" href="/css/main.css">
+</head>
+<body>
+  <header>
+    <a class="logo" href="/">Taey-Ed</a>
+    <nav><a href="/login.html" class="btn ghost">Sign in instead</a></nav>
+  </header>
+
+  <main>
+    <form class="form-card" id="signup-form" novalidate>
+      <h1>Create your account</h1>
+      <div class="form-group">
+        <label for="email">Email</label>
+        <input id="email" name="email" type="email" autocomplete="email" required>
+      </div>
+      <div class="form-group">
+        <label for="password">Password</label>
+        <input id="password" name="password" type="password" autocomplete="new-password" minlength="8" required>
+      </div>
+      <div id="form-error" class="form-error"></div>
+      <button type="submit" class="btn primary" id="submit-btn">Create account</button>
+      <p class="form-help">Already have one? <a href="/login.html">Sign in</a>.</p>
+    </form>
+  </main>
+
+  <script src="/js/api.js"></script>
+  <script>
+    const form = document.getElementById("signup-form");
+    const err = document.getElementById("form-error");
+    const btn = document.getElementById("submit-btn");
+
+    function showErr(msg) {
+      err.textContent = msg;
+      err.classList.add("show");
+    }
+    function clearErr() {
+      err.textContent = "";
+      err.classList.remove("show");
+    }
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      clearErr();
+      const email = form.email.value.trim();
+      const password = form.password.value;
+      if (!email || !password) { showErr("Email and password are required."); return; }
+      if (password.length < 8) { showErr("Password must be at least 8 characters."); return; }
+      btn.disabled = true;
+      btn.textContent = "Creating account…";
+      try {
+        await TaeyAPI.signup(email, password);
+        window.location.href = "/account.html";
+      } catch (e) {
+        showErr(e.message || "Sign-up failed. Please try again.");
+        btn.disabled = false;
+        btn.textContent = "Create account";
+      }
+    });
+  </script>
+</body>
+</html>
