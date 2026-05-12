@@ -74,6 +74,42 @@ logger.info(
 import jwt as pyjwt
 
 
+# Hard cap on request body bytes. /next_action carries AX tree (~50KB-500KB)
+# + base64 screenshot (~1-3MB) + occasional bt_debug log; observed real max
+# ~10MB. 25MB gives generous headroom for the largest pages without inviting
+# abuse via giant payloads.
+MAX_REQUEST_BODY_BYTES = 25 * 1024 * 1024
+
+
+class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
+    """Reject requests whose Content-Length exceeds MAX_REQUEST_BODY_BYTES.
+
+    Cloudflare's edge already drops requests over 100MB; this middleware adds
+    a tighter app-layer cap that matches actual request shapes, so a malformed
+    or hostile client can't tie up uvicorn buffering a giant body before
+    handlers run. Only checks Content-Length — requests without one (chunked
+    streams) are not used by our Mac client.
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        cl = request.headers.get("content-length")
+        if cl is not None:
+            try:
+                if int(cl) > MAX_REQUEST_BODY_BYTES:
+                    return JSONResponse(
+                        status_code=413,
+                        content={
+                            "detail": (
+                                f"Request body exceeds {MAX_REQUEST_BODY_BYTES} "
+                                "byte limit"
+                            )
+                        },
+                    )
+            except ValueError:
+                pass
+        return await call_next(request)
+
+
 class APIKeyMiddleware(BaseHTTPMiddleware):
     """Authenticate via JWT Bearer (user-facing) or loopback-scoped internal
     API key (dev / server-to-server only).
@@ -141,7 +177,12 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
 # ── App Setup ──
 
 app = FastAPI(title="Taey-Ed", version="1.0.0")
+# Middleware order (outermost first by add order is the LAST to dispatch in
+# starlette): we want size-limit to run BEFORE auth, so add APIKey first
+# (innermost) and RequestSizeLimit second (outermost) — starlette wraps in
+# reverse add order.
 app.add_middleware(APIKeyMiddleware)
+app.add_middleware(RequestSizeLimitMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["https://academy.taey.ai", "http://localhost:8080"],
