@@ -135,6 +135,10 @@ def create_checkout_session(req: CreateCheckoutRequest, request: Request):
         line_items=[{"price": price_id, "quantity": 1}],
         success_url=success_url,
         cancel_url=cancel_url,
+        # Show the "Add promotion code" field on the Stripe-hosted checkout
+        # page. Lets Jesse (and future users) redeem promotion codes created
+        # against coupons in the Stripe dashboard.
+        allow_promotion_codes=True,
         metadata={
             "taey_ed_user_id": user.id,
             "taey_ed_credits": str(mapping[price_id]),
