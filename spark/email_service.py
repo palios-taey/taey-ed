@@ -67,6 +67,11 @@ def send_email(
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
+            # Resend sits behind Cloudflare; Python urllib's default UA is
+            # `Python-urllib/3.x`, which CF flags as a bot signature and
+            # rejects with error 1010 (HTTP 403). Identify ourselves so
+            # the request looks like a normal API client.
+            "User-Agent": "taey-ed/1.0 (transactional)",
         },
         method="POST",
     )
