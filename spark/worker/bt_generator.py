@@ -1,38 +1,27 @@
-"""Headless Claude CLI invocation that converts a consultation into a BT.
+"""Claude-CLI invocation that converts a consultation into a behavior tree.
 
-The Mac-side BT engine sends a screen to Spark; if Spark needs LLM-shaped
-help (UNKNOWN screen / failure context), this module is the one that asks
-Claude (headless, via the CLI installed on Mira) for the BT.
+The Mac-side BT engine sends a screen to Spark; if Spark needs LLM help on a
+fresh / unfamiliar screen, this module is what asks Claude (via the CLI over
+Jesse's Max subscription) to produce a BT. Pure single-shot: same screen +
+tree + screenshot + compiled instructions go in, BT JSON comes out.
 
-Proven 2026-05-11: `claude --print --output-format json --permission-mode
-bypassPermissions` works against the Max subscription on Mira. The wrapper
-JSON has `result` field containing the model's text output (which we then
-parse as the BT JSON).
-
-Per LAUNCH_PLAN.md Phase 2 — replaces the tmux-notify-interactive-Claude
-path with autonomous worker-callable BT generation.
+The subprocess + JSON-wrapper plumbing lives in spark.tasks.claude_runner;
+this module focuses on assembling the prompt and validating the BT shape.
 """
 
 import json
 import logging
-import subprocess
-import time
 from pathlib import Path
-from typing import Optional
+
+from spark.tasks.claude_runner import (
+    call_claude_cli,
+    ClaudeCallError,
+    DEFAULT_MAX_BUDGET_USD,
+)
 
 logger = logging.getLogger(__name__)
 
-CLAUDE_BIN = "claude"
-DEFAULT_TIMEOUT_S = 120
-
-# Per-call budget cap. On Claude Max subscription, actual spend is $0
-# (subscription covers it). But Claude CLI enforces this cap locally based on
-# API-equivalent cost, and Mira's `claude` install has a hooks/MCP/skills
-# overhead that creates ~50K cache_creation tokens (~$0.35 API equivalent) on
-# every invocation regardless of prompt size. A 0.50 cap was too tight on the
-# margins; 2.00 gives headroom for the system_prompt (24KB compile_prompt
-# output) plus the unavoidable overhead.
-DEFAULT_MAX_BUDGET_USD = 2.00
+DEFAULT_TIMEOUT_S = 180
 
 
 class BTGenerationError(RuntimeError):
@@ -56,9 +45,8 @@ def _load_consult_context(consultation_id: str) -> tuple[dict, dict]:
 
 
 def _build_user_instruction(consultation_id: str, has_failure_log: bool) -> str:
-    """The user-facing instruction we send to Claude. Brief because the
-    full platform knowledge + handler reference + operational notes are
-    already in the system prompt (from compile_prompt)."""
+    """The user-facing instruction. The screenshot Read directive is injected
+    automatically by call_claude_cli when we pass screenshot_path."""
     failure_note = (
         f"\nIMPORTANT: a bt_debug.log exists in /tmp/taey-ed-consult/{consultation_id}/. "
         f"Read it FIRST — it tells you why the prior BT failed. Adjust accordingly.\n"
@@ -66,9 +54,8 @@ def _build_user_instruction(consultation_id: str, has_failure_log: bool) -> str:
     )
     return f"""Generate a behavior tree (BT) JSON to advance the screen described in your system prompt.
 
-Use the Read tool to examine:
-  /tmp/taey-ed-consult/{consultation_id}/screenshot.png  (the visual)
-  /tmp/taey-ed-consult/{consultation_id}/tree.json       (full AX tree)
+The accessibility tree for the current screen is at:
+  /tmp/taey-ed-consult/{consultation_id}/tree.json
 {failure_note}
 Output ONLY the response.json content — no commentary, no markdown fences.
 
@@ -124,21 +111,16 @@ def generate_bt(
     timeout_s: float = DEFAULT_TIMEOUT_S,
     max_budget_usd: float = DEFAULT_MAX_BUDGET_USD,
 ) -> dict:
-    """Invoke Claude CLI headlessly to generate a BT for the given consultation.
+    """Invoke Claude CLI to generate a BT for the given consultation.
 
     Returns the parsed response.json dict (tree, screen_type, expected_next, extract).
     Raises BTGenerationError on any failure (timeout, non-zero exit, invalid JSON,
-    schema mismatch).
+    schema mismatch, blind answer with no screenshot read).
 
     The caller is responsible for:
       - Ensuring the consultation directory exists with tree.json, screenshot.png,
         and metadata.json
       - Writing the returned dict to response.json + marking metadata complete
-
-    Args:
-        consultation_id: The consultation UUID matching /tmp/taey-ed-consult/{id}/
-        timeout_s: Wall-clock timeout for the claude invocation
-        max_budget_usd: API-equivalent spend cap (informational on subscription mode)
     """
     consult_dir = Path(f"/tmp/taey-ed-consult/{consultation_id}")
     if not consult_dir.exists():
@@ -148,7 +130,7 @@ def generate_bt(
     platform = metadata.get("platform", "khan_academy")
 
     # Build the comprehensive system prompt with platform knowledge, handler
-    # reference, operational notes (exactly what the tmux-Claude path used).
+    # reference, operational notes (exactly what the original Gemini path used).
     from spark.tasks.prompt_codex import compile_prompt
     context = {
         "escalation_level": metadata.get("escalation_level", "spark_claude"),
@@ -166,10 +148,9 @@ def generate_bt(
         is_reconsultation=bool(metadata.get("failure_reason")),
     )
 
-    # Inject relevant KB chunks (Phase 3 — DeepTutor retrieval) if the Mac
-    # attached any. Local KB lives on the user's Mac; only top-K chunks
-    # selected by local similarity search travel here. Per LAUNCH_PLAN v4
-    # §0 user-sovereignty principle.
+    # Inject relevant KB chunks (DeepTutor retrieval) if the Mac attached any.
+    # Local KB lives on the user's Mac; only top-K chunks selected by local
+    # similarity search travel here. Per LAUNCH_PLAN v4 §0 user-sovereignty.
     kb_chunks = metadata.get("relevant_kb_chunks") or []
     if kb_chunks:
         kb_section_lines = [
@@ -183,7 +164,7 @@ def generate_bt(
             "be told what the user has been taught:",
             "",
         ]
-        for i, chunk in enumerate(kb_chunks[:5]):  # cap at top-5 defensively
+        for i, chunk in enumerate(kb_chunks[:5]):
             src_type = chunk.get("source_screen_type", "?")
             score = chunk.get("score")
             score_str = f" (score={score:.3f})" if isinstance(score, float) else ""
@@ -193,87 +174,50 @@ def generate_bt(
             kb_section_lines.append("")
         system_prompt = system_prompt + "\n".join(kb_section_lines)
         logger.info(
-            f"bt_generator: injected {len(kb_chunks)} KB chunk(s) into prompt "
-            f"for {consultation_id}"
+            f"bt_generator: injected {len(kb_chunks)} KB chunk(s) for {consultation_id}"
         )
 
     has_failure_log = (consult_dir / "bt_debug.log").exists()
     user_instruction = _build_user_instruction(consultation_id, has_failure_log)
 
-    cmd = [
-        CLAUDE_BIN,
-        "--print",
-        "--output-format", "json",
-        "--permission-mode", "bypassPermissions",
-        "--max-budget-usd", str(max_budget_usd),
-        "--system-prompt", system_prompt,
-        user_instruction,
-    ]
+    screenshot_path = consult_dir / "screenshot.png"
+    if not screenshot_path.exists():
+        raise BTGenerationError(
+            f"Screenshot missing for {consultation_id}: {screenshot_path}"
+        )
 
-    t0 = time.time()
     logger.info(
-        f"bt_generator: invoking claude --print for consult={consultation_id} "
+        f"bt_generator: invoking claude for consult={consultation_id} "
         f"(timeout={timeout_s}s, budget=${max_budget_usd})"
     )
     try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
-            stdin=subprocess.DEVNULL,
+        raw_text, meta = call_claude_cli(
+            system_prompt=system_prompt,
+            user_message=user_instruction,
+            screenshot_path=str(screenshot_path),
+            timeout_s=timeout_s,
+            max_budget_usd=max_budget_usd,
+            require_screenshot_read=True,
         )
-    except subprocess.TimeoutExpired as e:
+    except ClaudeCallError as e:
         raise BTGenerationError(
-            f"Claude invocation timed out after {timeout_s}s for {consultation_id}"
+            f"Claude call failed for {consultation_id}: {e}"
         ) from e
 
-    elapsed = time.time() - t0
-
-    if result.returncode != 0:
-        raise BTGenerationError(
-            f"Claude exit code {result.returncode} for {consultation_id}; "
-            f"stderr: {result.stderr[:500]}"
-        )
-
-    # Parse outer wrapper (Claude CLI's JSON output format)
-    try:
-        outer = json.loads(result.stdout)
-    except json.JSONDecodeError as e:
-        raise BTGenerationError(
-            f"Claude stdout for {consultation_id} is not JSON: {e}; "
-            f"head: {result.stdout[:300]}"
-        ) from e
-
-    if outer.get("is_error"):
-        raise BTGenerationError(
-            f"Claude reported error for {consultation_id}: "
-            f"subtype={outer.get('subtype')} result={outer.get('result', '')[:300]}"
-        )
-
-    inner_text = outer.get("result", "")
-    if not inner_text:
-        raise BTGenerationError(
-            f"Claude returned empty result for {consultation_id}"
-        )
-
-    # Strip code fences if present, then parse as the BT response dict
-    inner_text = _strip_code_fences(inner_text)
+    inner_text = _strip_code_fences(raw_text)
     try:
         bt = json.loads(inner_text)
     except json.JSONDecodeError as e:
         raise BTGenerationError(
-            f"BT JSON for {consultation_id} parse failed: {e}; "
-            f"head: {inner_text[:300]}"
+            f"BT JSON for {consultation_id} parse failed: {e}; head: {inner_text[:300]}"
         ) from e
 
     _validate_bt(bt, consultation_id)
 
-    cost_info = outer.get("total_cost_usd", 0)
     logger.info(
-        f"bt_generator: success for {consultation_id} in {elapsed:.1f}s "
-        f"(api-equivalent cost ${cost_info:.3f}, "
-        f"screen_type={bt.get('screen_type')}, "
-        f"root_type={bt['tree'].get('type')})"
+        f"bt_generator: success for {consultation_id} in {meta['elapsed_wall_s']:.1f}s "
+        f"(turns={meta['num_turns']}, api-equivalent cost "
+        f"${meta['total_cost_usd']:.3f}, "
+        f"screen_type={bt.get('screen_type')}, root_type={bt['tree'].get('type')})"
     )
     return bt

@@ -1,45 +1,21 @@
-# STATUS: FROZEN. Verified 2026-02-19. Do not modify.
-"""
-Gemini API image analysis for content extraction.
+"""Image content extraction via Claude Opus 4.7.
 
-Phase 5: Extract text descriptions from lesson images/diagrams.
-Spark provides COMPUTE only - Mac stores results locally.
+Given an image, returns a structured description (text, equations, diagrams,
+question, choices). Used by /api/v1/extract_image when something downstream
+needs to describe a screenshot or cropped region.
 
-Uses Gemini 2.5 Pro with model cascade for rate limit handling.
+History: originally targeted Gemini 2.5 Pro. Swapped to Claude Opus 4.7 on
+2026-05-12 per Jesse — no Gemini path anywhere.
 """
 
 import base64
 import json
 import struct
-from pathlib import Path
 from typing import Optional, Tuple
 
-import google.generativeai as genai
+from spark.tasks.claude_runner import call_claude_cli, ClaudeCallError
 
-# =============================================================================
-# CONFIGURATION
-# =============================================================================
-from .paths import SECRETS_PATH
-MIN_IMAGE_SIZE = 32  # Minimum image dimension
-
-# Load API key
-def _load_api_key() -> str:
-    if SECRETS_PATH.exists():
-        secrets = json.loads(SECRETS_PATH.read_text())
-        return secrets.get("gemini_api_key", "")
-    return ""
-
-# Configure Gemini
-_api_key = _load_api_key()
-if _api_key:
-    genai.configure(api_key=_api_key)
-
-# Model cascade: Pro → Pro (single model, no fallback)
-MODELS = {
-    "primary": "gemini-2.5-pro",
-    "heavy": "gemini-2.5-pro",
-    "fallback": "gemini-2.5-pro",
-}
+MIN_IMAGE_SIZE = 32  # Minimum image dimension to bother analyzing
 
 EXTRACTION_PROMPT = """Extract from this educational screenshot:
 1. ALL visible text (complete OCR) - preserve exact formatting, equations, numbers, symbols
@@ -47,7 +23,7 @@ EXTRACTION_PROMPT = """Extract from this educational screenshot:
 3. Describe any diagrams, charts, or images
 4. Identify the question being asked and answer choices if present
 
-Return as JSON:
+Return as JSON ONLY (no markdown fences, no commentary):
 {
     "text_content": "all visible text exactly as written",
     "equations": ["LaTeX equations if any"],
@@ -59,10 +35,8 @@ Return as JSON:
 
 
 def get_image_dimensions(image_b64: str) -> Tuple[int, int]:
-    """
-    Extract image dimensions from base64-encoded PNG/JPEG.
-    Returns: (width, height) or (0, 0) if cannot determine.
-    """
+    """Extract image dimensions from base64-encoded PNG/JPEG.
+    Returns: (width, height) or (0, 0) if cannot determine."""
     try:
         image_data = base64.b64decode(image_b64)
 
@@ -100,8 +74,7 @@ async def extract_image_content(
     purpose: Optional[str] = None,
     context: Optional[str] = None
 ) -> dict:
-    """
-    Analyze image with Gemini API.
+    """Analyze image content with Claude Opus 4.7 vision.
 
     Args:
         image_b64: Base64-encoded image (PNG/JPEG)
@@ -113,18 +86,9 @@ async def extract_image_content(
             "success": True,
             "description": "Text description of image content",
             "content_type": "diagram|equation|text|photo|chart",
-            "extracted": { full JSON response from Gemini }
+            "extracted": { full JSON response from the model }
         }
     """
-    if not _api_key:
-        return {
-            "success": False,
-            "error": "Gemini API key not configured",
-            "description": "",
-            "content_type": "unknown"
-        }
-
-    # Validate image dimensions
     width, height = get_image_dimensions(image_b64)
     if width > 0 and height > 0:
         if width < MIN_IMAGE_SIZE or height < MIN_IMAGE_SIZE:
@@ -132,76 +96,82 @@ async def extract_image_content(
                 "success": False,
                 "error": f"Image too small ({width}x{height}). Minimum {MIN_IMAGE_SIZE}x{MIN_IMAGE_SIZE}.",
                 "description": "",
-                "content_type": "unknown"
+                "content_type": "unknown",
             }
 
-    # Build prompt with context if available
     prompt = EXTRACTION_PROMPT
     if context:
         prompt += f"\n\nCourse context: {context}"
 
-    # Decode image for Gemini
-    image_data = base64.b64decode(image_b64)
+    import asyncio
+    loop = asyncio.get_event_loop()
 
-    # Determine mime type
-    if image_data[:8] == b'\x89PNG\r\n\x1a\n':
-        mime_type = "image/png"
-    else:
-        mime_type = "image/jpeg"
-
-    # Single model call — no cascade. Rate limit = fail loudly.
-    try:
-        model = genai.GenerativeModel(MODELS["primary"])
-
-        response = model.generate_content(
-            [
-                prompt,
-                {"mime_type": mime_type, "data": image_data}
-            ],
-            generation_config={"response_mime_type": "application/json"}
-        )
-
-        # Parse JSON response
+    def _do():
         try:
-            extracted = json.loads(response.text)
-        except json.JSONDecodeError:
-            extracted = {"text_content": response.text}
+            return call_claude_cli(
+                system_prompt="You extract structured information from educational screenshots. Reply with ONLY the JSON object — no markdown fences, no commentary.",
+                user_message=prompt,
+                screenshot_b64=image_b64,
+                require_screenshot_read=True,
+            )
+        except ClaudeCallError as e:
+            return None, {"error": str(e)}
 
-        # Build description from extracted content
-        description_parts = []
-        if extracted.get("text_content"):
-            description_parts.append(f"Text: {extracted['text_content']}")
-        if extracted.get("question"):
-            description_parts.append(f"Question: {extracted['question']}")
-        if extracted.get("diagrams"):
-            description_parts.append(f"Visual: {extracted['diagrams']}")
-        if extracted.get("equations"):
-            description_parts.append(f"Equations: {', '.join(extracted['equations'])}")
-
-        description = "\n".join(description_parts) if description_parts else response.text
-
-        # Classify content type
-        content_type = extracted.get("question_type", "unknown")
-        if content_type == "unknown":
-            if extracted.get("equations"):
-                content_type = "equation"
-            elif extracted.get("diagrams"):
-                content_type = "diagram"
-            else:
-                content_type = "text"
-
-        return {
-            "success": True,
-            "description": description,
-            "content_type": content_type,
-            "extracted": extracted,
-            "model_used": MODELS["primary"]
-        }
-
+    try:
+        raw, meta = await loop.run_in_executor(None, _do)
     except Exception as e:
         return {
             "success": False,
             "error": str(e),
             "description": "",
-            "content_type": "unknown"
+            "content_type": "unknown",
         }
+
+    if raw is None:
+        return {
+            "success": False,
+            "error": meta.get("error", "Claude call failed"),
+            "description": "",
+            "content_type": "unknown",
+        }
+
+    raw = raw.strip()
+    if raw.startswith("```"):
+        raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
+        if raw.endswith("```"):
+            raw = raw[:-3]
+        raw = raw.strip()
+
+    try:
+        extracted = json.loads(raw)
+    except json.JSONDecodeError:
+        extracted = {"text_content": raw}
+
+    description_parts = []
+    if extracted.get("text_content"):
+        description_parts.append(f"Text: {extracted['text_content']}")
+    if extracted.get("question"):
+        description_parts.append(f"Question: {extracted['question']}")
+    if extracted.get("diagrams"):
+        description_parts.append(f"Visual: {extracted['diagrams']}")
+    if extracted.get("equations"):
+        description_parts.append(f"Equations: {', '.join(extracted['equations'])}")
+
+    description = "\n".join(description_parts) if description_parts else raw
+
+    content_type = extracted.get("question_type", "unknown")
+    if content_type == "unknown":
+        if extracted.get("equations"):
+            content_type = "equation"
+        elif extracted.get("diagrams"):
+            content_type = "diagram"
+        else:
+            content_type = "text"
+
+    return {
+        "success": True,
+        "description": description,
+        "content_type": content_type,
+        "extracted": extracted,
+        "model_used": meta.get("model", "claude-opus-4-7"),
+    }

@@ -1,8 +1,12 @@
 """
-Screen classification + BT building via Gemini API.
+Screen classification + BT building via Claude (Opus 4.7, via CLI subscription).
 
   classify_screen()     — "What type of screen is this?" → one of 6 categories
-  build_bt_from_tree()  — Gemini builds a screen-specific BT from tree + screenshot
+  build_bt_from_tree()  — Claude builds a screen-specific BT from tree + screenshot
+
+History: this module originally targeted Gemini 2.5 Pro. Swapped to Claude
+Opus 4.7 on 2026-05-12 (per Jesse — Opus has stronger vision + reasoning for
+LMS screens). All LLM calls now go through spark.tasks.claude_runner.
 """
 
 import base64
@@ -13,6 +17,7 @@ from typing import Optional
 
 from spark.tasks.prune_tree import prune_tree_for_prompt
 from spark.tasks.prompt_codex import _find_web_area
+from spark.tasks.claude_runner import call_claude_cli, ClaudeCallError
 
 logger = logging.getLogger(__name__)
 
@@ -114,31 +119,8 @@ def classify_screen(
             "error": "..." (only if success=False)
         }
     """
+    raw = ""
     try:
-        import google.generativeai as genai
-        from .paths import SECRETS_PATH
-
-        secrets_path = SECRETS_PATH
-        if not secrets_path.exists():
-            logger.error(f"classify_screen: secrets file missing at {secrets_path}")
-            return {
-                "success": False,
-                "screen_type": "UNKNOWN",
-                "error": "Gemini API key not configured",
-            }
-
-        secrets = json.loads(secrets_path.read_text())
-        api_key = secrets.get("gemini_api_key", "")
-        if not api_key:
-            logger.error("classify_screen: Gemini API key empty")
-            return {
-                "success": False,
-                "screen_type": "UNKNOWN",
-                "error": "Gemini API key empty",
-            }
-
-        genai.configure(api_key=api_key)
-
         # Build category descriptions
         categories_text = "\n".join(
             f"- **{name}**: {desc}" for name, desc in SCREEN_CATEGORIES.items()
@@ -174,27 +156,16 @@ def classify_screen(
             tree_json=tree_json,
         )
 
-        # Build content parts: prompt + optional screenshot
-        content_parts = [prompt]
-        if screenshot_b64:
-            try:
-                image_data = base64.b64decode(screenshot_b64)
-                mime_type = "image/png" if image_data[:8] == b'\x89PNG\r\n\x1a\n' else "image/jpeg"
-                content_parts.append({"mime_type": mime_type, "data": image_data})
-                logger.info("classify_screen: sending tree + screenshot to Gemini")
-            except Exception as e:
-                logger.warning(f"classify_screen: screenshot decode failed ({e}), sending tree only")
-        else:
-            logger.info("classify_screen: no screenshot, sending tree only")
+        logger.info(
+            f"classify_screen: invoking Claude (has_screenshot={'yes' if screenshot_b64 else 'no'})"
+        )
+        raw, _meta = call_claude_cli(
+            system_prompt="You classify educational-platform screens. Reply with ONLY the JSON object the user asks for — no markdown, no commentary.",
+            user_message=prompt,
+            screenshot_b64=screenshot_b64,
+            require_screenshot_read=bool(screenshot_b64),
+        )
 
-        # Call Gemini
-        model = genai.GenerativeModel("gemini-2.5-pro")
-        response = model.generate_content(content_parts)
-        raw = response.text.strip()
-
-        logger.info(f"classify_screen: Gemini 2.5 Pro response len={len(raw)}")
-
-        # Parse JSON response
         # Strip markdown code fences if present
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
@@ -208,7 +179,7 @@ def classify_screen(
         # Validate screen_type is one of our categories
         if screen_type not in SCREEN_CATEGORIES:
             logger.warning(
-                f"classify_screen: Gemini returned invalid type '{screen_type}', "
+                f"classify_screen: model returned invalid type '{screen_type}', "
                 f"defaulting to UNKNOWN"
             )
             screen_type = "UNKNOWN"
@@ -226,15 +197,22 @@ def classify_screen(
             "platform_variant": result.get("platform_variant", ""),
         }
 
+    except ClaudeCallError as e:
+        logger.error(f"classify_screen: Claude call failed: {e}")
+        return {
+            "success": False,
+            "screen_type": "UNKNOWN",
+            "error": str(e),
+        }
     except json.JSONDecodeError as e:
-        logger.error(f"classify_screen: Failed to parse Gemini JSON: {e}, raw={raw[:200]}")
+        logger.error(f"classify_screen: Failed to parse model JSON: {e}, raw={raw[:200]}")
         return {
             "success": False,
             "screen_type": "UNKNOWN",
             "error": f"JSON parse error: {e}",
         }
     except Exception as e:
-        logger.error(f"classify_screen: Gemini API error: {e}")
+        logger.error(f"classify_screen: unexpected error: {e}")
         return {
             "success": False,
             "screen_type": "UNKNOWN",
@@ -244,44 +222,27 @@ def classify_screen(
 
 def _gemini_api_call(prompt: str, screenshot_b64: Optional[str] = None,
                      model_name: str = "gemini-2.5-pro") -> Optional[str]:
-    """Make a Gemini API call. Returns raw response text or None on error.
+    """Single-shot LLM call. Name retained for back-compat with the original
+    Gemini callers — now routes through Claude Opus 4.7 via the CLI runner.
 
-    Args:
-        model_name: Which Gemini model to use. Default is gemini-2.5-pro.
+    The model_name parameter is ignored (kept for signature stability).
+
+    Returns raw response text, or None on any failure.
     """
     try:
-        import google.generativeai as genai
-        from .paths import SECRETS_PATH
-
-        secrets_path = SECRETS_PATH
-        if not secrets_path.exists():
-            logger.error(f"Gemini API key not configured (secrets at {secrets_path} missing)")
-            return None
-
-        secrets = json.loads(secrets_path.read_text())
-        api_key = secrets.get("gemini_api_key", "")
-        if not api_key:
-            logger.error("Gemini API key empty")
-            return None
-
-        genai.configure(api_key=api_key)
-
-        content_parts = [prompt]
-        if screenshot_b64:
-            try:
-                image_data = base64.b64decode(screenshot_b64)
-                mime_type = "image/png" if image_data[:8] == b'\x89PNG\r\n\x1a\n' else "image/jpeg"
-                content_parts.append({"mime_type": mime_type, "data": image_data})
-            except Exception:
-                pass
-
-        model = genai.GenerativeModel(model_name)
-        logger.info(f"Gemini API call: model={model_name}, prompt_len={len(prompt)}")
-        response = model.generate_content(content_parts)
-        return response.text.strip()
-
+        raw, _meta = call_claude_cli(
+            system_prompt="You are an automation engineer for an educational-platform Mac app. Reply with ONLY what the user prompt asks for — no markdown fences, no extra commentary.",
+            user_message=prompt,
+            screenshot_b64=screenshot_b64,
+            require_screenshot_read=bool(screenshot_b64),
+        )
+        logger.info(f"LLM call ok: prompt_len={len(prompt)}, response_len={len(raw)}")
+        return raw.strip()
+    except ClaudeCallError as e:
+        logger.error(f"LLM call failed: {e}")
+        return None
     except Exception as e:
-        logger.error(f"Gemini API error ({model_name}): {e}")
+        logger.error(f"LLM call unexpected error: {e}")
         return None
 
 

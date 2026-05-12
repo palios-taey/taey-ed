@@ -183,10 +183,19 @@ async def stripe_webhook(request: Request):
     return {"received": True}
 
 
-def _handle_checkout_completed(session: dict) -> dict:
-    """Process a successful checkout.session.completed event."""
+def _handle_checkout_completed(session) -> dict:
+    """Process a successful checkout.session.completed event.
+
+    `session` is a stripe.checkout.Session object reconstructed from the
+    webhook payload. Stripe objects are dict-like via subscription syntax
+    (session["id"]) but newer SDK versions removed the legacy `.get()`
+    method on them — convert to a plain dict first.
+    """
+    session = dict(session) if not isinstance(session, dict) else session
     session_id = session.get("id")
     metadata = session.get("metadata") or {}
+    if not isinstance(metadata, dict):
+        metadata = dict(metadata)
     user_id = metadata.get("taey_ed_user_id")
     credits_str = metadata.get("taey_ed_credits")
     amount_total = session.get("amount_total", 0)  # cents

@@ -332,35 +332,14 @@ async def _solve_matching_with_gemini(
 # GEMINI TEXT-ONLY: Primary model for factual Q&A
 # =============================================================================
 
-_gemini_configured = False
-_gemini_api_key = None
-
-
 def _ensure_gemini():
-    """DEPRECATED 2026-05-12. Kept as a no-op to keep this module importable
-    without the google.generativeai dependency present in the venv. Returns
-    False so any legacy caller falls through cleanly."""
+    """REMOVED 2026-05-12. All LLM calls now route through Claude Opus 4.7
+    via spark.tasks.claude_runner. This stub remains only to keep the module
+    importable for any legacy caller; always returns False."""
     return False
-    # ── unreachable below; preserved for archaeology ──
-    global _gemini_configured, _gemini_api_key  # noqa: F821
-    if _gemini_configured:
-        return _gemini_api_key is not None
-
-    _gemini_configured = True
+    # vestigial body kept solely so the indentation parser inside this
+    # try/except chain doesn't blow up; real callers have all been migrated.
     try:
-        from pathlib import Path
-        from .paths import SECRETS_PATH
-        secrets_path = SECRETS_PATH
-        if not secrets_path.exists():
-            logger.warning("Gemini API key not found (palios-taey-secrets.json missing)")
-            return False
-        secrets = json.loads(secrets_path.read_text())
-        _gemini_api_key = secrets.get("gemini_api_key", "")
-        if not _gemini_api_key:
-            logger.warning("Gemini API key empty in secrets file")
-            return False
-        import google.generativeai as genai
-        genai.configure(api_key=_gemini_api_key)
         return True
     except Exception as e:
         logger.warning(f"Gemini setup failed: {e}")
@@ -380,35 +359,24 @@ async def _solve_with_gemini(prompt: str, screenshot_b64: str = None) -> Optiona
 
 
 async def _solve_with_claude_cli(prompt: str, timeout: int = 120) -> Optional[str]:
-    """
-    Send a text-only prompt to Claude CLI (Opus 4.7) and return the raw answer.
+    """Text-only prompt → Claude Opus 4.7 → answer text. Delegates to
+    spark.tasks.claude_runner.call_claude_cli."""
+    from spark.tasks.claude_runner import call_claude_cli, ClaudeCallError
+    import asyncio as _aio
 
-    Uses the Claude Code CLI installed on this machine. Strips CLAUDECODE env
-    var to avoid nested-session issues.
-    """
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "env", "-u", "CLAUDECODE", "claude",
-            "--print",
-            "--model", CLAUDE_CLI_MODEL,
-            "--permission-mode", "bypassPermissions",
-            "-p", prompt,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        raw = stdout.decode().strip()
-        if raw:
-            logger.info(f"Claude CLI ({CLAUDE_CLI_MODEL}) answered, len={len(raw)}")
+    def _do():
+        try:
+            raw, _meta = call_claude_cli(
+                system_prompt="You are answering an educational quiz question. Reply with ONLY the answer in the exact format the user prompt requests — no preamble, no markdown fences.",
+                user_message=prompt,
+                timeout_s=timeout,
+            )
             return raw
-        logger.warning(f"Claude CLI empty response, stderr={stderr.decode()[:200]}")
-        return None
-    except asyncio.TimeoutError:
-        logger.error(f"Claude CLI timed out after {timeout}s")
-        return None
-    except Exception as e:
-        logger.error(f"Claude CLI error: {e}")
-        return None
+        except ClaudeCallError as e:
+            logger.error(f"_solve_with_claude_cli: {e}")
+            return None
+
+    return await _aio.get_event_loop().run_in_executor(None, _do)
 
 
 async def _solve_with_claude_cli_image(
@@ -416,86 +384,27 @@ async def _solve_with_claude_cli_image(
     screenshot_b64: Optional[str],
     timeout: int = 180,
 ) -> Optional[str]:
-    """
-    Send a prompt + optional screenshot to Claude CLI (Opus 4.7) and return
-    the raw answer.
+    """Prompt + optional screenshot → Claude Opus 4.7 → answer text. The
+    runner writes screenshot_b64 to a temp file, tells Claude to Read it,
+    and verifies via num_turns that Read was actually invoked."""
+    from spark.tasks.claude_runner import call_claude_cli, ClaudeCallError
+    import asyncio as _aio
 
-    Per Jesse 2026-05-12: this is the only LLM path; Gemini is not used.
-    For VLM cases, the screenshot is written to /tmp/ and the prompt
-    instructs Claude to Read it. Permission-mode bypass lets Read fire
-    without prompting. The temp file is unlinked after the call.
-    """
-    if not screenshot_b64:
-        return await _solve_with_claude_cli(prompt, timeout=timeout)
-
-    import base64
-    import tempfile
-    import os as _os
-
-    try:
-        image_data = base64.b64decode(screenshot_b64)
-    except Exception as e:
-        logger.error(f"_solve_with_claude_cli_image: bad b64: {e}")
-        return None
-
-    is_png = image_data[:8] == b"\x89PNG\r\n\x1a\n"
-    suffix = ".png" if is_png else ".jpg"
-
-    fd, img_path = tempfile.mkstemp(prefix="taey-llm-", suffix=suffix, dir="/tmp")
-    try:
-        with _os.fdopen(fd, "wb") as f:
-            f.write(image_data)
-
-        full_prompt = (
-            f"Use your Read tool on this image first: {img_path}\n"
-            f"After reading it, answer the following based on BOTH the image "
-            f"and the text below. Output ONLY the answer in the exact format "
-            f"the instructions request — no preamble, no markdown fences.\n\n"
-            f"{prompt}"
-        )
-
-        logger.info(
-            f"_solve_with_claude_cli_image: invoking Claude CLI "
-            f"({CLAUDE_CLI_MODEL}) with image {img_path} "
-            f"({len(image_data)} bytes)"
-        )
+    def _do():
         try:
-            proc = await asyncio.create_subprocess_exec(
-                "env", "-u", "CLAUDECODE", "claude",
-                "--print",
-                "--model", CLAUDE_CLI_MODEL,
-                "--permission-mode", "bypassPermissions",
-                "-p", full_prompt,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+            raw, _meta = call_claude_cli(
+                system_prompt="You are answering an educational quiz question using both the screenshot and the prompt below. Reply with ONLY the answer in the exact format the prompt requests — no preamble, no markdown fences.",
+                user_message=prompt,
+                screenshot_b64=screenshot_b64,
+                timeout_s=timeout,
+                require_screenshot_read=bool(screenshot_b64),
             )
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(), timeout=timeout
-            )
-            raw = stdout.decode().strip()
-            if raw:
-                logger.info(
-                    f"_solve_with_claude_cli_image: answered, len={len(raw)}"
-                )
-                return raw
-            logger.warning(
-                f"_solve_with_claude_cli_image: empty response, "
-                f"stderr={stderr.decode()[:200]}"
-            )
+            return raw
+        except ClaudeCallError as e:
+            logger.error(f"_solve_with_claude_cli_image: {e}")
             return None
-        except asyncio.TimeoutError:
-            logger.error(
-                f"_solve_with_claude_cli_image: timed out after {timeout}s"
-            )
-            return None
-        except Exception as e:
-            logger.error(f"_solve_with_claude_cli_image: error: {e}")
-            return None
-    finally:
-        try:
-            _os.unlink(img_path)
-        except OSError:
-            pass
+
+    return await _aio.get_event_loop().run_in_executor(None, _do)
 
 
 # =============================================================================

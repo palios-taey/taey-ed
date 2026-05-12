@@ -264,7 +264,7 @@ COMPLETE BT PATTERN:
         "target": "$llm.answer",
         "role": "AXRadioButton",
         "strategy": "focus_space",
-        "match_mode": "contains"
+        "match_mode": "exact"
       }
     },
     {
@@ -372,7 +372,7 @@ COMPLETE BT PATTERN:
           "target": "$sel",
           "role": "AXCheckBox",
           "strategy": "focus_space",
-          "match_mode": "contains"
+          "match_mode": "exact"
         }
       }
     },
@@ -515,7 +515,7 @@ COMPLETE BT PATTERN:
         "target": "$nav.answer",
         "role": "AXLink",
         "strategy": "mouse_click",
-        "match_mode": "contains",
+        "match_mode": "exact",
         "post_delay": 3.0
       }
     }
