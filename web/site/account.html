@@ -16,6 +16,16 @@
   </header>
 
   <main>
+    <!-- Email-not-verified banner. Shown when /auth/me returns
+         email_verified=false. The verify endpoint works; whether an
+         email actually gets sent depends on the upstream provider. -->
+    <div id="verify-banner" class="account-card" style="display:none; border-color:#a07a2a; background:rgba(160,122,42,.10)">
+      <h1 style="font-size:1.15rem; margin:0 0 6px">Please confirm your email.</h1>
+      <p class="form-help" style="margin:0">
+        We sent a confirmation link to <span id="banner-email" style="color:var(--fg)"></span>.
+        Click it when you receive it. You can still use the app while we wait.
+      </p>
+    </div>
     <div class="account-card">
       <div class="balance-label">Credit balance</div>
       <div class="balance" id="balance">—</div>
@@ -59,6 +69,10 @@
         return;
       }
       emailEl.textContent = user.email;
+      if (user.email_verified === false) {
+        document.getElementById("banner-email").textContent = user.email;
+        document.getElementById("verify-banner").style.display = "block";
+      }
       await refreshBalance();
     }
 

@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Confirm your email — Taey-Ed</title>
+  <link rel="stylesheet" href="/css/main.css">
+</head>
+<body>
+  <header>
+    <a class="logo" href="/">Taey-Ed</a>
+  </header>
+  <main>
+    <div class="account-card">
+      <h1 id="title">Confirming your email…</h1>
+      <p id="msg" class="form-help">One moment.</p>
+      <div class="row-actions" id="actions" style="display:none">
+        <a href="/account.html" class="btn primary">Go to my account</a>
+        <a href="/login.html" class="btn ghost">Sign in</a>
+      </div>
+    </div>
+  </main>
+  <script src="/js/api.js"></script>
+  <script>
+    const titleEl = document.getElementById("title");
+    const msgEl = document.getElementById("msg");
+    const actionsEl = document.getElementById("actions");
+
+    function showOk() {
+      titleEl.textContent = "Email confirmed.";
+      msgEl.textContent =
+        "Your email is verified. You can now sign in and start using Taey-Ed.";
+      actionsEl.style.display = "flex";
+    }
+    function showErr(text) {
+      titleEl.textContent = "Couldn't confirm this link.";
+      msgEl.textContent = text;
+      actionsEl.style.display = "flex";
+    }
+
+    async function run() {
+      const params = new URLSearchParams(window.location.search);
+      const token = params.get("token");
+      if (!token) {
+        showErr("This page expects a verification token in the URL.");
+        return;
+      }
+      try {
+        // /auth/verify-email is in the public-bypass allowlist — no Bearer.
+        const r = await fetch("https://taey-ed-api.taey.ai/auth/verify-email", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token }),
+        });
+        if (r.ok) { showOk(); return; }
+        if (r.status === 400) {
+          showErr("This link is expired or has already been used. " +
+                  "If you still need to verify, ask for a new email.");
+        } else {
+          showErr(`We hit an unexpected error (HTTP ${r.status}). ` +
+                  `Try again in a moment.`);
+        }
+      } catch (_) {
+        showErr("Couldn't reach the server. Check your connection and try again.");
+      }
+    }
+    run();
+  </script>
+</body>
+</html>
