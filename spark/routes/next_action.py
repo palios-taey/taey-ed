@@ -94,6 +94,7 @@ def _maybe_claude_consult(
         screenshot_b64=request.screenshot_b64,
         screen_type=screen_type,
         user_guidance=combined,
+        relevant_kb_chunks=request.relevant_kb_chunks,
     )
     return _consultation_or_wait(consult_result)
 

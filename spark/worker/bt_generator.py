@@ -166,6 +166,37 @@ def generate_bt(
         is_reconsultation=bool(metadata.get("failure_reason")),
     )
 
+    # Inject relevant KB chunks (Phase 3 — DeepTutor retrieval) if the Mac
+    # attached any. Local KB lives on the user's Mac; only top-K chunks
+    # selected by local similarity search travel here. Per LAUNCH_PLAN v4
+    # §0 user-sovereignty principle.
+    kb_chunks = metadata.get("relevant_kb_chunks") or []
+    if kb_chunks:
+        kb_section_lines = [
+            "",
+            "=== RELEVANT COURSE CONTEXT (from user's local DeepTutor KB) ===",
+            "",
+            f"The user has been studying this course. {len(kb_chunks)} chunk(s) "
+            "from prior screens (videos / articles) matched this question by "
+            "semantic similarity. Use these as supporting context when generating "
+            "the BT — especially for EXERCISE screens where send_to_llm needs to "
+            "be told what the user has been taught:",
+            "",
+        ]
+        for i, chunk in enumerate(kb_chunks[:5]):  # cap at top-5 defensively
+            src_type = chunk.get("source_screen_type", "?")
+            score = chunk.get("score")
+            score_str = f" (score={score:.3f})" if isinstance(score, float) else ""
+            text = chunk.get("text", "").strip()[:1500]
+            kb_section_lines.append(f"--- chunk {i+1} [{src_type}]{score_str} ---")
+            kb_section_lines.append(text)
+            kb_section_lines.append("")
+        system_prompt = system_prompt + "\n".join(kb_section_lines)
+        logger.info(
+            f"bt_generator: injected {len(kb_chunks)} KB chunk(s) into prompt "
+            f"for {consultation_id}"
+        )
+
     has_failure_log = (consult_dir / "bt_debug.log").exists()
     user_instruction = _build_user_instruction(consultation_id, has_failure_log)
 

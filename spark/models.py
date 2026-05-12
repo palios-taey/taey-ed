@@ -154,6 +154,28 @@ class LastResult(BaseModel):
     failed_bt: Optional[dict] = None  # BT that failed on Mac, sent for Gemini context
 
 
+class KBChunk(BaseModel):
+    """A relevant chunk retrieved from the user's local DeepTutor KB.
+
+    The Mac app captures content during VIDEO/ARTICLE screens, embeds via
+    /api/v1/embed (Qwen3 3072d), and stores (text, vector) pairs locally.
+    At EXERCISE time, the Mac embeds the question, runs local similarity
+    search, and attaches the top-K matching chunks to the consultation
+    request as `relevant_kb_chunks`. The BT generator includes them in the
+    Claude prompt as retrieved context.
+
+    Per LAUNCH_PLAN v4 §4 Gap E and §0 user-sovereignty principle: the KB
+    stays on the user's Mac. Only top-K relevant text chunks travel to the
+    central server, never the whole KB.
+    """
+    source_screen_type: str  # "VIDEO" | "ARTICLE"
+    source_screen_id: Optional[str] = None  # opaque stable hash from the Mac
+    captured_at: Optional[str] = None  # ISO-8601
+    text: str  # the actual chunk text (≤1500 chars per chunk recommended)
+    score: Optional[float] = None  # cosine similarity to query, 0..1
+    kb_chunk_id: Optional[str] = None  # opaque local-only ID
+
+
 class NextActionRequest(BaseModel):
     session_id: str
     platform: str
@@ -162,3 +184,7 @@ class NextActionRequest(BaseModel):
     client_state: Optional[ClientState] = None
     last_result: Optional[LastResult] = None
     chat_message: Optional[str] = None  # Proactive user message from chat panel
+    # Top-K relevant chunks from the user's local DeepTutor KB. Mac runs
+    # similarity search locally before posting the consultation request.
+    # Max 5 chunks per request to keep prompt size bounded.
+    relevant_kb_chunks: Optional[List[KBChunk]] = None

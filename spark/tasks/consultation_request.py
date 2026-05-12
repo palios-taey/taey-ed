@@ -352,6 +352,7 @@ def request_minimal_consultation(
     screenshot_b64: str,
     screen_type: str = "UNKNOWN",
     user_guidance: str | None = None,
+    relevant_kb_chunks: list | None = None,
 ) -> dict:
     """
     Bypass-Gemini consultation for Claude-primary platforms.
@@ -400,9 +401,18 @@ def request_minimal_consultation(
 
     atomic_write_json(consult_path / "tree.json", tree)
 
+    # Normalize KB chunks: accept Pydantic models or plain dicts
+    kb_payload = []
+    for ch in (relevant_kb_chunks or []):
+        if hasattr(ch, "model_dump"):
+            kb_payload.append(ch.model_dump())
+        elif isinstance(ch, dict):
+            kb_payload.append(ch)
+
     metadata = {
         "consultation_id": consultation_id,
         "platform": platform,
+        "screen_type_hint": screen_type,
         "screen_hash": compute_tree_hash(tree),
         "context": {
             "screen_type_hint": screen_type,
@@ -412,6 +422,8 @@ def request_minimal_consultation(
         "status": "pending",
         "escalation_level": "claude_primary",
         "spark_attempts": 0,
+        # KB chunks retrieved by the Mac from local DeepTutor KB. May be empty.
+        "relevant_kb_chunks": kb_payload,
     }
     atomic_write_json(consult_path / "metadata.json", metadata)
 
