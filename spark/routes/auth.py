@@ -192,6 +192,36 @@ def me(request: Request):
     return _user_response(user)
 
 
+@router.post("/resend-verification", status_code=202)
+def resend_verification(request: Request):
+    """Re-send the email verification link for the currently logged-in user.
+
+    Idempotent: re-uses the existing verification token (no rotation), so a
+    user can click the button multiple times and any of the resulting links
+    still works. Already-verified users get a 200 with a clear message.
+
+    Returns 202 (accepted) on send attempt; we don't surface Resend's
+    success/failure to the caller because email send is best-effort by
+    design (signup itself doesn't fail when email send fails).
+    """
+    user = _require_user(request)
+    if user.email_verified:
+        return {"status": "already_verified", "email": user.email}
+    token = users.get_verification_token(user.id)
+    if not token:
+        # Shouldn't happen for an unverified user, but defensive.
+        raise HTTPException(
+            status_code=409,
+            detail="No verification token on file for this user; contact support",
+        )
+    try:
+        email_service.send_verification_email(user.email, token)
+    except email_service.EmailError as e:
+        logger.warning(f"resend_verification: send failed for {user.email}: {e}")
+        # Still 202: caller doesn't need to know about transient Resend issues.
+    return {"status": "sent", "email": user.email}
+
+
 @router.get("/verify-email")
 def verify_email(token: str):
     """Consume an email verification token. The link in the verification
