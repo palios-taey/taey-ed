@@ -126,8 +126,10 @@ def create_checkout_session(req: CreateCheckoutRequest, request: Request):
         users.set_stripe_customer_id(user.id, cust.id)
         stripe_customer_id = cust.id
 
-    success_url = req.success_url or "https://app.taey.ai/checkout/success?session_id={CHECKOUT_SESSION_ID}"
-    cancel_url = req.cancel_url or "https://app.taey.ai/checkout/cancel"
+    # Site uses flat /*.html pages, not nested /checkout/* routes. Without
+    # .html the python http.server returns 404.
+    success_url = req.success_url or "https://app.taey.ai/success.html?session_id={CHECKOUT_SESSION_ID}"
+    cancel_url = req.cancel_url or "https://app.taey.ai/cancel.html"
 
     session = stripe.checkout.Session.create(
         mode="payment",  # one-time, NOT subscription
