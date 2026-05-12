@@ -1,0 +1,181 @@
+"""Consultation worker: poll loop that picks up pending consultations and
+generates BTs via Claude CLI.
+
+Architecture (per LAUNCH_PLAN.md Phase 2 + ChatGPT review):
+  - Polls /tmp/taey-ed-consult/ for consultations with status="pending"
+  - For each: invokes bt_generator.generate_bt() (subprocess to claude --print)
+  - On success: writes response.json + flips metadata.status to "complete"
+  - On failure: writes a user_input_needed BT response so the Mac doesn't hang
+  - Concurrency cap to avoid one hung Claude blocking the queue
+  - Per-job timeout
+  - Cost/budget logging
+
+Run as a separate process from the FastAPI server:
+    python -m spark.worker.run
+or under systemd / supervisor in production.
+
+For DEV / Jesse's interactive testing, this worker should NOT run alongside
+the tmux Spark-Claude path or both will race to produce response.json. The
+env flag TAEY_ED_USE_WORKER=1 in consultation_request.py disables tmux notify
+when set.
+"""
+
+import json
+import logging
+import os
+import time
+from concurrent.futures import ThreadPoolExecutor, Future
+from pathlib import Path
+from typing import Optional
+
+from spark.tasks.atomic_write import atomic_write_json
+from spark.worker.bt_generator import BTGenerationError, generate_bt
+
+logger = logging.getLogger(__name__)
+
+CONSULT_DIR = Path("/tmp/taey-ed-consult")
+POLL_INTERVAL_S = 2.0
+MAX_CONCURRENT_JOBS = 3  # bounded so one hung Claude doesn't stall the queue
+JOB_TIMEOUT_S = 120.0
+
+
+def _list_pending_consultations() -> list[str]:
+    """Return consultation IDs whose metadata.status is 'pending'."""
+    if not CONSULT_DIR.exists():
+        return []
+    pending = []
+    for sub in CONSULT_DIR.iterdir():
+        if not sub.is_dir() or not sub.name.startswith("consult_"):
+            continue
+        meta_path = sub / "metadata.json"
+        response_path = sub / "response.json"
+        if not meta_path.exists():
+            continue
+        # Skip if a response already exists (another path beat us to it,
+        # or a prior worker run already processed it)
+        if response_path.exists():
+            continue
+        try:
+            meta = json.loads(meta_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            continue
+        if meta.get("status") == "pending":
+            pending.append(sub.name)
+    return pending
+
+
+def _write_user_input_needed_fallback(consultation_id: str, reason: str) -> None:
+    """If generation fails, write a fallback response that asks the Mac to
+    stop and prompt the user. Per ChatGPT review: "Automatic fallback to
+    user_input_needed when the worker fails." This avoids the Mac hanging
+    forever waiting for a response.json that will never come.
+    """
+    consult_dir = CONSULT_DIR / consultation_id
+    fallback = {
+        "tree": {
+            "type": "action",
+            "action": "wait",
+            "params": {"seconds": 5.0},
+        },
+        "screen_type": "UNKNOWN",
+        "expected_next": [],
+        "extract": None,
+        "_worker_fallback": True,
+        "_worker_failure_reason": reason,
+    }
+    atomic_write_json(consult_dir / "response.json", fallback)
+    meta_path = consult_dir / "metadata.json"
+    try:
+        meta = json.loads(meta_path.read_text())
+        meta["status"] = "worker_failed"
+        meta["worker_failure_reason"] = reason
+        atomic_write_json(meta_path, meta)
+    except Exception:
+        pass
+    logger.error(
+        f"worker: wrote fallback for {consultation_id} (reason: {reason})"
+    )
+
+
+def _process_one(consultation_id: str) -> None:
+    """Process a single consultation. Catches all errors and writes a fallback
+    on failure so the Mac never hangs."""
+    consult_dir = CONSULT_DIR / consultation_id
+    t0 = time.time()
+    try:
+        bt = generate_bt(consultation_id, timeout_s=JOB_TIMEOUT_S)
+    except BTGenerationError as e:
+        _write_user_input_needed_fallback(consultation_id, str(e))
+        return
+    except Exception as e:
+        _write_user_input_needed_fallback(consultation_id, f"unexpected: {e}")
+        logger.exception(f"worker: unexpected error for {consultation_id}")
+        return
+
+    # Persist the BT response + mark consultation complete.
+    response_path = consult_dir / "response.json"
+    atomic_write_json(response_path, bt)
+    meta_path = consult_dir / "metadata.json"
+    try:
+        meta = json.loads(meta_path.read_text())
+        meta["status"] = "complete"
+        meta["responded_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        meta["responded_by"] = "worker"
+        atomic_write_json(meta_path, meta)
+    except Exception as e:
+        logger.warning(
+            f"worker: response.json written for {consultation_id} but "
+            f"metadata update failed: {e}"
+        )
+
+    elapsed = time.time() - t0
+    logger.info(
+        f"worker: processed {consultation_id} in {elapsed:.1f}s "
+        f"(screen_type={bt.get('screen_type')})"
+    )
+
+
+def run_forever(poll_interval_s: float = POLL_INTERVAL_S) -> None:
+    """Main worker loop. Polls for pending consultations and processes them
+    concurrently up to MAX_CONCURRENT_JOBS.
+    """
+    logger.info(
+        f"consultation worker starting: poll={poll_interval_s}s, "
+        f"concurrency={MAX_CONCURRENT_JOBS}, job_timeout={JOB_TIMEOUT_S}s"
+    )
+    in_flight: dict[str, Future] = {}
+    with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_JOBS) as pool:
+        while True:
+            # Reap completed futures so the in_flight dict doesn't leak
+            for cid in list(in_flight.keys()):
+                fut = in_flight[cid]
+                if fut.done():
+                    # Future.result() re-raises any exception in the worker
+                    # thread; but _process_one catches its own errors, so this
+                    # should never raise. Defensive try/except for any
+                    # truly-unexpected case.
+                    try:
+                        fut.result()
+                    except Exception:
+                        logger.exception(
+                            f"worker: future for {cid} raised unexpectedly"
+                        )
+                    del in_flight[cid]
+
+            # Find new work
+            for cid in _list_pending_consultations():
+                if cid in in_flight:
+                    continue
+                if len(in_flight) >= MAX_CONCURRENT_JOBS:
+                    break
+                logger.info(f"worker: dispatching {cid}")
+                in_flight[cid] = pool.submit(_process_one, cid)
+
+            time.sleep(poll_interval_s)
+
+
+def use_worker_enabled() -> bool:
+    """True iff TAEY_ED_USE_WORKER=1 is set in env. When set, the
+    consultation_request module skips tmux notify and the worker is
+    expected to pick up the consultation."""
+    return os.environ.get("TAEY_ED_USE_WORKER", "").strip() in ("1", "true", "yes")

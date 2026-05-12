@@ -318,9 +318,19 @@ def request_consultation(
             f"with this prompt:\n\n"
             f"\"{consultation_details}\""
         )
-    notify_spark_claude(notification)
 
-    logger.info(f"Consultation created: {consultation_id} at {consult_path}")
+    # When the headless worker is enabled, skip the tmux notify. The worker
+    # polls /tmp/taey-ed-consult/ for pending consultations and processes them
+    # via claude --print subprocess. Per LAUNCH_PLAN.md Phase 2 — replaces the
+    # tmux-to-interactive-Claude path for production scale.
+    from spark.worker.consultation_worker import use_worker_enabled
+    if use_worker_enabled():
+        logger.info(
+            f"Consultation created: {consultation_id} (worker mode — no tmux notify)"
+        )
+    else:
+        notify_spark_claude(notification)
+        logger.info(f"Consultation created: {consultation_id} at {consult_path}")
 
     # Rolling cleanup: keep only 2 most recent completed consultations
     _cleanup_old_consultations(keep=2)
@@ -328,7 +338,10 @@ def request_consultation(
     return {
         "consultation_id": consultation_id,
         "status": "pending",
-        "message": "Spark Claude notified via tmux",
+        "message": (
+            "Worker picks up via poll" if use_worker_enabled()
+            else "Spark Claude notified via tmux"
+        ),
         "path": str(consult_path),
     }
 
@@ -428,9 +441,20 @@ def request_minimal_consultation(
         f"so the next consultation reuses your insight (use record_operational_note "
         f"helper in spark/tasks/knowledge_loader.py if writing programmatically)."
     )
-    notify_spark_claude(notification)
 
-    logger.info(f"Minimal consultation created: {consultation_id} at {consult_path}")
+    # When the headless worker is enabled, skip tmux notify.
+    from spark.worker.consultation_worker import use_worker_enabled
+    if use_worker_enabled():
+        logger.info(
+            f"Minimal consultation created: {consultation_id} "
+            f"(worker mode — no tmux notify)"
+        )
+    else:
+        notify_spark_claude(notification)
+        logger.info(
+            f"Minimal consultation created: {consultation_id} at {consult_path}"
+        )
+
     _cleanup_old_consultations(keep=2)
 
     return {
