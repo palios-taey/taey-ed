@@ -24,7 +24,15 @@ logger = logging.getLogger(__name__)
 
 CLAUDE_BIN = "claude"
 DEFAULT_TIMEOUT_S = 120
-DEFAULT_MAX_BUDGET_USD = 0.50  # cap per invocation; subscription mode bills $0
+
+# Per-call budget cap. On Claude Max subscription, actual spend is $0
+# (subscription covers it). But Claude CLI enforces this cap locally based on
+# API-equivalent cost, and Mira's `claude` install has a hooks/MCP/skills
+# overhead that creates ~50K cache_creation tokens (~$0.35 API equivalent) on
+# every invocation regardless of prompt size. A 0.50 cap was too tight on the
+# margins; 2.00 gives headroom for the system_prompt (24KB compile_prompt
+# output) plus the unavoidable overhead.
+DEFAULT_MAX_BUDGET_USD = 2.00
 
 
 class BTGenerationError(RuntimeError):
