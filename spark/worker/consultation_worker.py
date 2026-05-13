@@ -65,10 +65,14 @@ def _list_pending_consultations() -> list[str]:
 
 
 def _write_user_input_needed_fallback(consultation_id: str, reason: str) -> None:
-    """If generation fails, write a fallback response that asks the Mac to
-    stop and prompt the user. Per ChatGPT review: "Automatic fallback to
-    user_input_needed when the worker fails." This avoids the Mac hanging
-    forever waiting for a response.json that will never come.
+    """If generation fails, write a fallback response that surfaces back to
+    the Mac as user_input_needed. Step 1 of /next_action checks the
+    _worker_fallback flag and converts to a user_input_needed directive
+    instead of execute_tree-ing the (intentionally inert) wait BT here.
+
+    The inert wait BT is kept as the `tree` payload so any legacy reader
+    that still looks at it sees a no-op rather than crashing on a missing
+    key — but the contract is: Step 1 must read `_worker_fallback` first.
     """
     consult_dir = CONSULT_DIR / consultation_id
     fallback = {

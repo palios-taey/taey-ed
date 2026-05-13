@@ -548,6 +548,34 @@ def next_action(request: NextActionRequest):
     if consultation_id:
         consult_status = check_consultation(consultation_id)
         if consult_status.get("status") == "complete":
+            # Worker-fallback contract: when the consultation worker fails to
+            # generate a BT, it writes a response.json with _worker_fallback=True
+            # and an inert wait BT. Convert that here to a real user_input_needed
+            # directive — the Mac should prompt the user, not execute the wait.
+            if consult_status.get("_worker_fallback"):
+                _wf_reason = consult_status.get(
+                    "_worker_failure_reason", "worker failed to generate BT"
+                )
+                from spark.tasks.classify_screen import _describe_screen
+                logger.error(
+                    f"Step 1: worker_fallback for {consultation_id} — "
+                    f"surfacing as user_input_needed. reason={_wf_reason}"
+                )
+                _ui_reason = (
+                    "I couldn't build a plan for this screen automatically. "
+                    f"Tell me what to do here. (reason: {_wf_reason})"
+                )
+                return _with_chat({
+                    "directive": "user_input_needed",
+                    "directive_id": _make_directive_id(),
+                    "reason": _ui_reason,
+                    "screen_type": consult_status.get("screen_type", "UNKNOWN"),
+                    "screen_description": _describe_screen(tree),
+                    "consultation_id": consultation_id,
+                }, platform, [
+                    build_status("Worker couldn't build a plan — need your help"),
+                    build_question(_ui_reason),
+                ])
             tree_def = consult_status.get("tree")
             if tree_def:
                 # Bug #8: Get skeleton_hash from CURRENT tree, not stale consultation
