@@ -111,25 +111,6 @@ def _vertical_third(position: Optional[list], viewport_height: int) -> str:
         return "B"
 
 
-def _bucket(n: int) -> str:
-    """Bucket cardinalities so the skeleton stays stable across courses with
-    different content density on the same template.
-
-    A Khan biology unit with 11 lessons and a Khan chemistry unit with 7
-    lessons render the same skeleton template — only the lesson count
-    differs. Without bucketing, those produce different hashes. With
-    bucketing, the same template hashes the same regardless of how many
-    lessons the unit happens to contain.
-    """
-    if n <= 0:
-        return "0"
-    if n == 1:
-        return "1"
-    if n <= 5:
-        return "few"
-    return "many"
-
-
 def _walk(
     node: dict,
     depth: int,
@@ -159,24 +140,18 @@ def _walk(
     indent = "  " * depth
     vt = _vertical_third(position, viewport_height)
 
-    # Note: sibling_idx is intentionally dropped from the emitted line —
-    # it caused the same template to hash differently when sibling counts
-    # varied (Khan biology 11 units vs chemistry 7 units). Position within
-    # the parent is captured via vertical_third instead.
     if role in STRUCTURAL_ROLES:
-        # Structural container: emit role + vt, recurse into children
-        lines.append(f"{indent}{role}@{vt}")
+        # Structural container: emit role + position, recurse into children
+        lines.append(f"{indent}{role}[{sibling_idx}]@{vt}")
         _walk_children(children, depth + 1, viewport_height, lines, max_depth)
 
     elif role in INTERACTIVE_ROLES:
-        # Interactive leaf: emit role + vt; child-count bucketed (matters
-        # qualitatively — "has children" vs "no children" — but exact
-        # count varies with course content).
+        # Interactive leaf: emit role + position, count but don't show text
         child_count = len(children)
         if child_count > 0:
-            lines.append(f"{indent}{role}@{vt}+{_bucket(child_count)}")
+            lines.append(f"{indent}{role}[{sibling_idx}]@{vt}+{child_count}")
         else:
-            lines.append(f"{indent}{role}@{vt}")
+            lines.append(f"{indent}{role}[{sibling_idx}]@{vt}")
 
     elif role in COUNT_ROLES:
         # Text/image: just counted at parent level, don't emit individual lines
@@ -191,7 +166,7 @@ def _walk(
     else:
         # Unknown role: treat as structural if it has children, skip if leaf
         if children:
-            lines.append(f"{indent}{role}@{vt}")
+            lines.append(f"{indent}{role}[{sibling_idx}]@{vt}")
             _walk_children(children, depth + 1, viewport_height, lines, max_depth)
 
 
@@ -216,14 +191,12 @@ def _walk_children(
         elif role not in SKIP_ROLES:
             structural_children.append((i, child))
 
-    # Emit count summaries — bucketed so "5 paragraphs" and "8 paragraphs"
-    # render the same on the same template.
+    # Emit count summaries
     indent = "  " * depth
     for role, count in sorted(counts.items()):
-        lines.append(f"{indent}{role}x{_bucket(count)}")
+        lines.append(f"{indent}{role}x{count}")
 
-    # Recurse into structural/interactive children. sibling_idx is no longer
-    # passed because the per-node line format doesn't include it any more.
+    # Recurse into structural/interactive children
     for i, child in structural_children:
         _walk(child, depth, i, viewport_height, lines, max_depth)
 

@@ -264,19 +264,14 @@ def _store_and_return_bt(result: dict, platform: str, tree: dict, sig_hash: str,
     """Store a Gemini-built BT with the signature and return execute_tree directive."""
     variant_type = result.get("screen_type", "UNKNOWN")
 
-    # Store BT in variant cache for every category. Previously only stored
-    # for "deterministic" types (VIDEO, ARTICLE); EXERCISE/NAVIGATION/TRANSITION
-    # were rebuilt every time. But the BTs for those categories use dynamic
-    # discovery (find_all + send_to_llm + $variable targets), so the BT
-    # template itself IS content-agnostic — only the runtime LLM picks vary.
-    # Per Jesse 2026-05-12: classify per screen, BUT reuse the BT template
-    # so we stop paying the Opus BT-builder cost on every screen.
-    from spark.tasks.variant_cache import store_variant_bt, register_hash
+    # V21: Store BT in variant cache (deterministic types only)
+    from spark.tasks.variant_cache import store_variant_bt, is_non_deterministic, register_hash
     extract_config = result.get("extract")
     try:
-        store_variant_bt(platform, variant_type, result["tree"],
-                         extract_config, result.get("expected_next"),
-                         source="claude_bt")
+        if not is_non_deterministic(variant_type):
+            store_variant_bt(platform, variant_type, result["tree"],
+                             extract_config, result.get("expected_next"),
+                             source="gemini_bt")
         # Register hash → variant if we have a skeleton hash
         if sig_hash:
             register_hash(platform, sig_hash, variant_type)
@@ -918,31 +913,27 @@ def next_action(request: NextActionRequest):
         variant = hash_result["variant"]
         logger.info(f"  Step 4: Hash hit → variant={variant}")
 
-        # Try to reuse stored BT for ANY category. BTs for EXERCISE / NAVIGATION
-        # / TRANSITION use dynamic discovery ($llm.answer, $nav.answer, for_each)
-        # so the BT template is content-agnostic — content variability lives
-        # inside the runtime send_to_llm calls, not in the BT structure. If
-        # reuse fails on a content-mismatch, Step 2/3 recovery routes to a
-        # fresh build automatically.
-        bt_entry = lookup_variant_bt(platform, variant)
-        if bt_entry and bt_entry.get("behavior_tree"):
-            stored_bt = bt_entry["behavior_tree"]
-            bt_json = json.dumps(stored_bt, indent=2)
-            logger.info(f"  Step 4: REUSING BT for {variant} (hash={skel_hash[:12]})")
-            logger.info(f"  Stored BT:\n{bt_json}")
-            return _with_chat({
-                "directive": "execute_tree",
-                "directive_id": _make_directive_id(),
-                "tree": stored_bt,
-                "screen": variant,
-                "skeleton_hash": skel_hash,
-                "extract": bt_entry.get("extract"),
-                "expected_next": bt_entry.get("expected_next", []),
-                "course_id": cs.course_id,
-            }, platform, [build_status(f"Executing {variant} automation")])
+        # For deterministic variants, try to reuse stored BT
+        if not is_non_deterministic(variant):
+            bt_entry = lookup_variant_bt(platform, variant)
+            if bt_entry and bt_entry.get("behavior_tree"):
+                stored_bt = bt_entry["behavior_tree"]
+                bt_json = json.dumps(stored_bt, indent=2)
+                logger.info(f"  Step 4: REUSING BT for {variant} (hash={skel_hash[:12]})")
+                logger.info(f"  Stored BT:\n{bt_json}")
+                return _with_chat({
+                    "directive": "execute_tree",
+                    "directive_id": _make_directive_id(),
+                    "tree": stored_bt,
+                    "screen": variant,
+                    "skeleton_hash": skel_hash,
+                    "extract": bt_entry.get("extract"),
+                    "expected_next": bt_entry.get("expected_next", []),
+                    "course_id": cs.course_id,
+                }, platform, [build_status(f"Executing {variant} automation")])
 
-        # No stored BT for this variant yet — need fresh build
-        logger.info(f"  Step 4B: Hash known as {variant} but no stored BT yet — building")
+        # Non-deterministic variant (EXERCISE) or no stored BT — need Pro
+        logger.info(f"  Step 4B: Hash known as {variant} but needs fresh BT")
         screen_type = variant.split("_")[0] if "_" in variant else variant
         if not request.screenshot_b64:
             return {
