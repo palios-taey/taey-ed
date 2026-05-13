@@ -165,9 +165,7 @@ ESCALATION LEVEL: {escalation_level} (attempt {spark_attempts})
 2. Execution uses TITLE, DESCRIPTION, and ROLE to find elements, NEVER element_id.
    Element IDs in tree.json are for YOUR visual reference only.
 3. NEVER target "Skip" buttons. Exercises must be SOLVED or ESCALATED.
-4. NEVER click "Up next for you!" on Khan Academy nav/course pages — that link is
-   mastery-adaptive and skips content. The post-video "Up next: <video|article>"
-   link is DIFFERENT — that one IS the correct way to advance within a unit.
+4. NEVER click "Up next" on Khan Academy (mastery-adaptive, skips content).
 5. NEVER put a screen in its own expected_next (creates silent infinite loops).
 6. video_poll must be the ONLY action in its tree. No other children.
    Pipeline re-match loop handles screen transitions after video completes.
@@ -585,11 +583,8 @@ CRITICAL: video_poll MUST be the only child. It sleeps 30s and returns
 continue_loop=true. Pipeline re-matches after each poll cycle.
 
 STATE 3 — COMPLETE:
-Signal: Sidebar shows checkmark, "Up next: <item>" link visible, video ended
-BT: Click the "Up next: <item>" link (this advances within the unit — the
-literal accessibility name on Khan is something like "Up next: Article" or
-"Up next: video"). The exact string varies by what comes next, so use a
-contains-match against "Up next:" prefix in this one specific case.
+Signal: Sidebar shows checkmark, "Up next" visible, video ended
+BT: Click "Next" button (NOT "Up next")
 {
   "type": "sequence",
   "children": [
@@ -597,26 +592,21 @@ contains-match against "Up next:" prefix in this one specific case.
       "type": "action",
       "action": "find_and_click",
       "params": {
-        "target": "Up next:",
-        "role": "AXLink",
+        "target": "Next",
+        "role": "AXButton",
         "strategy": "mouse_click",
-        "match_mode": "contains",
         "post_delay": 3.0
       }
     }
   ]
 }
 screen_type: VIDEO_COMPLETE
-expected_next: ["VIDEO_UNSTARTED", "ARTICLE", "EXERCISE_RADIO", "NAVIGATION"]
+expected_next: ["NAVIGATION", "EXERCISE_RADIO", "ARTICLE"]
 
 CARDINAL RULES:
-- NEVER click "Up next for you!" — that's the mastery-adaptive nav recommendation
-  that skips content. The post-video "Up next: <item>" link is the CORRECT one.
+- NEVER click "Up next" on Khan Academy (mastery-adaptive, skips content)
 - NEVER skip or seek (must watch to 100%)
-- Check sidebar completion indicator before marking complete
-- The "Next in course" button advances to the NEXT SECTION, skipping anything
-  unfinished in the current unit. Only click it if there are no more unfinished
-  items in the current unit."""
+- Check sidebar completion indicator before marking complete"""
 
 
 PATTERN_HAS_COMBOBOX = """\
@@ -752,9 +742,7 @@ HOW TO DETERMINE target:
 1. Look at the SCREENSHOT — what button is the clear next action?
 2. Common targets: "Next", "Continue", "Start quiz", "Got it"
 3. Check the tree for the exact button text
-4. NEVER use "Skip" or "Up next for you!" as targets. (Note: "Up next: <item>"
-   on post-video screens is different and IS a valid target — only the
-   exclamation-pointed "Up next for you!" mastery-adaptive link is forbidden.)
+4. NEVER use "Skip" or "Up next" as targets
 
 expected_next: The screen type you'd land on after clicking.
 For "Next" after a score card → NAVIGATION or next EXERCISE.
