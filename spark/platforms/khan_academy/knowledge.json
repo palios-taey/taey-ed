@@ -432,7 +432,7 @@
         },
         "COMPLETE": {
           "tree_signal": "Video ended; replay circular arrow button may appear in player center; full colored progress bar visible below video icon in sidebar; checkmark icon appears on video item in sidebar; energy points fully awarded (750-850); YouTube end screen may show suggested videos (ignore these)",
-          "action": "Click the 'Up next: <title>' AXLink in the lower-right area of the video player to advance to the next activity. Use match_mode=contains with target='Up next:' (the title text varies). DO NOT click 'Next in course' or 'Previous in course' \u2014 those are tiny ~23x25px AXButton arrows at the TOP of the page that do COURSE-WIDE navigation and will skip past the entire current unit. DO NOT click YouTube suggested videos (inside the iframe \u2014 navigate away). DO NOT click 'Video on YouTube' link below the player.",
+          "action": "Use the completion_action prescription (visual-first click_at by tree-read bbox). Look at the screenshot, identify the 'Up next: <title>' AXLink in the lower-right of the video player, read its visible_bbox from the AX tree, output click_at at the bbox center. DO NOT use find_and_click with match_mode=contains \u2014 Jesse's rule (2026-05-14) is exact-match only. DO NOT click 'Next in course' / 'Previous in course' (tiny top-of-page arrows; course-wide nav). DO NOT click YouTube suggested videos or 'Video on YouTube' link.",
           "expected_next": [
             "EXERCISE",
             "ARTICLE",
@@ -440,12 +440,6 @@
             "NAVIGATION",
             "TRANSITION"
           ],
-          "completion_button": {
-            "text": "Up next:",
-            "role": "AXLink",
-            "match_mode": "contains",
-            "note": "Khan renders post-video advancement as 'Up next: <next-item-title>' (lower-right of video player, ~135x40px). Match with mode=contains because the title varies per video. ALWAYS this AXLink, never the 'Next in course' AXButton arrow at top of page."
-          },
           "never_click_extras": [
             {
               "text": "Next in course",
@@ -457,7 +451,20 @@
               "role": "AXButton",
               "reason": "Course-wide navigation arrow. Skips BACKWARD past completed content. Never the right target for advancement."
             }
-          ]
+          ],
+          "completion_action": {
+            "approach": "visual_first_click_at",
+            "rationale": "The 'Up next:' link text varies per video ('Up next: introduction', 'Up next: quadratics', etc.). Per Jesse's rule (2026-05-14): NO match_mode=contains anywhere. For variable-text targets, use click_at with bbox coordinates read from the AX tree at decision time.",
+            "process": [
+              "1. Look at the screenshot. The post-video advancement target is the 'Up next: <title>' link, prominently rendered in the lower-right of the video player area (approximately 135x40 px, AXLink role).",
+              "2. Find that element in the AX tree (it will have role=AXLink and its name will start with 'Up next:').",
+              "3. Read its visible_bbox from the tree node: visible_bbox = [x, y, width, height].",
+              "4. Compute the click target: cx = x + width/2, cy = y + height/2.",
+              "5. Output a BT with action=click_at and params={x: cx, y: cy}. No find_and_click. No contains."
+            ],
+            "fallback_if_no_up_next_link": "Find the next unchecked item in the left sidebar (sidebar items are AXLink with role=AXLink, contained inside the sidebar AXOutline or AXList region). Read its visible_bbox. Output click_at with bbox center.",
+            "anti_pattern": "NEVER use find_and_click with match_mode=contains. NEVER click the small (~23x25 px) 'Next in course' or 'Previous in course' AXButton arrows at the top of the page \u2014 those are course-wide navigation chrome, not lesson advancement."
+          }
         }
       },
       "extraction": {

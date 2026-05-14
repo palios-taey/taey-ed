@@ -955,17 +955,49 @@ SECTION_5_HANDLERS_ORIGINAL = SECTION_5_HANDLERS
 HANDLER_DOCS = {
     "find_and_click": """\
 find_and_click:
-  Purpose: Find element by text/role, then click it
+  Purpose: Find element by EXACT name and click it. Use ONLY for elements
+    whose visible text is stable across visits (e.g., "Check", "Submit",
+    "Continue", "Try again", "Replay Video", "Cancel"). For elements whose
+    text varies between visits (e.g., "Up next: <video-title>", lesson
+    items with course-specific titles, anything with dynamic content),
+    use click_at instead — read the element's visible_bbox from the AX
+    tree at decision time and click by coordinates. Exact-match only;
+    no guessing.
   Params:
-    target (str, required): Text to search for in element name/description
-    role (str, optional): AX role filter (AXButton, AXLink, AXRadioButton, etc.)
-    match_mode (str): "exact" or "contains" (default: exact)
+    target (str, required): Exact name of the element (must literally match).
+    role (str, required): AX role filter (AXButton, AXLink, AXRadioButton, ...).
+    match_mode (str): MUST be "exact" — "contains" is FORBIDDEN per the
+      no-guessing rule. If exact match doesn't fit, switch to click_at.
     strategy (str): "mouse_click" (default, browsers), "focus_space" (radio/checkbox),
-                    "focus_enter" (buttons), "ax_press" (native Mac apps)
-    fallback_roles (list): Alternate roles to try if primary role not found
-    post_delay (float): Seconds to wait after click (default: 0)
+                    "focus_enter" (buttons), "ax_press" (native Mac only — Chrome ignores).
+    post_delay (float): Seconds to wait after click (default: 0).
   Returns: {success: true/false, element: {...}}
-  4-tier fallback: exact→contains→alternate roles→no role filter""",
+  Failure mode: returns success=false if no element matches target+role exactly.
+  When that happens, switch the next BT to click_at — DO NOT relax match_mode.""",
+
+    "click_at": """\
+click_at:
+  Purpose: Click at exact pixel coordinates. THIS IS THE AI-FIRST PATH for
+    any element whose visible text varies between visits. Read the target
+    element's visible_bbox from the AX tree at decision time, compute the
+    bbox center, and click there. No name-matching, no guessing.
+  Params:
+    x (number, required): Window-relative x coordinate (bbox_x + bbox_width/2).
+    y (number, required): Window-relative y coordinate (bbox_y + bbox_height/2).
+    post_delay (float): Seconds to wait after click (default: 0).
+  Returns: {success: true/false}
+  When to use:
+    - 'Up next: <video-title>' AXLink on post-video screens (title varies per video)
+    - Sidebar lesson items with course-specific titles
+    - Any element you can SEE in the screenshot but whose name varies
+    - When find_and_click returned success=false on a previous attempt
+  How to use:
+    1. Look at the screenshot. Identify the target visually.
+    2. Find that element in the AX tree (by role + partial text + position).
+    3. Read its visible_bbox: [x, y, width, height].
+    4. Output: {"action": "click_at", "params": {"x": x+width/2, "y": y+height/2,
+       "post_delay": <appropriate timing>}}
+  Coordinates are in POINTS (not pixels — no Retina scale factor math required).""",
 
     "find_and_type": """\
 find_and_type:
@@ -991,14 +1023,17 @@ find_all:
 
     "click": """\
 click:
-  Purpose: Click element from blackboard variable
+  Purpose: Click element from blackboard variable (element ref from find_all).
   Params:
-    element (ref): Blackboard reference to element dict (e.g., "$_current")
-    target (str): Alternative to element — text to find
-    role (str): Role filter
-    match_mode (str): "exact" or "contains"
-    strategy (str): Click strategy
-  Note: If element is dict from find_all, re-finds fresh by description""",
+    element (ref, required): Blackboard reference to element dict
+      (e.g., "$_current" inside for_each over find_all results).
+    strategy (str): Click strategy ("mouse_click" default for browsers).
+  Note: If element is a dict from find_all, the handler re-finds it fresh
+    by description before clicking. For variable-text targets where you
+    don't have a find_all ref, use click_at with bbox from the tree.
+  match_mode: NOT a parameter here — "contains" is FORBIDDEN per the
+    no-guessing rule. Use click_at if you need to click without an exact
+    element ref.""",
 
     "extract_question": """\
 extract_question:
@@ -1381,11 +1416,37 @@ EXCEPTION: ARIA combobox/listbox (Wonder Blocks SingleSelect, React Aria
   semantic select_dropdown_option handler (see HAS_COMBOBOX), which uses
   the focus_press strategy under the hood.
 
-find_and_click has a 4-tier fallback chain:
-1. Exact match with specified role
-2. Contains match with specified role
-3. Exact/contains with fallback_roles
-4. No role filter (last resort)
+=== AI-FIRST CLICK PROTOCOL (READ THIS FIRST) ===
+
+PER JESSE 2026-05-14: No guessing. No "contains" matching. No fuzzy
+matching. Every click is either (A) find_and_click with EXACT name+role,
+or (B) click_at with coordinates read from the AX tree.
+
+Decide path A vs path B per element:
+
+| Element name varies between visits? | Use |
+|-------------------------------------|-----|
+| No — name is stable (Check, Continue, Try again, Replay Video) | find_and_click with match_mode="exact" |
+| Yes — name varies (Up next: <video-title>, lesson-1, lesson-2, ...) | click_at with bbox from tree |
+| You can see it in the screenshot but not name-match it | click_at with bbox from tree |
+
+How to do click_at (the AI-first path):
+1. Look at the screenshot. Identify the target by visual prominence
+   (role + position + visual hierarchy — "this big link in the lower-right
+   of the video player" or "this checkmarked sidebar item").
+2. Find the element in the AX tree by role + position (NOT by partial-text
+   match — you're using the tree to look up the bbox, not to identify).
+3. Read visible_bbox from the tree node: visible_bbox = [x, y, width, height].
+4. Output click_at with x=bbox_x+width/2, y=bbox_y+height/2.
+
+If find_and_click returns success=false:
+- DO NOT relax match_mode (no "let me try contains").
+- DO switch to click_at: re-read the screenshot, identify the visual target,
+  read its bbox from the tree, click_at the bbox center.
+
+The Mac handler enforces this: find_and_click is exact-only. The Mac's
+historical 4-tier fallback (exact→contains→alt roles→no role) is being
+phased out. Treat it as gone today.
 
 === TIMING (post_delay values) ===
 
@@ -1479,7 +1540,9 @@ YOU MUST:
 
 COMMON FAILURE PATTERNS AND FIXES:
 - "Element not found": Wrong target text or role. Check tree.json for actual
-  element names. Use match_mode: contains if exact match is too strict.
+  element names. DO NOT use match_mode=contains (forbidden per no-guessing
+  rule). Switch to click_at: look at the screenshot, identify the target
+  visually, read its visible_bbox from the AX tree, click_at the bbox center.
 - "Click had no effect": Wrong click strategy. Try mouse_click if focus_space
   failed. Or the element is behind an overlay — check for modals.
 - "Same screen after execute": BT ran but didn't advance. The action target
