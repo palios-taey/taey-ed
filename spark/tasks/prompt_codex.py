@@ -1416,37 +1416,32 @@ EXCEPTION: ARIA combobox/listbox (Wonder Blocks SingleSelect, React Aria
   semantic select_dropdown_option handler (see HAS_COMBOBOX), which uses
   the focus_press strategy under the hood.
 
-=== AI-FIRST CLICK PROTOCOL (READ THIS FIRST) ===
+=== AI-FIRST CLICK PROTOCOL ===
 
-PER JESSE 2026-05-14: No guessing. No "contains" matching. No fuzzy
-matching. Every click is either (A) find_and_click with EXACT name+role,
-or (B) click_at with coordinates read from the AX tree.
+RULE: No contains matching. No fuzzy matching. Every click action is
+either find_and_click with match_mode="exact", or click_at with x/y
+coordinates derived from the AX tree's visible_bbox.
 
-Decide path A vs path B per element:
+Decision table:
 
-| Element name varies between visits? | Use |
-|-------------------------------------|-----|
-| No — name is stable (Check, Continue, Try again, Replay Video) | find_and_click with match_mode="exact" |
-| Yes — name varies (Up next: <video-title>, lesson-1, lesson-2, ...) | click_at with bbox from tree |
-| You can see it in the screenshot but not name-match it | click_at with bbox from tree |
+| Element name stable across visits? | Action |
+|-----------------------------------|--------|
+| Yes (Check, Continue, Try again, Replay Video, Play video) | find_and_click target="<exact>" role="<AX role>" match_mode="exact" |
+| No — name varies (Up next: <title>, lesson links) | click_at x=<bbox_cx> y=<bbox_cy> |
+| Visible in screenshot, name unstable or absent | click_at x=<bbox_cx> y=<bbox_cy> |
 
-How to do click_at (the AI-first path):
-1. Look at the screenshot. Identify the target by visual prominence
-   (role + position + visual hierarchy — "this big link in the lower-right
-   of the video player" or "this checkmarked sidebar item").
-2. Find the element in the AX tree by role + position (NOT by partial-text
-   match — you're using the tree to look up the bbox, not to identify).
-3. Read visible_bbox from the tree node: visible_bbox = [x, y, width, height].
-4. Output click_at with x=bbox_x+width/2, y=bbox_y+height/2.
+click_at bbox derivation: locate the target element node in the AX tree;
+its visible_bbox = [x, y, width, height] gives bbox_cx = x + width/2,
+bbox_cy = y + height/2. These are the click_at parameters. No prose
+reasoning in the output — the output is JSON only (see YOUR RESPONSE
+section). Reason internally; emit JSON.
 
-If find_and_click returns success=false:
-- DO NOT relax match_mode (no "let me try contains").
-- DO switch to click_at: re-read the screenshot, identify the visual target,
-  read its bbox from the tree, click_at the bbox center.
+find_and_click failure handling: if it returns success=false, do NOT
+relax match_mode. Use click_at with the bbox of the visually-correct
+element instead.
 
-The Mac handler enforces this: find_and_click is exact-only. The Mac's
-historical 4-tier fallback (exact→contains→alt roles→no role) is being
-phased out. Treat it as gone today.
+The Mac handler is exact-only. The legacy 4-tier fallback
+(exact→contains→alt roles→no role) is removed.
 
 === TIMING (post_delay values) ===
 
@@ -1466,6 +1461,13 @@ When in doubt, use 2.0s. Too long is slow but works. Too short breaks."""
 
 SECTION_8_RESPONSE = """\
 === YOUR RESPONSE ===
+
+OUTPUT FORMAT: Pure JSON object. No prose preamble. No analysis text.
+No "Looking at the screenshot..." narration. No code fences. No markdown.
+The FIRST character of your response MUST be `{` and the LAST character
+MUST be `}`. Reason internally; emit JSON. If you need to express
+uncertainty or note an open question, put it inside the JSON as a
+"_notes" field — never as free text.
 
 POST to: http://127.0.0.1:5003/api/v1/consult/{{consultation_id}}/respond
 
