@@ -40,6 +40,7 @@ from app.tasks.browser_url import verify_browser_url
 # Local KB integration (Phase 3 — Gap E)
 from app.tasks import local_kb
 from app.tasks.extract_text import extract_text
+from app.tasks.screen_type_util import get_master_category
 
 logger = logging.getLogger("taey-ed")
 
@@ -91,7 +92,7 @@ def _capture_screen_content(
     Best-effort: any failure logs and returns. Never propagates — the
     pipeline must not be blocked by a KB issue.
     """
-    if screen_type not in ("VIDEO", "ARTICLE"):
+    if get_master_category(screen_type) not in ("VIDEO", "ARTICLE"):
         return
     try:
         texts = extract_text(tree)
@@ -497,7 +498,7 @@ def run_continuous(
                             course_id=directive.get("course_id", course_id),
                             screen_type=screen,
                             screen_signature=before_hash,
-                            tree=after_tree,
+                            tree=tree,
                         )
 
                     save_checkpoint(
