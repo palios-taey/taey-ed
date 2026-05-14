@@ -38,6 +38,7 @@ from typing import List, Optional
 import numpy as np
 
 from app.tasks.embedding_client import EMBEDDING_DIMENSION, embed, embed_one
+from app.tasks.screen_type_util import get_master_category
 
 logger = logging.getLogger("taey-ed")
 
@@ -182,7 +183,7 @@ def add_document(
     """
     if not text or not text.strip():
         raise ValueError("add_document: text cannot be empty/whitespace")
-    if source_screen_type not in ("VIDEO", "ARTICLE"):
+    if get_master_category(source_screen_type) not in ("VIDEO", "ARTICLE"):
         raise ValueError(
             f"add_document: source_screen_type must be VIDEO or ARTICLE, got {source_screen_type!r}"
         )
