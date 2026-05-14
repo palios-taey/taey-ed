@@ -57,8 +57,6 @@ def _build_user_instruction(consultation_id: str, has_failure_log: bool) -> str:
 The accessibility tree for the current screen is at:
   /tmp/taey-ed-consult/{consultation_id}/tree.json
 {failure_note}
-Output ONLY the response.json content — no commentary, no markdown fences.
-
 Shape:
 {{
   "tree": <BT root node>,
@@ -67,20 +65,81 @@ Shape:
   "extract": null
 }}
 
-Never click "Skip" mid-exercise; "Up next" only on post-completion transitions."""
+Never click "Skip" mid-exercise; "Up next" only on post-completion transitions.
+
+==============================================================
+OUTPUT FORMAT — READ THIS LAST, FOLLOW THIS FIRST
+==============================================================
+Your ENTIRE response must be a single JSON object. Nothing else.
+
+- NO prose preamble. NO "Based on the screenshot...". NO "Looking at the tree...".
+- NO analysis text before the JSON. NO commentary after.
+- NO markdown. NO code fences. NO ```json wrapper.
+- The FIRST CHARACTER of your response must be an opening brace.
+- The LAST CHARACTER of your response must be a closing brace.
+
+Reason silently. Emit JSON. That is the whole response.
+=============================================================="""
 
 
-def _strip_code_fences(text: str) -> str:
-    """Strip leading/trailing ```json or ``` if Claude wrapped output."""
+def _extract_json_object(text: str) -> str:
+    """Extract the first balanced JSON object from arbitrary text, tolerating
+    prose preamble / trailing commentary / markdown code fences. Returns the
+    JSON substring ready for json.loads().
+
+    Strict instructions in the prompt should prevent Claude from emitting
+    anything besides the JSON object, but long system prompts sometimes lose
+    that battle ("Looking at the screenshot..." leaks through). This is the
+    parser-side safety net so a single preamble token doesn't cost a full
+    consultation + fallback cycle.
+
+    Raises ValueError if no balanced object is found.
+    """
     text = text.strip()
+    # Strip markdown code fences if present
     if text.startswith("```"):
         lines = text.split("\n")
-        if lines[-1].strip() == "```":
+        if lines and lines[-1].strip() == "```":
             lines = lines[1:-1]
         else:
             lines = lines[1:]
         text = "\n".join(lines).strip()
-    return text
+
+    start = text.find("{")
+    if start < 0:
+        raise ValueError("no JSON object found in response (no opening brace)")
+
+    depth = 0
+    in_string = False
+    escape = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if escape:
+            escape = False
+            continue
+        if in_string:
+            if ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start:i+1]
+
+    raise ValueError(
+        f"unbalanced JSON object in response (depth={depth} at end of text)"
+    )
+
+
+# Kept as a back-compat alias; new code should call _extract_json_object.
+def _strip_code_fences(text: str) -> str:
+    return _extract_json_object(text)
 
 
 def _validate_bt(parsed: dict, consultation_id: str) -> None:
@@ -204,7 +263,13 @@ def generate_bt(
             f"Claude call failed for {consultation_id}: {e}"
         ) from e
 
-    inner_text = _strip_code_fences(raw_text)
+    try:
+        inner_text = _extract_json_object(raw_text)
+    except ValueError as e:
+        raise BTGenerationError(
+            f"BT JSON for {consultation_id} extraction failed: {e}; "
+            f"head: {raw_text[:300]}"
+        ) from e
     try:
         bt = json.loads(inner_text)
     except json.JSONDecodeError as e:
