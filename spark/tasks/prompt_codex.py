@@ -1464,8 +1464,8 @@ SECTION_8_RESPONSE = """\
 
 OUTPUT FORMAT: Pure JSON object. No prose preamble. No analysis text.
 No "Looking at the screenshot..." narration. No code fences. No markdown.
-The FIRST character of your response MUST be `{` and the LAST character
-MUST be `}`. Reason internally; emit JSON. If you need to express
+The FIRST character of your response MUST be `{{` and the LAST character
+MUST be `}}`. Reason internally; emit JSON. If you need to express
 uncertainty or note an open question, put it inside the JSON as a
 "_notes" field — never as free text.
 
