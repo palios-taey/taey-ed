@@ -721,6 +721,33 @@ def next_action(request: NextActionRequest):
     # ── Step 2.7: Polling completion detection ──
     logger.info("  Step 2.7: Checking polling completion...")
     if lr and lr.continue_loop and lr.tree_hash_before and lr.tree_hash_after:
+        # NEW (2026-05-14): If the prior video_poll completed with the tree
+        # unchanged AND we're on a VIDEO screen, keep polling — do NOT fall
+        # through to Step 5. The YouTube iframe often settles into a stable
+        # outer AX tree during playback (progress-bar updates happen inside
+        # the iframe and don't always propagate to the outer AT-SPI projection).
+        # The Mac's MAX_CONSECUTIVE_POLLS=60 is the long-stuck (~30 min) safety
+        # net; we shouldn't fire a $0.50 consultation every time the tree
+        # happens to be stable for 30 seconds.
+        if lr.tree_hash_before == lr.tree_hash_after:
+            _is_video_screen = lr.screen and "VIDEO" in (lr.screen or "").upper()
+            if _is_video_screen:
+                logger.info(
+                    f"Step 2.7: video_poll completed with tree unchanged "
+                    f"(screen={lr.screen}). Re-polling — NOT escalating to consultation."
+                )
+                return {
+                    "directive": "execute_tree",
+                    "directive_id": _make_directive_id(),
+                    "tree": {
+                        "type": "sequence",
+                        "children": [
+                            {"type": "action", "action": "video_poll"},
+                        ],
+                    },
+                    "screen": lr.screen,
+                    "course_id": cs.course_id,
+                }
         if lr.tree_hash_before != lr.tree_hash_after:
             # For VIDEO screens: tree hash ALWAYS changes during playback
             # (timestamps, progress bar). Check if video is actually done

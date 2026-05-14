@@ -59,6 +59,14 @@
       {
         "text": "Settings",
         "reason": "Opens account settings; not related to coursework and could change configuration"
+      },
+      {
+        "text": "Next in course",
+        "reason": "Course-wide navigation arrow (~23x25px AXButton at top of page). Skips past the entire current unit. Never the right target for lesson-by-lesson progression. Use 'Up next: <title>' AXLink for post-video advancement; use sidebar lesson links for within-unit nav."
+      },
+      {
+        "text": "Previous in course",
+        "reason": "Course-wide navigation arrow that skips backward past completed content. Never the right target for forward progression."
       }
     ],
     "platform_quirks": [
@@ -424,13 +432,31 @@
         },
         "COMPLETE": {
           "tree_signal": "Video ended; replay circular arrow button may appear in player center; full colored progress bar visible below video icon in sidebar; checkmark icon appears on video item in sidebar; energy points fully awarded (750-850); YouTube end screen may show suggested videos (ignore these)",
-          "action": "Click 'Up next' link or the next item in the left sidebar to advance to next activity. Do NOT click YouTube suggested videos (these are inside the iframe and navigate away). Do NOT click 'Video on YouTube' link below the player.",
+          "action": "Click the 'Up next: <title>' AXLink in the lower-right area of the video player to advance to the next activity. Use match_mode=contains with target='Up next:' (the title text varies). DO NOT click 'Next in course' or 'Previous in course' \u2014 those are tiny ~23x25px AXButton arrows at the TOP of the page that do COURSE-WIDE navigation and will skip past the entire current unit. DO NOT click YouTube suggested videos (inside the iframe \u2014 navigate away). DO NOT click 'Video on YouTube' link below the player.",
           "expected_next": [
             "EXERCISE",
             "ARTICLE",
             "VIDEO",
             "NAVIGATION",
             "TRANSITION"
+          ],
+          "completion_button": {
+            "text": "Up next:",
+            "role": "AXLink",
+            "match_mode": "contains",
+            "note": "Khan renders post-video advancement as 'Up next: <next-item-title>' (lower-right of video player, ~135x40px). Match with mode=contains because the title varies per video. ALWAYS this AXLink, never the 'Next in course' AXButton arrow at top of page."
+          },
+          "never_click_extras": [
+            {
+              "text": "Next in course",
+              "role": "AXButton",
+              "reason": "Course-wide navigation arrow (~23x25px) at top of page. Skips PAST the current unit entirely. The right post-video target is the 'Up next: <title>' AXLink, NOT this arrow."
+            },
+            {
+              "text": "Previous in course",
+              "role": "AXButton",
+              "reason": "Course-wide navigation arrow. Skips BACKWARD past completed content. Never the right target for advancement."
+            }
           ]
         }
       },
