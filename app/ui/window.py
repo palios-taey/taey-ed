@@ -1106,7 +1106,7 @@ class TaeyEdWindow:
         if auth.is_logged_in():
             me = auth.whoami()  # this internally refreshes once on 401
             if me:
-                self.logger.info(f"signed in as {me.get('email', '?')}")
+                logging.getLogger("taey-ed").info(f"signed in as {me.get('email', '?')}")
                 return True
 
         # Need fresh credentials. Pop the modal.
