@@ -721,24 +721,83 @@ def next_action(request: NextActionRequest):
     # ── Step 2.7: Polling completion detection ──
     logger.info("  Step 2.7: Checking polling completion...")
     if lr and lr.continue_loop and lr.tree_hash_before and lr.tree_hash_after:
+        # NEW (2026-05-14): If the prior video_poll completed with the tree
+        # unchanged AND we're on a VIDEO screen, keep polling — do NOT fall
+        # through to Step 5. The YouTube iframe often settles into a stable
+        # outer AX tree during playback (progress-bar updates happen inside
+        # the iframe and don't always propagate to the outer AT-SPI projection).
+        # The Mac's MAX_CONSECUTIVE_POLLS=60 is the long-stuck (~30 min) safety
+        # net; we shouldn't fire a $0.50 consultation every time the tree
+        # happens to be stable for 30 seconds.
+        if lr.tree_hash_before == lr.tree_hash_after:
+            _is_video_screen = lr.screen and "VIDEO" in (lr.screen or "").upper()
+            if _is_video_screen:
+                logger.info(
+                    f"Step 2.7: video_poll completed with tree unchanged "
+                    f"(screen={lr.screen}). Re-polling — NOT escalating to consultation."
+                )
+                return {
+                    "directive": "execute_tree",
+                    "directive_id": _make_directive_id(),
+                    "tree": {
+                        "type": "sequence",
+                        "children": [
+                            {"type": "action", "action": "video_poll"},
+                        ],
+                    },
+                    "screen": lr.screen,
+                    "course_id": cs.course_id,
+                }
         if lr.tree_hash_before != lr.tree_hash_after:
+            # For VIDEO screens: tree hash ALWAYS changes during playback
+            # (timestamps, progress bar). Check if video is actually done
+            # by looking for video signals in the current tree.
+            is_video = lr.screen and "VIDEO" in (lr.screen or "").upper()
+            # TODO(V20): Consider using get_master_category() here for robustness.
+            # Currently works because all video screen types contain "VIDEO".
+            if is_video:
+                from spark.tasks.prompt_codex import analyze_tree as _analyze
+                current_tags = _analyze(tree)
+                if "HAS_VIDEO" in current_tags:
+                    logger.info(
+                        f"Step 2.7: Video still playing (HAS_VIDEO in current tree). "
+                        f"Continuing poll — NOT advancing."
+                    )
+                    # Return video_poll again to keep watching
+                    return {
+                        "directive": "execute_tree",
+                        "directive_id": _make_directive_id(),
+                        "tree": {
+                            "type": "sequence",
+                            "children": [
+                                {"type": "action", "action": "video_poll"},
+                            ],
+                        },
+                        "screen": lr.screen,
+                        "course_id": cs.course_id,
+                    }
+                else:
+                    logger.info(
+                        f"Step 2.7: Video screen no longer has video signals. "
+                        f"Video completed — navigating forward."
+                    )
+
             logger.info(
                 f"Content completed: tree changed after {lr.action} "
-                f"(screen={lr.screen}). Navigating forward."
+                f"(screen={lr.screen}). Building advancement BT via Gemini."
             )
-            return {
-                "directive": "execute_tree",
-                "directive_id": _make_directive_id(),
-                "tree": {
-                    "type": "sequence",
-                    "children": [
-                        {"type": "action", "action": "press_escape"},
-                        {"type": "action", "action": "wait", "params": {"seconds": 2.0}},
-                    ],
-                },
-                "screen": lr.screen,
-                "course_id": cs.course_id,
-            }
+            # Button names vary by platform — let Gemini read the actual tree
+            if not request.screenshot_b64:
+                return {
+                    "directive": "need_screenshot",
+                    "directive_id": _make_directive_id(),
+                    "reason": "content_complete_advance",
+                }
+            return _build_screen_directive(
+                request, platform, tree, "TRANSITION", "",
+                user_guidance="Content just completed. Find and click the completion/mark-complete button if present, then the advance/next button. Look at the tree for actual button names.",
+                course_id=cs.course_id,
+            )
 
     # ── Step 3: Previous action failed? ──
     logger.info("  Step 3: Checking for previous failure...")
