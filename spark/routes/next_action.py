@@ -795,7 +795,16 @@ def next_action(request: NextActionRequest):
                 }
             return _build_screen_directive(
                 request, platform, tree, "TRANSITION", "",
-                user_guidance="Content just completed. Find and click the completion/mark-complete button if present, then the advance/next button. Look at the tree for actual button names.",
+                user_guidance=(
+                    "Content (video/article) just completed. Advance to the next item.\n"
+                    "Find the explicit forward-advancement link in the AX tree — typically:\n"
+                    "  - an AXLink whose name starts with 'Up next:' (read the FULL exact name from the tree, including the title after the colon)\n"
+                    "  - OR a button labeled 'Continue', 'Next question', 'Done', 'Mark complete'\n"
+                    "Use find_and_click with the EXACT name read from the tree + match_mode=exact + appropriate role (AXLink or AXButton). Pin the dynamic part (e.g., the video title after 'Up next:') verbatim — do NOT use match_mode=contains.\n"
+                    "DO NOT click small course-wide breadcrumb arrows named 'Next in course' / 'Previous in course' at the top of the page — those are course-wide chrome that skip past entire units, never the right advancement target.\n"
+                    "DO NOT click 'Up next for you!' algorithmic-recommendation cards — those are Khan's personalized suggestions, not linear course progression. The correct 'Up next' is the AXLink in the lower-right of the video player area.\n"
+                    "If neither an 'Up next:' link nor a Continue/Next button is visible in the tree, the next lesson item in the LEFT SIDEBAR (look for the first un-checkmarked sidebar AXLink) is the fallback target."
+                ),
                 course_id=cs.course_id,
             )
 
