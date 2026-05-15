@@ -24,3 +24,6 @@ spark/platforms/*/learned/
 
 # Jupyter checkpoint cruft
 .ipynb_checkpoints/
+
+# Mirrored consult artifacts
+runtime/

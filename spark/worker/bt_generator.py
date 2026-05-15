@@ -248,6 +248,18 @@ def generate_bt(
 
     has_failure_log = (consult_dir / "bt_debug.log").exists()
     user_instruction = _build_user_instruction(consultation_id, has_failure_log)
+    try:
+        (consult_dir / "prompt.txt").write_text(system_prompt, encoding="utf-8")
+        (consult_dir / "user_instruction.txt").write_text(
+            user_instruction,
+            encoding="utf-8",
+        )
+    except OSError as e:
+        logger.warning(
+            "bt_generator: failed to write prompt artifacts for %s: %s",
+            consultation_id,
+            e,
+        )
 
     screenshot_path = consult_dir / "screenshot.png"
     if not screenshot_path.exists():
