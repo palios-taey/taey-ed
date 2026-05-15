@@ -18,32 +18,40 @@ def _make_consultation_id() -> str:
 
 
 def request_consultation(
+    *,
     platform: str,
     tree: dict,
     screenshot_b64: str | None = None,
+    prompt_payload: dict | None = None,
     metadata: dict | None = None,
+    consultation_id: str | None = None,
 ) -> dict:
-    # TODO Phase D: align request persistence with discovery and recovery loops.
-    consultation_id = _make_consultation_id()
+    consultation_id = consultation_id or _make_consultation_id()
     consult_dir = CONSULT_DIR / consultation_id
     consult_dir.mkdir(parents=True, exist_ok=True)
     atomic_write_json(consult_dir / "tree.json", tree)
+
     if screenshot_b64:
         (consult_dir / "screenshot.png").write_bytes(base64.b64decode(screenshot_b64))
-    payload = {
+
+    meta = {
         "consultation_id": consultation_id,
         "platform": platform,
         "status": "pending",
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
     if metadata:
-        payload.update(metadata)
-    atomic_write_json(consult_dir / "metadata.json", payload)
-    return {"consultation_id": consultation_id, "status": "pending"}
+        meta.update(metadata)
+    atomic_write_json(consult_dir / "metadata.json", meta)
+    atomic_write_json(consult_dir / "prompt.json", prompt_payload or {})
+    return {
+        "consultation_id": consultation_id,
+        "status": "pending",
+        "consult_dir": str(consult_dir),
+    }
 
 
 def poll_consultation(consultation_id: str) -> dict:
-    # TODO Phase C2: preserve active consultation polling semantics precisely.
     consult_dir = CONSULT_DIR / consultation_id
     meta_path = consult_dir / "metadata.json"
     response_path = consult_dir / "response.json"
