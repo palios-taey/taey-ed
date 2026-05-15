@@ -190,7 +190,7 @@ def generate_bt(
 
     # Build the comprehensive system prompt with platform knowledge, handler
     # reference, operational notes (exactly what the original Gemini path used).
-    from spark.tasks.prompt_codex import compile_prompt
+    from spark.tasks.prompt_codex import analyze_tree, compile_prompt
     context = {
         "escalation_level": metadata.get("escalation_level", "spark_claude"),
         "course_id": metadata.get("course_id", "unknown"),
@@ -210,8 +210,11 @@ def generate_bt(
     # Inject relevant KB chunks (DeepTutor retrieval) if the Mac attached any.
     # Local KB lives on the user's Mac; only top-K chunks selected by local
     # similarity search travel here. Per LAUNCH_PLAN v4 §0 user-sovereignty.
+    exercise_tags = {"HAS_RADIO", "HAS_CHECKBOX", "HAS_TEXT_INPUT", "HAS_COMBOBOX"}
+    present_tags = set(analyze_tree(tree))
+    is_exercise_like = bool(present_tags & exercise_tags)
     kb_chunks = metadata.get("relevant_kb_chunks") or []
-    if kb_chunks:
+    if kb_chunks and is_exercise_like:
         kb_section_lines = [
             "",
             "=== RELEVANT COURSE CONTEXT (from user's local DeepTutor KB) ===",
@@ -234,6 +237,13 @@ def generate_bt(
         system_prompt = system_prompt + "\n".join(kb_section_lines)
         logger.info(
             f"bt_generator: injected {len(kb_chunks)} KB chunk(s) for {consultation_id}"
+        )
+    elif kb_chunks:
+        logger.info(
+            "bt_generator: dropped %d KB chunk(s) for %s; non-exercise tags=%s",
+            len(kb_chunks),
+            consultation_id,
+            sorted(present_tags),
         )
 
     has_failure_log = (consult_dir / "bt_debug.log").exists()
