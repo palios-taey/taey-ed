@@ -124,6 +124,7 @@ def _call_claude_cli(
     timeout_s: float,
     model: str,
     max_budget_usd: float,
+    system_prompt_path: Path,
 ) -> tuple[str, dict]:
     # `claude --help` in this environment does not expose an image flag, so the
     # worker uses an explicit Read-tool instruction against the screenshot path.
@@ -135,7 +136,7 @@ def _call_claude_cli(
             f"{user_message}"
         )
 
-    cmd = [
+    base_cmd = [
         "claude",
         "--print",
         "--output-format",
@@ -146,46 +147,56 @@ def _call_claude_cli(
         model,
         "--max-budget-usd",
         str(max_budget_usd),
-        "--system-prompt",
-        system_prompt,
-        full_user,
     ]
-    try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
-            stdin=subprocess.DEVNULL,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise BTGenerationError(f"claude timed out after {timeout_s}s") from exc
-    if result.returncode != 0:
-        raise BTGenerationError(
-            f"claude exited {result.returncode}: {result.stderr[:500]}"
-        )
-    try:
-        outer = json.loads(result.stdout)
-    except json.JSONDecodeError as exc:
-        raise BTGenerationError(f"claude stdout was not JSON: {exc}") from exc
-    if outer.get("is_error"):
-        raise BTGenerationError(
-            f"claude reported error: {(outer.get('result') or '')[:300]}"
-        )
-    if screenshot_path is not None and outer.get("num_turns", 0) < 2:
-        raise BTGenerationError("claude did not read the screenshot before answering")
+    attempts = [
+        ("--system-prompt-file", base_cmd + ["--system-prompt-file", str(system_prompt_path)]),
+        (
+            "--append-system-prompt-file",
+            base_cmd + ["--system-prompt", "", "--append-system-prompt-file", str(system_prompt_path)],
+        ),
+    ]
+    last_error: BTGenerationError | None = None
+    for flag_path, cmd in attempts:
+        try:
+            result = subprocess.run(
+                cmd,
+                input=full_user,
+                capture_output=True,
+                text=True,
+                timeout=timeout_s,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise BTGenerationError(f"claude timed out after {timeout_s}s") from exc
+        if result.returncode != 0:
+            stderr = result.stderr[:500]
+            if "unknown option" in stderr.lower() or flag_path.lstrip("-") in stderr:
+                last_error = BTGenerationError(f"claude rejected {flag_path}: {stderr}")
+                continue
+            raise BTGenerationError(f"claude exited {result.returncode}: {stderr}")
+        try:
+            outer = json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            raise BTGenerationError(f"claude stdout was not JSON: {exc}") from exc
+        if outer.get("is_error"):
+            raise BTGenerationError(
+                f"claude reported error: {(outer.get('result') or '')[:300]}"
+            )
+        if screenshot_path is not None and outer.get("num_turns", 0) < 2:
+            raise BTGenerationError("claude did not read the screenshot before answering")
 
-    text = outer.get("result")
-    if not text:
-        raise BTGenerationError("claude returned empty result")
-    metadata = {
-        "num_turns": outer.get("num_turns", 0),
-        "duration_ms": outer.get("duration_ms", 0),
-        "total_cost_usd": outer.get("total_cost_usd", 0.0),
-        "session_id": outer.get("session_id", ""),
-        "model": model,
-    }
-    return text, metadata
+        text = outer.get("result")
+        if not text:
+            raise BTGenerationError("claude returned empty result")
+        metadata = {
+            "num_turns": outer.get("num_turns", 0),
+            "duration_ms": outer.get("duration_ms", 0),
+            "total_cost_usd": outer.get("total_cost_usd", 0.0),
+            "session_id": outer.get("session_id", ""),
+            "model": model,
+            "system_prompt_flag": flag_path,
+        }
+        return text, metadata
+    raise last_error or BTGenerationError("claude system prompt file invocation failed")
 
 
 def generate_bt(
@@ -223,6 +234,8 @@ def generate_bt(
         },
     )
 
+    sys_prompt_path = consult_dir / "system_prompt.txt"
+    sys_prompt_path.write_text(system_prompt, encoding="utf-8")
     (consult_dir / "prompt.txt").write_text(system_prompt, encoding="utf-8")
     (consult_dir / "user_instruction.txt").write_text(user_message, encoding="utf-8")
 
@@ -235,6 +248,7 @@ def generate_bt(
         timeout_s=timeout_s,
         model=model,
         max_budget_usd=max_budget_usd,
+        system_prompt_path=sys_prompt_path,
     )
     (consult_dir / "raw_response.txt").write_text(raw_text, encoding="utf-8")
 
