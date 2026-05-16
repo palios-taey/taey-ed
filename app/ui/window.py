@@ -23,6 +23,7 @@ from tkinter import ttk, scrolledtext, messagebox
 import threading
 import queue
 import logging
+import os
 import subprocess
 import sys
 import time
@@ -183,6 +184,12 @@ class TaeyEdWindow:
 
         # Load chat history on startup
         self.root.after(500, self._load_chat_history)
+
+        # Unattended testing hook: auto-fire Run Continuous on launch when
+        # TAEY_ED_AUTOSTART=1 is set. Default behavior preserved when unset.
+        if os.environ.get("TAEY_ED_AUTOSTART") == "1":
+            self.logger.info("TAEY_ED_AUTOSTART=1 — scheduling continuous run")
+            self.root.after(1500, self._on_run_continuous)
 
     def _setup_logging(self):
         """Configure logging to use queue handler."""
