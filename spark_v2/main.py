@@ -11,9 +11,11 @@ from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from spark_v2.routes import auth_stub
 from spark_v2.routes.next_action import decide_next_action
 
 app = FastAPI(title="Taey-Ed Spark V2", version="0.1.0-phase-b")
+app.include_router(auth_stub.router)
 
 CONSULT_DIR = Path("/tmp/taey-ed-consult-v2")
 
@@ -35,7 +37,7 @@ async def health() -> dict:
     return {
         "status": "healthy",
         "service": "spark_v2",
-        "phase": "D",
+        "phase": "D-alpha",
         "consult_dir": str(CONSULT_DIR),
     }
 
