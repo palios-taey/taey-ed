@@ -35,7 +35,7 @@ async def health() -> dict:
     return {
         "status": "healthy",
         "service": "spark_v2",
-        "phase": "C",
+        "phase": "D",
         "consult_dir": str(CONSULT_DIR),
     }
 

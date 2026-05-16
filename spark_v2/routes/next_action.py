@@ -8,6 +8,13 @@ import time
 import uuid
 from pathlib import Path
 
+from spark_v2.discovery import (
+    create_request,
+    find_active_discovery_request,
+    get_metadata_status,
+    poll_for_result,
+    validate_and_promote_to_provisional,
+)
 from spark_v2.tasks.consultation_request import request_consultation
 from spark_v2.tasks.knowledge_loader import is_first_touch, load_knowledge, load_provisional
 from spark_v2.tasks.skeleton import extract_skeleton, hash_skeleton
@@ -15,9 +22,13 @@ from spark_v2.tasks.screen_type_util import get_master_category
 
 CONSULT_DIR = Path("/tmp/taey-ed-consult-v2")
 ONBOARDING_MESSAGE = (
-    "Hi, I'm Taey. I'm looking forward to helping you with this course. "
-    "This is a new platform for me, so I might need your help on the first "
-    "video and first ... screen, but after that, I'll be good to go on my own."
+    "Hi, I'm Taey. I'm looking forward to helping you with this course. This is a new "
+    "platform for me, so I might need your help on the first video and first ... screen, "
+    "but after that, I'll be good to go on my own."
+)
+DISCOVERY_IN_PROGRESS_MESSAGE = (
+    "I am researching this platform now, this takes a few minutes. While you wait, you can "
+    "help me with the first screen if you would like."
 )
 
 
@@ -105,6 +116,36 @@ def _prompt_payload_from_request(payload: dict, tier: int, chat_override: bool =
         "current_url": payload.get("current_url"),
         "tier": tier,
         "chat_override": chat_override,
+    }
+
+
+def _platform_url_hint(platform: str, payload: dict) -> str:
+    known = {
+        "khan_academy": "https://www.khanacademy.org",
+    }
+    if platform in known:
+        return known[platform]
+    current_url = payload.get("current_url")
+    if isinstance(current_url, str) and current_url.strip():
+        return current_url
+    return platform
+
+
+def _discovery_started_directive(payload: dict, request_id: str) -> dict:
+    current_hash = _current_tree_hash(payload)
+    return {
+        "directive": "user_input_needed",
+        "directive_id": _make_directive_id(),
+        "screen_type": "ONBOARDING_DISCOVERY",
+        "screen": "platform_discovery",
+        "tree_hash": current_hash,
+        "reason": "first_touch_discovery_started",
+        "message": DISCOVERY_IN_PROGRESS_MESSAGE,
+        "chat_messages": [
+            _chat_message(ONBOARDING_MESSAGE),
+            _chat_message(DISCOVERY_IN_PROGRESS_MESSAGE),
+        ],
+        "_discovery_request_id": request_id,
     }
 
 
@@ -307,13 +348,79 @@ def step_5_knowledge_gate_and_classify(payload: dict) -> dict | None:
     current_hash = _current_tree_hash(payload)
 
     if is_first_touch(platform_data) and provisional_data is None:
-        return _user_input_directive(
-            message=ONBOARDING_MESSAGE,
-            screen_type="UNKNOWN",
-            tree_hash=current_hash,
-            reason="first_touch_onboarding",
-            extra={"todo": "Phase D"},
-        )
+        active_request = find_active_discovery_request(platform)
+        if not active_request:
+            request_id = create_request(
+                {
+                    "platform": platform,
+                    "platform_url": _platform_url_hint(platform, payload),
+                    "platform_type": str(
+                        (payload.get("client_state") or {}).get("platform_type") or "MOOC"
+                    ),
+                    "any_context": str(payload.get("chat_message") or ""),
+                }
+            )
+            return _discovery_started_directive(payload, request_id)
+
+        status = get_metadata_status(active_request)
+        result = poll_for_result(active_request)
+
+        if result is None and status == "pending":
+            return {
+                "directive": "wait",
+                "directive_id": _make_directive_id(),
+                "seconds": 20.0,
+                "reason": f"discovery in progress ({active_request})",
+                "_discovery_request_id": active_request,
+            }
+
+        if result is None and status == "harvested":
+            return _user_input_directive(
+                message=(
+                    "Discovery reported a harvested result, but the result artifact is missing. "
+                    "Could you help me with the first screen while this is corrected?"
+                ),
+                screen_type="ONBOARDING_DISCOVERY",
+                tree_hash=current_hash,
+                reason="discovery_missing_result",
+                extra={"_discovery_request_id": active_request},
+            )
+
+        if status in {"auth_required", "malformed_output", "timeout"}:
+            return _user_input_directive(
+                message=(
+                    "I could not finish researching this platform automatically. "
+                    f"Discovery status was {status}. Could you help me with the first screen?"
+                ),
+                screen_type="ONBOARDING_DISCOVERY",
+                tree_hash=current_hash,
+                reason="discovery_failed",
+                extra={"_discovery_request_id": active_request},
+            )
+
+        if result is not None:
+            ok, errors = validate_and_promote_to_provisional(result, platform, active_request)
+            if not ok:
+                detail = errors[0] if errors else "unknown validation error"
+                return _user_input_directive(
+                    message=f"Discovery research returned invalid data. First error: {detail}",
+                    screen_type="ONBOARDING_DISCOVERY",
+                    tree_hash=current_hash,
+                    reason="discovery_invalid_result",
+                    extra={"_discovery_request_id": active_request},
+                )
+            provisional_data = load_provisional(platform)
+        elif status not in {"pending", "harvested"}:
+            return _user_input_directive(
+                message=(
+                    "Discovery is in an unexpected state and could not continue automatically. "
+                    f"Current status is {status or 'unknown'}."
+                ),
+                screen_type="ONBOARDING_DISCOVERY",
+                tree_hash=current_hash,
+                reason="discovery_unexpected_status",
+                extra={"_discovery_request_id": active_request},
+            )
 
     consult = request_consultation(
         platform=platform,
