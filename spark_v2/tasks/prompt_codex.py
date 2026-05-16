@@ -29,6 +29,12 @@ IDENTITY_BLOCK = "\n".join(
     ]
 )
 
+HARD_TREE_CHAR_LIMIT = 200000
+
+
+class AXTreeTooLargeError(RuntimeError):
+    """Raised when the AX tree cannot be reduced to a safe prompt size."""
+
 
 def _read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8")
@@ -96,6 +102,10 @@ def _is_populated(value: Any) -> bool:
 
 def _json_block(value: Any) -> str:
     return json.dumps(value, indent=2, ensure_ascii=True, sort_keys=True)
+
+
+def _json_compact(value: Any) -> str:
+    return json.dumps(value, separators=(",", ":"), ensure_ascii=True)
 
 
 def format_platform_knowledge(platform_data: dict) -> str:
@@ -232,37 +242,130 @@ def _prune_node(node: Any) -> Any:
     return pruned
 
 
-def prune_ax_tree(tree: dict, target_chars: int = 50000) -> dict:
+def _node_score(node: Any) -> int:
+    if not isinstance(node, dict):
+        return 0
+    score = 0
+    role = node.get("role")
+    if role in {"AXLink", "AXButton", "AXHeading", "AXStaticText", "AXProgressIndicator"}:
+        score += 10
+    for key in ("name", "title", "description", "value"):
+        value = node.get(key)
+        if isinstance(value, str) and value.strip():
+            score += min(len(value.strip()), 40)
+    children = node.get("children", [])
+    if isinstance(children, list):
+        score += min(sum(_node_score(child) for child in children[:8]), 200)
+    return score
+
+
+def prune_ax_tree(tree: dict, target_chars: int = HARD_TREE_CHAR_LIMIT) -> dict:
     web_area = _find_web_area(tree)
     working = web_area if web_area is not None else tree
     pruned = _prune_node(working) or {}
-    raw = json.dumps(pruned, ensure_ascii=True)
+    raw = _json_compact(pruned)
     if len(raw) <= target_chars:
         return pruned
 
-    def shrink(node: Any, depth: int = 0) -> Any:
+    def shrink(
+        node: Any,
+        *,
+        child_cap: int,
+        drop_description_depth: int,
+        drop_value_depth: int,
+        drop_name_depth: int,
+    ) -> Any:
         if not isinstance(node, dict):
             return node
         compact = {
             key: value
             for key, value in node.items()
-            if key != "children" and key not in {"description", "value"} | ({"name", "title"} if depth > 10 else set())
+            if key != "children"
         }
-        children = [shrink(child, depth + 1) for child in node.get("children", [])[:20]]
+        depth = int(node.get("_depth", 0))
+        filtered: dict[str, Any] = {}
+        for key, value in compact.items():
+            if key == "description" and depth >= drop_description_depth:
+                continue
+            if key == "value" and depth >= drop_value_depth:
+                continue
+            if key in {"name", "title"} and depth >= drop_name_depth:
+                continue
+            filtered[key] = value
+        raw_children = list(node.get("children", []))
+        if len(raw_children) > child_cap:
+            edge_keep = min(max(child_cap // 4, 1), len(raw_children))
+            keep_indexes = set(range(edge_keep))
+            keep_indexes.update(range(max(len(raw_children) - edge_keep, 0), len(raw_children)))
+            remaining_slots = max(child_cap - len(keep_indexes), 0)
+            ranked = sorted(
+                (
+                    (index, child)
+                    for index, child in enumerate(raw_children)
+                    if index not in keep_indexes
+                ),
+                key=lambda pair: _node_score(pair[1]),
+                reverse=True,
+            )[:remaining_slots]
+            keep_indexes.update(index for index, _ in ranked)
+            raw_children = [child for index, child in enumerate(raw_children) if index in keep_indexes]
+        children = []
+        for child in raw_children:
+            if isinstance(child, dict):
+                child = dict(child)
+                child["_depth"] = depth + 1
+            shrunk = shrink(
+                child,
+                child_cap=child_cap,
+                drop_description_depth=drop_description_depth,
+                drop_value_depth=drop_value_depth,
+                drop_name_depth=drop_name_depth,
+            )
+            children.append(shrunk)
         children = [child for child in children if child]
         if children:
-            compact["children"] = children
-        return compact
+            filtered["children"] = children
+        filtered.pop("_depth", None)
+        return filtered
 
-    aggressive = shrink(pruned)
-    aggressive_text = json.dumps(aggressive, ensure_ascii=True)
-    logger.warning(
-        "prompt_codex: aggressive AX tree pruning from %d chars to %d chars",
-        len(raw),
-        len(aggressive_text),
-    )
-    aggressive["_notes"] = f"AX_TREE_PRUNED_FROM_{len(raw)}"
-    return aggressive
+    attempts = [
+        (20, 0, 0, 11),
+        (10, 0, 0, 9),
+        (5, 0, 0, 7),
+        (3, 0, 0, 5),
+        (1, 0, 0, 3),
+        (1, 0, 0, 1),
+    ]
+    best = pruned
+    best_size = len(raw)
+    for child_cap, drop_description_depth, drop_value_depth, drop_name_depth in attempts:
+        seeded = dict(pruned)
+        seeded["_depth"] = 0
+        candidate = shrink(
+            seeded,
+            child_cap=child_cap,
+            drop_description_depth=drop_description_depth,
+            drop_value_depth=drop_value_depth,
+            drop_name_depth=drop_name_depth,
+        ) or {}
+        candidate["_notes"] = f"AX_TREE_PRUNED_FROM_{len(raw)}"
+        candidate_text = _json_compact(candidate)
+        candidate_size = len(candidate_text)
+        logger.warning(
+            "prompt_codex: iterative AX prune child_cap=%d name_depth=%d size=%d",
+            child_cap,
+            drop_name_depth,
+            candidate_size,
+        )
+        if candidate_size < best_size:
+            best = candidate
+            best_size = candidate_size
+        if candidate_size <= target_chars:
+            return candidate
+
+    if best_size > HARD_TREE_CHAR_LIMIT:
+        raise AXTreeTooLargeError(f"ax_tree_too_large_after_prune size={best_size}")
+    return best
 
 
 def _exercise_like_context(screen_context: dict) -> bool:
@@ -274,6 +377,31 @@ def _exercise_like_context(screen_context: dict) -> bool:
         if token in tree_blob:
             return True
     return False
+
+
+def _extract_text_index(tree: dict, max_chars: int = 30000) -> str:
+    lines: list[str] = []
+    total = 0
+    stack = [tree]
+    while stack and total < max_chars:
+        node = stack.pop(0)
+        if not isinstance(node, dict):
+            continue
+        role = str(node.get("role") or "")
+        text = ""
+        for key in ("name", "title", "description", "value"):
+            value = node.get(key)
+            if isinstance(value, str) and value.strip():
+                text = value.strip()
+                break
+        if text and role in {"AXLink", "AXButton", "AXHeading", "AXStaticText"}:
+            line = f"{role}: {text}"
+            if total + len(line) + 1 > max_chars:
+                break
+            lines.append(line)
+            total += len(line) + 1
+        stack.extend(node.get("children", []))
+    return "\n".join(lines)
 
 
 def assemble_system_prompt(
@@ -320,7 +448,8 @@ def assemble_user_message(
     screen_context: dict,
 ) -> str:
     pruned_tree = prune_ax_tree(tree)
-    tree_text = _json_block(pruned_tree)
+    tree_text = _json_compact(pruned_tree)
+    text_index = _extract_text_index(tree)
 
     header_lines = [
         f"Platform: {platform_display_name}",
@@ -333,7 +462,8 @@ def assemble_user_message(
     sections = [
         "\n".join(header_lines),
         "Section A — AX Tree\n" + tree_text,
-        f"Section B — Screenshot\nScreenshot: {screenshot_path}",
+        "Section B — Readable AX Text Index\n" + (text_index or "none"),
+        f"Section C — Screenshot\nScreenshot: {screenshot_path}",
     ]
 
     if relevant_kb_chunks and _exercise_like_context(screen_context):
@@ -347,10 +477,10 @@ def assemble_user_message(
         if len(chunk_lines) > 1:
             if chunk_lines[-1] == "---":
                 chunk_lines.pop()
-            sections.append("Section C — Relevant KB Chunks\n" + "\n".join(chunk_lines))
+            sections.append("Section D — Relevant KB Chunks\n" + "\n".join(chunk_lines))
 
     sections.append(
-        "Section D — Closing directive\n"
+        "Section E — Closing directive\n"
         "Emit ONE JSON object conforming to the Output Schema in your system prompt.\n"
         "Return JSON only."
     )

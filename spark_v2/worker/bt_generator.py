@@ -10,6 +10,7 @@ from pathlib import Path
 
 from spark_v2.tasks.knowledge_loader import load_knowledge, load_provisional
 from spark_v2.tasks.prompt_codex import (
+    AXTreeTooLargeError,
     UNIVERSAL_LAYER_PATH,
     assemble_system_prompt,
     assemble_user_message,
@@ -219,20 +220,23 @@ def generate_bt(
         last_result=last_result,
         tier=tier,
     )
-    user_message = assemble_user_message(
-        platform_display_name=platform_data.get("platform", {}).get("display_name", platform),
-        current_url=prompt_payload.get("current_url"),
-        last_screen_type=(last_result or {}).get("screen"),
-        tier=tier,
-        course_id=((prompt_payload.get("client_state") or {}).get("course_id")),
-        tree=tree,
-        screenshot_path=str(consult_dir / "screenshot.png"),
-        relevant_kb_chunks=prompt_payload.get("relevant_kb_chunks"),
-        screen_context={
-            "tree": tree,
-            "screen_type_hint": metadata.get("screen_type_hint") or (last_result or {}).get("screen"),
-        },
-    )
+    try:
+        user_message = assemble_user_message(
+            platform_display_name=platform_data.get("platform", {}).get("display_name", platform),
+            current_url=prompt_payload.get("current_url"),
+            last_screen_type=(last_result or {}).get("screen"),
+            tier=tier,
+            course_id=((prompt_payload.get("client_state") or {}).get("course_id")),
+            tree=tree,
+            screenshot_path=str(consult_dir / "screenshot.png"),
+            relevant_kb_chunks=prompt_payload.get("relevant_kb_chunks"),
+            screen_context={
+                "tree": tree,
+                "screen_type_hint": metadata.get("screen_type_hint") or (last_result or {}).get("screen"),
+            },
+        )
+    except AXTreeTooLargeError as exc:
+        raise BTGenerationError(str(exc)) from exc
 
     sys_prompt_path = consult_dir / "system_prompt.txt"
     sys_prompt_path.write_text(system_prompt, encoding="utf-8")
