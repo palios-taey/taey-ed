@@ -12,6 +12,7 @@ from pathlib import Path
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from spark_v2.routes._generate_system_prompt import GENERATE_SYSTEM_PROMPT
 from spark_v2.utils.atomic_write import atomic_write_json
 
 router = APIRouter()
@@ -20,21 +21,6 @@ GENERATE_DIR_PREFIX = "/tmp/taey-ed-generate-"
 DEFAULT_MODEL = "claude-opus-4-7"
 DEFAULT_TIMEOUT_S = 180.0
 DEFAULT_MAX_BUDGET_USD = 2.5
-
-SYSTEM_PROMPT = "\n".join(
-    [
-        "You are answering a single exercise question from a learning platform.",
-        "You receive the question text, optionally choice options or a matching scaffold, optional reference context, and a screenshot of the rendered exercise.",
-        "You must first use your Read tool on the screenshot path provided in the user message before answering.",
-        "Your only job is to return the correct answer.",
-        "",
-        "Output JSON only, no preamble:",
-        '- solve / solve_choice / solve_complex / navigate -> {"success": true, "answer": "<answer>", "confidence": "high|medium|low", "_reasoning": "<one line>"}',
-        '- solve_checkbox -> {"success": true, "selected": ["opt1", "opt2"], "confidence": "high|medium|low", "_reasoning": "<one line>"}',
-        '- solve_matching -> {"success": true, "matches": {"label1": "choice1"}, "confidence": "high|medium|low", "_reasoning": "<one line>"}',
-        '- If you cannot answer confidently, emit {"success": false, "error": "<reason>"}',
-    ]
-)
 
 
 def _json_compact(value: object) -> str:
@@ -77,10 +63,8 @@ def _extract_json_object(text: str) -> str:
     raise ValueError("unbalanced JSON object in Claude output")
 
 
-def _build_user_message(payload: dict, screenshot_path: Path) -> str:
+def _build_user_message(payload: dict) -> str:
     sections = [
-        "You MUST first use your Read tool to examine this image: " + str(screenshot_path),
-        "After reading the image, answer using both the screenshot and the text context below.",
         "Section A - Question text\n" + str(payload.get("question") or ""),
     ]
     if payload.get("options") is not None:
@@ -89,7 +73,7 @@ def _build_user_message(payload: dict, screenshot_path: Path) -> str:
         sections.append("Section B - Items\n" + _json_compact(payload.get("items")))
     if payload.get("context"):
         sections.append("Section C - Reference context\n" + _json_compact(payload.get("context")))
-    sections.append("Section D - Screenshot path\n" + str(screenshot_path))
+    sections.append("Section D - Screenshot\nThe screenshot is attached inline with this request.")
     if payload.get("image_descriptions"):
         sections.append("Section E - Image descriptions\n" + _json_compact(payload.get("image_descriptions")))
     sections.append(
@@ -101,12 +85,41 @@ def _build_user_message(payload: dict, screenshot_path: Path) -> str:
     return "\n\n".join(sections)
 
 
-def _call_claude(system_prompt_path: Path, user_message: str) -> dict:
+def _build_stream_input(user_message: str, screenshot_bytes: bytes) -> str:
+    return json.dumps(
+        {
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": base64.b64encode(screenshot_bytes).decode("ascii"),
+                        },
+                    },
+                    {
+                        "type": "text",
+                        "text": user_message,
+                    },
+                ],
+            },
+        },
+        ensure_ascii=True,
+    ) + "\n"
+
+
+def _call_claude(system_prompt_path: Path, user_message: str, screenshot_bytes: bytes) -> dict:
     cmd = [
         "claude",
         "--print",
+        "--input-format",
+        "stream-json",
         "--output-format",
-        "json",
+        "stream-json",
+        "--verbose",
         "--permission-mode",
         "bypassPermissions",
         "--model",
@@ -118,15 +131,25 @@ def _call_claude(system_prompt_path: Path, user_message: str) -> dict:
     ]
     result = subprocess.run(
         cmd,
-        input=user_message,
+        input=_build_stream_input(user_message, screenshot_bytes),
         capture_output=True,
         text=True,
         timeout=DEFAULT_TIMEOUT_S,
     )
     if result.returncode != 0:
         raise RuntimeError(f"claude exited {result.returncode}: {result.stderr[:500]}")
-    outer = json.loads(result.stdout)
-    if outer.get("is_error"):
+    events: list[dict] = []
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        event = json.loads(line)
+        if isinstance(event, dict):
+            events.append(event)
+    outer = next((event for event in reversed(events) if event.get("type") == "result"), None)
+    if outer is None:
+        raise RuntimeError("claude stream did not produce a result event")
+    if outer.get("subtype") == "error" or outer.get("is_error"):
         raise RuntimeError(f"claude reported error: {(outer.get('result') or '')[:300]}")
     candidate = _extract_json_object(str(outer.get("result") or ""))
     parsed = json.loads(candidate)
@@ -136,7 +159,8 @@ def _call_claude(system_prompt_path: Path, user_message: str) -> dict:
         "total_cost_usd": outer.get("total_cost_usd", 0.0),
         "session_id": outer.get("session_id", ""),
         "model": DEFAULT_MODEL,
-        "system_prompt_flag": "--system-prompt-file",
+        "system_prompt_flag": "stream-json",
+        "system_prompt_source": "--system-prompt-file",
     }
     return parsed
 
@@ -176,25 +200,28 @@ async def generate(request: Request) -> JSONResponse:
         if not screenshot_b64:
             raise ValueError("missing screenshot_b64")
 
+        screenshot_bytes = base64.b64decode(screenshot_b64)
         screenshot_path = request_dir / "screenshot.png"
-        screenshot_path.write_bytes(base64.b64decode(screenshot_b64))
+        screenshot_path.write_bytes(screenshot_bytes)
 
         system_prompt_path = request_dir / "system_prompt.txt"
-        system_prompt_path.write_text(SYSTEM_PROMPT, encoding="utf-8")
+        system_prompt_path.write_text(GENERATE_SYSTEM_PROMPT, encoding="utf-8")
 
         request_payload = dict(payload)
         request_payload["_request_id"] = request_id
         request_payload["_created_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         atomic_write_json(request_dir / "request.json", request_payload)
 
-        user_message = _build_user_message(payload, screenshot_path)
+        user_message = _build_user_message(payload)
         (request_dir / "prompt.txt").write_text(user_message, encoding="utf-8")
 
-        parsed = _call_claude(system_prompt_path, user_message)
+        parsed = _call_claude(system_prompt_path, user_message, screenshot_bytes)
         response_payload = dict(parsed)
         response_payload.pop("_call_metadata", None)
         _validate_result(str(payload.get("question_type") or ""), response_payload)
-        atomic_write_json(request_dir / "response.json", response_payload)
+        artifact_payload = dict(response_payload)
+        artifact_payload["_call_metadata"] = parsed.get("_call_metadata", {})
+        atomic_write_json(request_dir / "response.json", artifact_payload)
         return JSONResponse(status_code=200, content=response_payload)
     except Exception as exc:
         error_payload = {"success": False, "error": str(exc)}

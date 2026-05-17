@@ -17,19 +17,12 @@ from spark_v2.discovery import (
 )
 from spark_v2.tasks.consultation_request import request_consultation
 from spark_v2.tasks.knowledge_loader import is_first_touch, load_knowledge, load_provisional
+from spark_v2.tasks.prompt_codex import UNIVERSAL_LAYER_PATH, load_onboarding_messages
 from spark_v2.tasks.skeleton import extract_skeleton, hash_skeleton
 from spark_v2.tasks.screen_type_util import get_master_category
 
 CONSULT_DIR = Path("/tmp/taey-ed-consult-v2")
-ONBOARDING_MESSAGE = (
-    "Hi, I'm Taey. I'm looking forward to helping you with this course. This is a new "
-    "platform for me, so I might need your help on the first video and first ... screen, "
-    "but after that, I'll be good to go on my own."
-)
-DISCOVERY_IN_PROGRESS_MESSAGE = (
-    "I am researching this platform now, this takes a few minutes. While you wait, you can "
-    "help me with the first screen if you would like."
-)
+ONBOARDING_MESSAGES = load_onboarding_messages(str(UNIVERSAL_LAYER_PATH))
 
 
 def _make_directive_id() -> str:
@@ -150,20 +143,30 @@ def _spawn_consultation(payload: dict, *, tier: int, metadata: dict) -> dict:
     return _consulting_directive(consult["consultation_id"], poll_interval=3.0)
 
 
-def _platform_url_hint(platform: str, payload: dict) -> str:
-    known = {
-        "khan_academy": "https://www.khanacademy.org",
-    }
-    if platform in known:
-        return known[platform]
+def _platform_url_hint(platform_data: dict, payload: dict) -> str:
     current_url = payload.get("current_url")
     if isinstance(current_url, str) and current_url.strip():
         return current_url
-    return platform
+    url_pattern = str((platform_data.get("platform") or {}).get("url_pattern") or "").strip()
+    if url_pattern:
+        if "://" in url_pattern:
+            return url_pattern
+        return f"https://{url_pattern}"
+    platform_name = str((platform_data.get("platform") or {}).get("name") or "").strip()
+    if platform_name:
+        return platform_name
+    return str(payload.get("platform") or "unknown")
 
 
 def _discovery_started_directive(payload: dict, request_id: str) -> dict:
     current_hash = _current_tree_hash(payload)
+    platform = str(payload.get("platform") or "this").replace("_", " ").strip() or "this"
+    display_name = " ".join(part.capitalize() for part in platform.split())
+    onboarding_message = ONBOARDING_MESSAGES["onboarding_message"].replace(
+        "{PLATFORM_DISPLAY_NAME}",
+        display_name,
+    )
+    discovery_message = ONBOARDING_MESSAGES["discovery_in_progress_message"]
     return {
         "directive": "user_input_needed",
         "directive_id": _make_directive_id(),
@@ -171,10 +174,10 @@ def _discovery_started_directive(payload: dict, request_id: str) -> dict:
         "screen": "platform_discovery",
         "tree_hash": current_hash,
         "reason": "first_touch_discovery_started",
-        "message": DISCOVERY_IN_PROGRESS_MESSAGE,
+        "message": discovery_message,
         "chat_messages": [
-            _chat_message(ONBOARDING_MESSAGE),
-            _chat_message(DISCOVERY_IN_PROGRESS_MESSAGE),
+            _chat_message(onboarding_message),
+            _chat_message(discovery_message),
         ],
         "_discovery_request_id": request_id,
     }
@@ -309,7 +312,6 @@ def step_2_validate_previous_action(payload: dict) -> dict | None:
             "directive_id": _make_directive_id(),
             "seconds": 5.0,
             "reason": "polling_continue_loop",
-            "todo": "Phase C4",
         }
 
     if success and before_hash != after_hash and not continue_loop:
@@ -340,7 +342,6 @@ def step_2_validate_previous_action(payload: dict) -> dict | None:
 
 def step_2_7_polling_completion(payload: dict) -> dict | None:
     _ = payload
-    # TODO Phase C4: replace placeholder with tree-change completion handling.
     return None
 
 
@@ -365,7 +366,6 @@ def step_3_failure_retry(payload: dict) -> dict | None:
 
 def step_4_signature_match(payload: dict) -> dict | None:
     _ = payload
-    # TODO Phase F: wire deterministic and procedural cache routing.
     return None
 
 
@@ -390,13 +390,16 @@ def step_5_knowledge_gate_and_classify(payload: dict) -> dict | None:
     if is_first_touch(platform_data) and provisional_data is None:
         active_request = find_active_discovery_request(platform)
         if not active_request:
+            platform_type = str(
+                (payload.get("client_state") or {}).get("platform_type")
+                or (platform_data.get("platform") or {}).get("platform_type")
+                or ""
+            )
             request_id = create_request(
                 {
                     "platform": platform,
-                    "platform_url": _platform_url_hint(platform, payload),
-                    "platform_type": str(
-                        (payload.get("client_state") or {}).get("platform_type") or "MOOC"
-                    ),
+                    "platform_url": _platform_url_hint(platform_data, payload),
+                    "platform_type": platform_type,
                     "any_context": str(payload.get("chat_message") or ""),
                 }
             )
@@ -448,7 +451,7 @@ def step_5_knowledge_gate_and_classify(payload: dict) -> dict | None:
                     tree_hash=current_hash,
                     reason="discovery_invalid_result",
                     extra={"_discovery_request_id": active_request},
-            )
+                )
             provisional_data = load_provisional(platform)
         elif status not in {"pending", "harvested"}:
             return _user_input_directive(
@@ -459,7 +462,7 @@ def step_5_knowledge_gate_and_classify(payload: dict) -> dict | None:
                 screen_type="ONBOARDING_DISCOVERY",
                 tree_hash=current_hash,
                 reason="discovery_unexpected_status",
-                    extra={"_discovery_request_id": active_request},
+                extra={"_discovery_request_id": active_request},
             )
 
     if _needs_screenshot_capture(payload):
@@ -474,7 +477,7 @@ def step_5_knowledge_gate_and_classify(payload: dict) -> dict | None:
     )
 
 
-def build_unknown_placeholder(payload: dict) -> dict:
+def build_unknown_directive(payload: dict) -> dict:
     return _user_input_directive(
         message="No safe next action could be determined.",
         screen_type="UNKNOWN",
@@ -497,4 +500,4 @@ def decide_next_action(payload: dict) -> dict:
         result = step(payload)
         if result is not None:
             return result
-    return build_unknown_placeholder(payload)
+    return build_unknown_directive(payload)

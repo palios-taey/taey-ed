@@ -1,4 +1,4 @@
-"""Embedding proxy with deterministic 4096-d fallback for Mac compatibility."""
+"""Embedding proxy for spark_v2."""
 
 from __future__ import annotations
 
@@ -14,18 +14,8 @@ from fastapi.responses import JSONResponse
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-UPSTREAM = os.environ.get("EMBEDDING_UPSTREAM", "http://10.0.0.68:8091/embed")
+UPSTREAM = os.environ.get("EMBEDDING_UPSTREAM", "http://127.0.0.1:8089/embed")
 DIMENSION = 4096
-
-
-def _stub_vectors(texts: list[str]) -> dict:
-    return {
-        "success": True,
-        "embeddings": [[0.0] * DIMENSION for _ in texts],
-        "model": "stub_zero_vector_fallback",
-        "dimension": DIMENSION,
-        "count": len(texts),
-    }
 
 
 def _validate_vectors(vectors: object, count: int) -> list[list[float]]:
@@ -76,6 +66,13 @@ async def embed(request: Request) -> JSONResponse:
     try:
         result = _proxy_embeddings(texts, payload if isinstance(payload, dict) else {})
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError, RuntimeError) as exc:
-        logger.warning("embed fallback to zero vectors: %s", exc)
-        result = _stub_vectors(texts)
+        logger.warning("embed upstream failed: %s", exc)
+        return JSONResponse(
+            status_code=503,
+            content={
+                "success": False,
+                "error": str(exc),
+                "upstream": UPSTREAM,
+            },
+        )
     return JSONResponse(status_code=200, content=result)

@@ -1,9 +1,9 @@
 # spark_v2
 
-This directory is the clean Spark-side rebuild scaffold defined in Phase B of the rebuild plan.
+This directory contains the Spark-side rebuild code for `taey-ed`.
 
 Canonical inputs:
 - `/home/user/taey-ed/consultations/UNIVERSAL_LAYER_v1.md`
 - `/home/user/taey-ed/consultations/REBUILD_PLAN_v1.md`
 
-Phase B only provides the package skeleton, placeholder FastAPI surface, and isolated worker queue contract. Real decision logic lands in later rebuild phases.
+The package includes the API surface, worker queue contract, and the current rebuild implementation.

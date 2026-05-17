@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import subprocess
@@ -119,85 +120,101 @@ def _validate_bt(payload: dict) -> list[str]:
 
 def _call_claude_cli(
     *,
-    system_prompt: str,
     user_message: str,
     screenshot_path: Path | None,
     timeout_s: float,
     model: str,
     max_budget_usd: float,
     system_prompt_path: Path,
-) -> tuple[str, dict]:
-    # `claude --help` in this environment does not expose an image flag, so the
-    # worker uses an explicit Read-tool instruction against the screenshot path.
-    full_user = user_message
+) -> tuple[str, str, dict]:
+    content: list[dict[str, object]] = []
     if screenshot_path is not None:
-        full_user = (
-            f"You MUST first use your Read tool to examine this image: {screenshot_path}\n\n"
-            "After reading the image, complete the task using both the image and the AX tree context.\n\n"
-            f"{user_message}"
+        content.append(
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": base64.b64encode(screenshot_path.read_bytes()).decode("ascii"),
+                },
+            }
         )
+    content.append({"type": "text", "text": user_message})
+    stream_input = json.dumps(
+        {
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": content,
+            },
+        },
+        ensure_ascii=True,
+    ) + "\n"
 
-    base_cmd = [
+    cmd = [
         "claude",
         "--print",
+        "--input-format",
+        "stream-json",
         "--output-format",
-        "json",
+        "stream-json",
+        "--verbose",
         "--permission-mode",
         "bypassPermissions",
         "--model",
         model,
         "--max-budget-usd",
         str(max_budget_usd),
+        "--system-prompt-file",
+        str(system_prompt_path),
     ]
-    attempts = [
-        ("--system-prompt-file", base_cmd + ["--system-prompt-file", str(system_prompt_path)]),
-        (
-            "--append-system-prompt-file",
-            base_cmd + ["--system-prompt", "", "--append-system-prompt-file", str(system_prompt_path)],
-        ),
-    ]
-    last_error: BTGenerationError | None = None
-    for flag_path, cmd in attempts:
-        try:
-            result = subprocess.run(
-                cmd,
-                input=full_user,
-                capture_output=True,
-                text=True,
-                timeout=timeout_s,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise BTGenerationError(f"claude timed out after {timeout_s}s") from exc
-        if result.returncode != 0:
-            stderr = result.stderr[:500]
-            if "unknown option" in stderr.lower() or flag_path.lstrip("-") in stderr:
-                last_error = BTGenerationError(f"claude rejected {flag_path}: {stderr}")
-                continue
-            raise BTGenerationError(f"claude exited {result.returncode}: {stderr}")
-        try:
-            outer = json.loads(result.stdout)
-        except json.JSONDecodeError as exc:
-            raise BTGenerationError(f"claude stdout was not JSON: {exc}") from exc
-        if outer.get("is_error"):
-            raise BTGenerationError(
-                f"claude reported error: {(outer.get('result') or '')[:300]}"
-            )
-        if screenshot_path is not None and outer.get("num_turns", 0) < 2:
-            raise BTGenerationError("claude did not read the screenshot before answering")
+    try:
+        result = subprocess.run(
+            cmd,
+            input=stream_input,
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise BTGenerationError(f"claude timed out after {timeout_s}s") from exc
+    if result.returncode != 0:
+        raise BTGenerationError(f"claude exited {result.returncode}: {result.stderr[:500]}")
 
-        text = outer.get("result")
-        if not text:
-            raise BTGenerationError("claude returned empty result")
-        metadata = {
-            "num_turns": outer.get("num_turns", 0),
-            "duration_ms": outer.get("duration_ms", 0),
-            "total_cost_usd": outer.get("total_cost_usd", 0.0),
-            "session_id": outer.get("session_id", ""),
-            "model": model,
-            "system_prompt_flag": flag_path,
-        }
-        return text, metadata
-    raise last_error or BTGenerationError("claude system prompt file invocation failed")
+    events: list[dict] = []
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise BTGenerationError(f"claude stream line was not JSON: {exc}") from exc
+        if isinstance(event, dict):
+            events.append(event)
+
+    outer = next(
+        (event for event in reversed(events) if event.get("type") == "result"),
+        None,
+    )
+    if outer is None:
+        raise BTGenerationError("claude stream did not produce a result event")
+    if outer.get("subtype") == "error" or outer.get("is_error"):
+        raise BTGenerationError(f"claude reported error: {(outer.get('result') or '')[:300]}")
+
+    text = outer.get("result")
+    if not text:
+        raise BTGenerationError("claude returned empty result")
+    metadata = {
+        "num_turns": outer.get("num_turns", 0),
+        "duration_ms": outer.get("duration_ms", 0),
+        "total_cost_usd": outer.get("total_cost_usd", 0.0),
+        "session_id": outer.get("session_id", ""),
+        "model": model,
+        "system_prompt_flag": "stream-json",
+        "system_prompt_source": "--system-prompt-file",
+    }
+    return user_message, str(text), metadata
 
 
 def generate_bt(
@@ -228,7 +245,7 @@ def generate_bt(
             tier=tier,
             course_id=((prompt_payload.get("client_state") or {}).get("course_id")),
             tree=tree,
-            screenshot_path=str(consult_dir / "screenshot.png"),
+            screenshot_present=(consult_dir / "screenshot.png").exists(),
             relevant_kb_chunks=prompt_payload.get("relevant_kb_chunks"),
             screen_context={
                 "tree": tree,
@@ -241,12 +258,9 @@ def generate_bt(
     sys_prompt_path = consult_dir / "system_prompt.txt"
     sys_prompt_path.write_text(system_prompt, encoding="utf-8")
     (consult_dir / "prompt.txt").write_text(system_prompt, encoding="utf-8")
-    (consult_dir / "user_instruction.txt").write_text(user_message, encoding="utf-8")
-
     screenshot_path = consult_dir / "screenshot.png"
     screenshot_arg = screenshot_path if screenshot_path.exists() else None
-    raw_text, call_metadata = _call_claude_cli(
-        system_prompt=system_prompt,
+    full_user, raw_text, call_metadata = _call_claude_cli(
         user_message=user_message,
         screenshot_path=screenshot_arg,
         timeout_s=timeout_s,
@@ -254,6 +268,7 @@ def generate_bt(
         max_budget_usd=max_budget_usd,
         system_prompt_path=sys_prompt_path,
     )
+    (consult_dir / "user_instruction.txt").write_text(full_user, encoding="utf-8")
     (consult_dir / "raw_response.txt").write_text(raw_text, encoding="utf-8")
 
     candidate = _extract_json_object(raw_text)

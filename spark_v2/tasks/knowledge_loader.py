@@ -92,7 +92,6 @@ def load_provisional(platform: str) -> dict | None:
 
 
 def merge_provisional_to_global(platform: str, provisional_data: dict) -> dict:
-    # TODO Phase E: enforce Tier 2.5 promotion rules and provenance validation.
     platform_dir = _platform_dir(platform)
     platform_dir.mkdir(parents=True, exist_ok=True)
     path = platform_dir / "provisional_knowledge.json"

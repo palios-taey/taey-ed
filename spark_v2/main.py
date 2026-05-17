@@ -1,8 +1,4 @@
-"""FastAPI scaffold for spark_v2.
-
-Phase B only wires the endpoint surface and the decision-pipeline shell.
-Real behavior lands in later rebuild phases.
-"""
+"""FastAPI app for spark_v2."""
 
 from __future__ import annotations
 
@@ -18,7 +14,7 @@ from spark_v2.routes import embed as embed_route
 from spark_v2.routes import generate as generate_route
 from spark_v2.routes.next_action import decide_next_action
 
-app = FastAPI(title="Taey-Ed Spark V2", version="0.1.0-phase-b")
+app = FastAPI(title="Taey-Ed Spark V2", version="0.1.0")
 app.include_router(abandon_route.router)
 app.include_router(auth_stub.router)
 app.include_router(credits_route.router)
@@ -28,12 +24,11 @@ app.include_router(generate_route.router)
 CONSULT_DIR = Path("/tmp/taey-ed-consult-v2")
 
 
-def _todo_stub(endpoint: str, phase: str, extra: dict | None = None) -> JSONResponse:
+def _not_implemented(endpoint: str, extra: dict | None = None) -> JSONResponse:
     payload = {
         "ok": False,
         "endpoint": endpoint,
-        "todo": phase,
-        "message": f"Phase B scaffold placeholder. Implement in {phase}.",
+        "message": f"{endpoint} is not implemented in spark_v2.",
     }
     if extra:
         payload.update(extra)
@@ -45,7 +40,7 @@ async def health() -> dict:
     return {
         "status": "healthy",
         "service": "spark_v2",
-        "phase": "D-alpha+C7+mac-endpoints",
+        "phase": "D-alpha+C7+wave1",
         "consult_dir": str(CONSULT_DIR),
     }
 
@@ -63,6 +58,4 @@ async def next_action(request: Request) -> JSONResponse:
 
 @app.post("/api/v1/action_review")
 async def action_review(_: Request) -> JSONResponse:
-    # TODO Phase E: implement failure-recovery loop ingestion and routing.
-    return _todo_stub("/api/v1/action_review", "Phase E")
-
+    return _not_implemented("/api/v1/action_review")

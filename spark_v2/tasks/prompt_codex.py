@@ -13,7 +13,6 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 CONSULTATIONS_DIR = Path("/home/user/taey-ed/consultations")
-WORKER_PROMPT_SPEC = CONSULTATIONS_DIR / "CLAUDE_CLI_WORKER_PROMPT_v1.md"
 UNIVERSAL_LAYER_PATH = CONSULTATIONS_DIR / "UNIVERSAL_LAYER_v1.md"
 
 IDENTITY_BLOCK = "\n".join(
@@ -51,6 +50,17 @@ def _extract_section(markdown: str, section_number: int) -> str:
     return markdown[start:end].strip()
 
 
+def _extract_named_section(markdown: str, heading: str, level: int = 3) -> str:
+    pattern = rf"^{'#' * level} {re.escape(heading)}$"
+    match = re.search(pattern, markdown, flags=re.MULTILINE)
+    if not match:
+        raise ValueError(f"Section heading not found: {heading}")
+    start = match.end()
+    next_match = re.search(rf"^#{{1,{level}}} .*$", markdown[start:], flags=re.MULTILINE)
+    end = start + next_match.start() if next_match else len(markdown)
+    return markdown[start:end].strip()
+
+
 def _strip_provenance_notes(text: str) -> str:
     lines: list[str] = []
     for line in text.splitlines():
@@ -75,6 +85,24 @@ def load_universal_layer_sections(path: str) -> dict[str, str]:
         "principles": principles,
         "handlers": handlers,
         "output_schema": output_schema,
+    }
+
+
+@lru_cache(maxsize=2)
+def load_onboarding_messages(path: str = str(UNIVERSAL_LAYER_PATH)) -> dict[str, str]:
+    markdown = _read_text(Path(path))
+    section = _extract_named_section(markdown, "Canonical Message Templates", level=3)
+    fenced = re.search(r"```json\n(.*?)\n```", section, flags=re.DOTALL)
+    if fenced is None:
+        raise ValueError("Canonical Message Templates JSON block not found in Universal Layer")
+    parsed = json.loads(fenced.group(1))
+    onboarding_message = str(parsed.get("onboarding_message") or "").strip()
+    discovery_message = str(parsed.get("discovery_in_progress_message") or "").strip()
+    if not onboarding_message or not discovery_message:
+        raise ValueError("Canonical onboarding messages are incomplete")
+    return {
+        "onboarding_message": onboarding_message,
+        "discovery_in_progress_message": discovery_message,
     }
 
 
@@ -443,7 +471,7 @@ def assemble_user_message(
     tier: int,
     course_id: str | None,
     tree: dict,
-    screenshot_path: str,
+    screenshot_present: bool,
     relevant_kb_chunks: list[dict] | None,
     screen_context: dict,
 ) -> str:
@@ -463,7 +491,8 @@ def assemble_user_message(
         "\n".join(header_lines),
         "Section A — AX Tree\n" + tree_text,
         "Section B — Readable AX Text Index\n" + (text_index or "none"),
-        f"Section C — Screenshot\nScreenshot: {screenshot_path}",
+        "Section C — Screenshot\n"
+        + ("Inline screenshot attachment is present." if screenshot_present else "No screenshot attachment is present."),
     ]
 
     if relevant_kb_chunks and _exercise_like_context(screen_context):

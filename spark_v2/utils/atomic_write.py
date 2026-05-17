@@ -9,8 +9,6 @@ from pathlib import Path
 
 
 def atomic_write_json(path: str | Path, data: dict, indent: int = 2) -> None:
-    # TODO Phase B: keep this helper small and isolated; extend only if later
-    # phases need stronger durability guarantees.
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
     fd, temp_path = tempfile.mkstemp(
