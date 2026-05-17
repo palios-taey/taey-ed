@@ -15,8 +15,24 @@ from spark_v2.discovery import (
     poll_for_result,
     validate_and_promote_to_provisional,
 )
+from spark_v2.learning.outcome_log import log_event, log_graduation_event, log_outcome
+from spark_v2.recovery import (
+    capture_user_guidance,
+    create_request as create_recovery_request,
+    find_active_recovery_request,
+    get_metadata_status as get_recovery_metadata_status,
+    poll_for_result as poll_for_recovery_result,
+    validate_and_merge_recovery_result,
+)
 from spark_v2.tasks.consultation_request import request_consultation
-from spark_v2.tasks.knowledge_loader import is_first_touch, load_knowledge, load_provisional
+from spark_v2.tasks.knowledge_loader import (
+    graduate_active_recovery_entries,
+    increment_meta_counter,
+    is_first_touch,
+    load_knowledge,
+    load_provisional,
+    record_failed_recovery_attempt,
+)
 from spark_v2.tasks.prompt_codex import UNIVERSAL_LAYER_PATH, load_onboarding_messages
 from spark_v2.tasks.skeleton import extract_skeleton, hash_skeleton
 from spark_v2.tasks.screen_type_util import get_master_category
@@ -141,6 +157,115 @@ def _spawn_consultation(payload: dict, *, tier: int, metadata: dict) -> dict:
         metadata=metadata,
     )
     return _consulting_directive(consult["consultation_id"], poll_interval=3.0)
+
+
+def _load_consult_metadata(consultation_id: str | None) -> dict:
+    if not consultation_id:
+        return {}
+    path = CONSULT_DIR / consultation_id / "metadata.json"
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text())
+    except Exception:
+        return {}
+
+
+def _course_id(payload: dict) -> str:
+    return str(((payload.get("client_state") or {}).get("course_id")) or "")
+
+
+def _current_screen_type(payload: dict, last_result: dict | None = None) -> str:
+    if isinstance(last_result, dict):
+        screen = str(last_result.get("screen") or "").strip()
+        if screen:
+            return screen
+    return "UNKNOWN"
+
+
+def _log_execution_outcome(payload: dict, *, step2_validated: bool, wrong_answer_retry: bool, worker_fallback: bool) -> None:
+    last_result = payload.get("last_result")
+    if not isinstance(last_result, dict):
+        return
+    consultation_id = _extract_active_consultation_id(payload) or str(last_result.get("consultation_id") or "")
+    consult_meta = _load_consult_metadata(consultation_id)
+    tier = int(consult_meta.get("tier") or 0)
+    screen_type = _current_screen_type(payload, last_result)
+    skeleton_hash = str(last_result.get("directive_skeleton_hash") or _current_skeleton_hash(payload))
+    log_outcome(
+        payload.get("platform", "unknown"),
+        screen_type,
+        skeleton_hash,
+        consultation_id,
+        _course_id(payload),
+        last_result.get("failed_bt") or {"action": last_result.get("action")},
+        bool(last_result.get("success")),
+        tier,
+        wrong_answer_retry,
+        worker_fallback,
+        step2_validated,
+        error=None if last_result.get("success") else str(last_result.get("action") or "failed"),
+        fingerprint=str(last_result.get("directive_id") or ""),
+    )
+
+
+def _capture_guidance_if_present(payload: dict) -> None:
+    last_result = payload.get("last_result")
+    if not isinstance(last_result, dict):
+        return
+    user_response = str(last_result.get("user_response") or "").strip()
+    if not user_response:
+        return
+    consultation_id = _extract_active_consultation_id(payload) or str(last_result.get("consultation_id") or "")
+    capture_user_guidance(
+        platform=payload.get("platform", "unknown"),
+        consultation_id=consultation_id or "tier3",
+        course_id=_course_id(payload),
+        screen_type=_current_screen_type(payload, last_result),
+        tree_hash=str(last_result.get("directive_skeleton_hash") or _current_tree_hash(payload)),
+        guidance_text=user_response,
+    )
+
+
+def _dispatch_recovery_request(payload: dict, last_result: dict) -> dict:
+    platform = payload.get("platform", "unknown")
+    platform_data = load_knowledge(platform)
+    provisional_data = load_provisional(platform)
+    request_id = create_recovery_request(
+        {
+            "platform": platform,
+            "platform_display_name": (platform_data.get("platform") or {}).get("display_name") or platform,
+            "platform_url": _platform_url_hint(platform_data, payload),
+            "screen_type": _current_screen_type(payload, last_result),
+            "tier1_timestamp": _now(),
+            "attempt_count": 2,
+            "course_id": _course_id(payload),
+            "tree": payload.get("tree") or {},
+            "vision_extraction": "screenshot supplied in consult dir",
+            "mismatch_hypothesis": "pending external recovery research",
+            "failed_bt": last_result.get("failed_bt") or {},
+            "bt_debug_tail": last_result.get("bt_debug_tail") or "",
+            "knowledge": platform_data,
+            "provisional": provisional_data,
+        }
+    )
+    increment_meta_counter(platform, "recovery_consults_total")
+    log_event(
+        platform,
+        event_kind="tier2_dispatched",
+        screen_type=_current_screen_type(payload, last_result),
+        skeleton_hash=str(last_result.get("directive_skeleton_hash") or _current_skeleton_hash(payload)),
+        consultation_id=_extract_active_consultation_id(payload) or "",
+        course_id=_course_id(payload),
+        payload={"request_id": request_id},
+    )
+    return {
+        "directive": "wait",
+        "directive_id": _make_directive_id(),
+        "seconds": 20.0,
+        "reason": f"recovery in progress ({request_id})",
+        "_recovery_request_id": request_id,
+    }
 
 
 def _platform_url_hint(platform_data: dict, payload: dict) -> str:
@@ -294,11 +419,13 @@ def step_2_validate_previous_action(payload: dict) -> dict | None:
     current_tree_hash = _current_tree_hash(payload)
     current_skeleton_hash = _current_skeleton_hash(payload)
     current_master = get_master_category(last_result.get("screen"))
+    _capture_guidance_if_present(payload)
 
     expected_next = last_result.get("directive_expected_next") or []
     if success and any(get_master_category(item) == "EXERCISE" for item in expected_next):
         prior_skeleton_hash = last_result.get("directive_skeleton_hash")
         if current_master == "EXERCISE" and prior_skeleton_hash and prior_skeleton_hash == current_skeleton_hash:
+            _log_execution_outcome(payload, step2_validated=False, wrong_answer_retry=True, worker_fallback=False)
             return _user_input_directive(
                 message="The action appears to have stayed on the same exercise screen.",
                 screen_type="EXERCISE",
@@ -307,6 +434,7 @@ def step_2_validate_previous_action(payload: dict) -> dict | None:
             )
 
     if success and continue_loop:
+        _log_execution_outcome(payload, step2_validated=False, wrong_answer_retry=False, worker_fallback=False)
         return {
             "directive": "wait",
             "directive_id": _make_directive_id(),
@@ -315,10 +443,25 @@ def step_2_validate_previous_action(payload: dict) -> dict | None:
         }
 
     if success and before_hash != after_hash and not continue_loop:
+        _log_execution_outcome(payload, step2_validated=True, wrong_answer_retry=False, worker_fallback=False)
+        consultation_id = _extract_active_consultation_id(payload) or str(last_result.get("consultation_id") or "")
+        graduation = graduate_active_recovery_entries(payload.get("platform", "unknown"), consultation_id or "validated")
+        if graduation.get("graduated_entry_ids"):
+            log_graduation_event(
+                payload.get("platform", "unknown"),
+                str(last_result.get("directive_skeleton_hash") or current_skeleton_hash),
+                consultation_id or "validated",
+                {
+                    "screen_type": _current_screen_type(payload, last_result),
+                    "course_id": _course_id(payload),
+                    "graduated_entry_ids": graduation["graduated_entry_ids"],
+                },
+            )
         return None
 
     action_label = str(last_result.get("action", ""))
     if success and before_hash == after_hash and not continue_loop:
+        _log_execution_outcome(payload, step2_validated=False, wrong_answer_retry=False, worker_fallback=False)
         return _user_input_directive(
             message="The last action did not change the screen.",
             screen_type=last_result.get("screen", "UNKNOWN"),
@@ -327,6 +470,7 @@ def step_2_validate_previous_action(payload: dict) -> dict | None:
         )
 
     if not success and "tree_unchanged" in action_label:
+        _log_execution_outcome(payload, step2_validated=False, wrong_answer_retry=False, worker_fallback=False)
         return _user_input_directive(
             message="The last action left the screen unchanged.",
             screen_type=last_result.get("screen", "UNKNOWN"),
@@ -335,6 +479,11 @@ def step_2_validate_previous_action(payload: dict) -> dict | None:
         )
 
     if not success and last_result.get("failed_bt"):
+        _log_execution_outcome(payload, step2_validated=False, wrong_answer_retry=False, worker_fallback=False)
+        record_failed_recovery_attempt(
+            payload.get("platform", "unknown"),
+            _extract_active_consultation_id(payload) or str(last_result.get("consultation_id") or "failed"),
+        )
         return None
 
     return None
@@ -351,8 +500,13 @@ def step_3_failure_retry(payload: dict) -> dict | None:
         return None
     if last_result.get("success") or not last_result.get("failed_bt"):
         return None
+    consultation_id = _extract_active_consultation_id(payload) or str(last_result.get("consultation_id") or "")
+    consult_meta = _load_consult_metadata(consultation_id)
+    prior_tier = int(consult_meta.get("tier") or 0)
     if _needs_screenshot_capture(payload):
         return _need_screenshot_directive()
+    if prior_tier >= 1:
+        return _dispatch_recovery_request(payload, last_result)
     return _spawn_consultation(
         payload,
         tier=1,
@@ -463,6 +617,54 @@ def step_5_knowledge_gate_and_classify(payload: dict) -> dict | None:
                 tree_hash=current_hash,
                 reason="discovery_unexpected_status",
                 extra={"_discovery_request_id": active_request},
+            )
+
+    active_recovery = find_active_recovery_request(platform)
+    if active_recovery:
+        recovery_status = get_recovery_metadata_status(active_recovery)
+        recovery_result = poll_for_recovery_result(active_recovery)
+        if recovery_result is None and recovery_status == "pending":
+            return {
+                "directive": "wait",
+                "directive_id": _make_directive_id(),
+                "seconds": 20.0,
+                "reason": f"recovery in progress ({active_recovery})",
+                "_recovery_request_id": active_recovery,
+            }
+        if recovery_result is None and recovery_status == "harvested":
+            return _user_input_directive(
+                message="Recovery harvested a result, but the result artifact is missing.",
+                screen_type="RECOVERY",
+                tree_hash=current_hash,
+                reason="recovery_missing_result",
+                extra={"_recovery_request_id": active_recovery},
+            )
+        if recovery_status in {"auth_required", "malformed_output", "timeout"}:
+            return _user_input_directive(
+                message=f"Recovery research could not complete automatically (status={recovery_status}).",
+                screen_type="RECOVERY",
+                tree_hash=current_hash,
+                reason="recovery_failed",
+                extra={"_recovery_request_id": active_recovery},
+            )
+        if recovery_result is not None:
+            ok, errors = validate_and_merge_recovery_result(recovery_result, platform, active_recovery)
+            if not ok:
+                detail = errors[0] if errors else "unknown validation error"
+                return _user_input_directive(
+                    message=f"Recovery research returned invalid data. First error: {detail}",
+                    screen_type="RECOVERY",
+                    tree_hash=current_hash,
+                    reason="recovery_invalid_result",
+                    extra={"_recovery_request_id": active_recovery},
+                )
+        elif recovery_status not in {"pending", "harvested"}:
+            return _user_input_directive(
+                message=f"Recovery is in an unexpected state ({recovery_status or 'unknown'}).",
+                screen_type="RECOVERY",
+                tree_hash=current_hash,
+                reason="recovery_unexpected_status",
+                extra={"_recovery_request_id": active_recovery},
             )
 
     if _needs_screenshot_capture(payload):

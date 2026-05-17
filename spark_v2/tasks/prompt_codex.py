@@ -10,6 +10,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from spark_v2.tasks.knowledge_loader import iter_provisional_entries
+
 logger = logging.getLogger(__name__)
 
 CONSULTATIONS_DIR = Path("/home/user/taey-ed/consultations")
@@ -172,6 +174,40 @@ def _json_compact(value: Any) -> str:
     return json.dumps(value, separators=(",", ":"), ensure_ascii=True)
 
 
+def _mask_paths(value: Any, paths: set[str], prefix: str = "") -> Any:
+    if not paths:
+        return copy.deepcopy(value)
+    if isinstance(value, dict):
+        masked: dict[str, Any] = {}
+        for key, child in value.items():
+            child_path = f"{prefix}/{key}" if prefix else key
+            if child_path in paths:
+                continue
+            masked[key] = _mask_paths(child, paths, child_path)
+        return masked
+    if isinstance(value, list):
+        masked_list: list[Any] = []
+        for index, child in enumerate(value):
+            child_path = f"{prefix}/{index}" if prefix else str(index)
+            if child_path in paths:
+                continue
+            masked_list.append(_mask_paths(child, paths, child_path))
+        return masked_list
+    return copy.deepcopy(value)
+
+
+def _collect_override_paths(provisional_data: dict | None) -> set[str]:
+    override_paths: set[str] = set()
+    for entry in iter_provisional_entries(provisional_data):
+        if entry.get("failed_validation_at"):
+            continue
+        for path in (entry.get("amendments") or {}).get("deprecated_canonical_paths") or []:
+            cleaned = str(path or "").strip("/")
+            if cleaned:
+                override_paths.add(cleaned)
+    return override_paths
+
+
 def format_platform_knowledge(platform_data: dict) -> str:
     compact = _drop_provenance(copy.deepcopy(platform_data or {}))
     platform = compact.get("platform", {})
@@ -218,11 +254,44 @@ def format_platform_knowledge(platform_data: dict) -> str:
     return f"Platform: {display_name}\n" + "\n\n".join(blocks)
 
 
-def format_provisional(provisional_data: dict | None) -> str:
+def format_provisional(provisional_data: dict | None, override_paths: set[str] | None = None) -> str:
     if not provisional_data:
         return ""
     compact = _drop_provenance(copy.deepcopy(provisional_data))
-    return "PROVISIONAL — empirical validation pending:\n" + format_platform_knowledge(compact)
+    blocks: list[str] = []
+    root_block = format_platform_knowledge(
+        {
+            key: value
+            for key, value in compact.items()
+            if key not in {"_recovery_entries", "_extraction_hints"}
+        }
+    )
+    if root_block:
+        blocks.append(root_block)
+    recovery_entries = []
+    for entry in iter_provisional_entries(compact):
+        if entry.get("failed_validation_at"):
+            continue
+        amendments = entry.get("amendments") or {}
+        heading = f"entry_id={entry.get('entry_id') or entry.get('request_id') or 'recovery'}"
+        if override_paths:
+            active = sorted(
+                path for path in (amendments.get("deprecated_canonical_paths") or []) if path.strip("/") in override_paths
+            )
+            if active:
+                heading += f" overrides={active}"
+        recovery_entries.append(f"{heading}\n{_json_block(amendments)}")
+    if recovery_entries:
+        blocks.append("Recovery amendments:\n" + "\n\n".join(recovery_entries))
+    if not blocks:
+        return ""
+    return "PROVISIONAL — empirical validation pending:\n" + "\n\n".join(blocks)
+
+
+def render_knowledge_for_worker(knowledge: dict, provisional: dict | None) -> tuple[str, str]:
+    override_paths = _collect_override_paths(provisional)
+    masked = _mask_paths(knowledge, override_paths)
+    return format_platform_knowledge(masked), format_provisional(provisional, override_paths=override_paths)
 
 
 def format_reconsult_context(last_result: dict | None, tier: int) -> str:
@@ -480,14 +549,14 @@ def assemble_system_prompt(
     last_result: dict | None,
     tier: int,
 ) -> str:
+    platform_block, provisional_block = render_knowledge_for_worker(platform_data, provisional_data)
     blocks = [
         ("identity", universal_sections["identity"]),
         ("principles", universal_sections["principles"]),
         ("handlers", universal_sections["handlers"]),
         ("output_schema", universal_sections["output_schema"]),
-        ("platform_knowledge", format_platform_knowledge(platform_data)),
+        ("platform_knowledge", platform_block),
     ]
-    provisional_block = format_provisional(provisional_data)
     if provisional_block:
         blocks.append(("provisional", provisional_block))
     reconsult_block = format_reconsult_context(last_result, tier)

@@ -26,6 +26,29 @@ def _append_record(platform: str, record: dict) -> dict:
     return record
 
 
+def log_event(
+    platform: str,
+    *,
+    event_kind: str,
+    screen_type: str,
+    skeleton_hash: str,
+    consultation_id: str,
+    course_id: str,
+    payload: dict | None = None,
+) -> dict:
+    record = {
+        "event_kind": event_kind,
+        "timestamp": _now(),
+        "platform": platform,
+        "screen_type": screen_type,
+        "skeleton_hash": skeleton_hash,
+        "consultation_id": consultation_id,
+        "course_id": course_id,
+        "payload": payload or {},
+    }
+    return _append_record(platform, record)
+
+
 def log_outcome(
     platform: str,
     screen_type: str,
@@ -82,6 +105,18 @@ def log_promotion_event(platform: str, skeleton_hash: str, entry: dict) -> dict:
         "fingerprint": "promotion_event",
     }
     return _append_record(platform, record)
+
+
+def log_graduation_event(platform: str, skeleton_hash: str, consultation_id: str, payload: dict) -> dict:
+    return log_event(
+        platform,
+        event_kind="graduation",
+        screen_type=str(payload.get("screen_type") or ""),
+        skeleton_hash=skeleton_hash,
+        consultation_id=consultation_id,
+        course_id=str(payload.get("course_id") or ""),
+        payload=payload,
+    )
 
 
 def get_platform_outcomes(platform: str, limit: int = OUTCOME_LIMIT_DEFAULT) -> list[dict]:
