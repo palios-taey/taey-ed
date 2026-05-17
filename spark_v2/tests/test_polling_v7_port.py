@@ -80,7 +80,7 @@ class PollingV7PortTests(unittest.TestCase):
         }
         self.assertIsNone(next_action.step_2_7_polling_completion(payload))
 
-    def test_step_2_7_structural_change_returns_deterministic_close(self) -> None:
+    def test_step_2_7_structural_change_falls_through_to_step_5(self) -> None:
         tree_a = {
             "role": "AXApplication",
             "name": "Chrome",
@@ -124,11 +124,9 @@ class PollingV7PortTests(unittest.TestCase):
                 "after_tree": tree_a,
             },
         }
-        directive = next_action.step_2_7_polling_completion(payload)
-        self.assertEqual(directive["directive"], "execute_tree")
-        self.assertEqual(directive["screen"], "VIDEO_PLAYING_COMPLETE")
+        self.assertIsNone(next_action.step_2_7_polling_completion(payload))
 
-    def test_step_2_7_tree_changed_returns_deterministic_close(self) -> None:
+    def test_step_2_7_tree_changed_falls_through(self) -> None:
         payload = {
             "platform": "platform_a",
             "tree": {"role": "AXWebArea"},
@@ -140,27 +138,7 @@ class PollingV7PortTests(unittest.TestCase):
                 "tree_hash_after": "after",
             },
         }
-        directive = next_action.step_2_7_polling_completion(payload)
-        self.assertEqual(directive["directive"], "execute_tree")
-        self.assertEqual(directive["screen"], "VIDEO_PLAYING_COMPLETE")
-        self.assertEqual(
-            directive["tree"],
-            {
-                "type": "sequence",
-                "children": [
-                    {
-                        "type": "action",
-                        "action": "press_key",
-                        "params": {"key": "Escape"},
-                    },
-                    {
-                        "type": "action",
-                        "action": "wait",
-                        "params": {"seconds": 2.0},
-                    },
-                ],
-            },
-        )
+        self.assertIsNone(next_action.step_2_7_polling_completion(payload))
 
     def test_step_2_7_tree_unchanged_falls_through(self) -> None:
         payload = {

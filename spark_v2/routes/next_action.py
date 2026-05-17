@@ -577,7 +577,9 @@ def step_2_7_polling_completion(payload: dict) -> dict | None:
     # Polling completion is server-owned, but 2026-05-17 Chrome tab-strip
     # memory-usage label churn proved Mac tree_hash can change with no meaningful
     # content change. Compare pruned structural hashes first; only fall back to
-    # raw Mac hashes when the prior after_tree is unavailable.
+    # raw Mac hashes when the prior after_tree is unavailable. The old v7
+    # Escape+wait close assumption does not apply to current Khan; when the tree
+    # meaningfully changes, fall through so Step 5 can classify the new state.
     last_result = payload.get("last_result")
     if not isinstance(last_result, dict):
         return None
@@ -594,26 +596,7 @@ def step_2_7_polling_completion(payload: dict) -> dict | None:
         changed = last_result.get("tree_hash_before") != last_result.get("tree_hash_after")
 
     if changed:
-        return {
-            "directive": "execute_tree",
-            "directive_id": _make_directive_id(),
-            "tree": {
-                "type": "sequence",
-                "children": [
-                    {
-                        "type": "action",
-                        "action": "press_key",
-                        "params": {"key": "Escape"},
-                    },
-                    {
-                        "type": "action",
-                        "action": "wait",
-                        "params": {"seconds": 2.0},
-                    },
-                ],
-            },
-            "screen": f"{last_result.get('screen') or 'CONTENT'}_COMPLETE",
-        }
+        return None
     return None
 
 
