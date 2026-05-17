@@ -100,20 +100,6 @@ def _cache_short_circuit_consultation_id() -> str:
     return f"cache_short_circuit_{int(time.time())}"
 
 
-def _current_tree_master_category(payload: dict) -> str:
-    tree = payload.get("tree") or {}
-    if isinstance(tree, dict):
-        for key in ("screen_type", "screen"):
-            value = tree.get(key)
-            if isinstance(value, str) and value.strip():
-                return get_master_category(value)
-    for key in ("screen_type_hint", "screen"):
-        value = payload.get(key)
-        if isinstance(value, str) and value.strip():
-            return get_master_category(value)
-    return "UNKNOWN"
-
-
 def _cache_short_circuit_active(payload: dict, last_result: dict) -> tuple[bool, str, dict | None]:
     if _extract_active_consultation_id(payload):
         return False, "", None
@@ -639,24 +625,24 @@ def step_3_failure_retry(payload: dict) -> dict | None:
 
 def step_4_signature_match(payload: dict) -> dict | None:
     # Ported from v7 server.py:605-620 and 04_VIDEO_POLL_ARCHAEOLOGY.md §A2/§D1.
-    # Unchanged polling screens re-enter the cheap match/execute loop without consultation.
+    # The earlier current_master gate was a porting error caught on the
+    # 2026-05-17 16:36/16:40/16:43 Khan polling exits; Step 4 must re-poll
+    # based on prior polling state alone once Step 2.7 has fallen through.
     last_result = payload.get("last_result")
     if isinstance(last_result, dict) and bool(last_result.get("continue_loop")):
         prior_master = get_master_category(last_result.get("screen"))
         if prior_master in {"VIDEO", "ARTICLE"}:
-            current_master = _current_tree_master_category(payload)
-            if current_master == prior_master:
-                return {
-                    "directive": "execute_tree",
-                    "directive_id": _make_directive_id(),
-                    "consultation_id": _extract_active_consultation_id(payload),
-                    "tree": _video_poll_tree(),
-                    "screen": last_result.get("screen", "UNKNOWN"),
-                    "expected_next": [],
-                    "extract": None,
-                    "chat_messages": [],
-                    "skeleton_hash": str(last_result.get("directive_skeleton_hash") or ""),
-                }
+            return {
+                "directive": "execute_tree",
+                "directive_id": _make_directive_id(),
+                "consultation_id": _extract_active_consultation_id(payload),
+                "tree": _video_poll_tree(),
+                "screen": last_result.get("screen", "UNKNOWN"),
+                "expected_next": [],
+                "extract": None,
+                "chat_messages": [],
+                "skeleton_hash": str(last_result.get("directive_skeleton_hash") or ""),
+            }
 
     platform = payload.get("platform", "unknown")
     tree = payload.get("tree") or {}

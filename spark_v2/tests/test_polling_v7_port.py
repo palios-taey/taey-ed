@@ -62,7 +62,7 @@ class PollingV7PortTests(unittest.TestCase):
     def test_step_4_polling_continuity_reissues_video_poll(self) -> None:
         payload = {
             "platform": "platform_a",
-            "tree": {"role": "AXWebArea", "screen_type": "VIDEO_PAUSED"},
+            "tree": {"role": "AXWebArea", "children": [{"role": "AXButton", "name": "Completely unrelated"}]},
             "client_state": {},
             "last_result": {
                 "continue_loop": True,
@@ -75,6 +75,23 @@ class PollingV7PortTests(unittest.TestCase):
         self.assertEqual(directive["screen"], "VIDEO_PLAYING")
         self.assertEqual(directive["tree"]["action"], "video_poll")
         self.assertEqual(directive["skeleton_hash"], "hash_a")
+
+    def test_step_4_polling_continuity_reissues_for_article_any_tree_shape(self) -> None:
+        payload = {
+            "platform": "platform_a",
+            "tree": {"role": "AXWebArea", "children": [{"role": "AXStaticText", "name": "Anything at all"}]},
+            "client_state": {},
+            "last_result": {
+                "continue_loop": True,
+                "screen": "ARTICLE_READING",
+                "directive_skeleton_hash": "hash_b",
+            },
+        }
+        directive = next_action.step_4_signature_match(payload)
+        self.assertEqual(directive["directive"], "execute_tree")
+        self.assertEqual(directive["screen"], "ARTICLE_READING")
+        self.assertEqual(directive["tree"]["action"], "video_poll")
+        self.assertEqual(directive["skeleton_hash"], "hash_b")
 
     def test_step_4_non_polling_uses_existing_exact_hash_lookup(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -105,7 +122,7 @@ class PollingV7PortTests(unittest.TestCase):
     def test_step_4_lenient_match_does_not_fire_without_continue_loop(self) -> None:
         payload = {
             "platform": "platform_a",
-            "tree": {"role": "AXWebArea", "screen_type": "VIDEO_PAUSED"},
+            "tree": {"role": "AXWebArea", "children": [{"role": "AXStaticText", "name": "Anything"}]},
             "client_state": {},
             "last_result": {
                 "continue_loop": False,
