@@ -16,7 +16,7 @@ from spark_v2.discovery import (
     validate_and_promote_to_provisional,
 )
 from spark_v2.learning import invalidation
-from spark_v2.learning.cache import load_cached_bt
+from spark_v2.learning.cache import MAX_CONSECUTIVE_VIDEO_POLLS, load_cached_bt
 from spark_v2.learning.outcome_log import log_event, log_graduation_event, log_outcome
 from spark_v2.recovery import (
     capture_user_guidance,
@@ -30,6 +30,7 @@ from spark_v2.tasks.consultation_request import request_consultation
 from spark_v2.tasks.knowledge_loader import (
     graduate_active_recovery_entries,
     increment_meta_counter,
+    get_video_completion_signal,
     is_first_touch,
     load_knowledge,
     load_provisional,
@@ -131,6 +132,13 @@ def _cache_short_circuit_active(payload: dict, last_result: dict) -> tuple[bool,
     if not isinstance(entry, dict):
         return False, skeleton_hash, None
     return str(entry.get("cache_class") or "") == "DETERMINISTIC_BT", skeleton_hash, entry
+
+
+def _is_mid_video_polling(last_result: dict) -> bool:
+    if not bool(last_result.get("continue_loop")):
+        return False
+    action = str(last_result.get("action") or "")
+    return "video_poll" in action or action == "behavior_tree (success)"
 
 
 def _user_input_directive(
@@ -588,18 +596,36 @@ def step_2_7_polling_completion(payload: dict) -> dict | None:
     last_result = payload.get("last_result")
     if not isinstance(last_result, dict):
         return None
-    if not bool(last_result.get("continue_loop")) and str(last_result.get("action") or "") != "video_poll":
+    if not _is_mid_video_polling(last_result):
         return None
-    if last_result.get("tree_hash_before") != last_result.get("tree_hash_after"):
-        return None
-
-    platform_data = load_knowledge(payload.get("platform", "unknown"))
-    indicator = (platform_data.get("global") or {}).get("video_completion_signal")
-    if not isinstance(indicator, dict):
+    before_hash = last_result.get("tree_hash_before")
+    after_hash = last_result.get("tree_hash_after")
+    if before_hash != after_hash:
         return None
 
+    client_state = payload.get("client_state") or {}
     skeleton_hash = _current_skeleton_hash(payload)
-    if _match_completion_indicator(payload.get("tree") or {}, indicator):
+    consecutive_polls = int(client_state.get("consecutive_video_polls") or 0) + 1
+    if consecutive_polls >= MAX_CONSECUTIVE_VIDEO_POLLS:
+        log_event(
+            payload.get("platform", "unknown"),
+            event_kind="video_polling_stuck",
+            screen_type="VIDEO",
+            skeleton_hash=skeleton_hash,
+            consultation_id=_extract_active_consultation_id(payload) or "",
+            course_id=_course_id(payload),
+            payload={"consecutive_video_polls": consecutive_polls},
+        )
+        return _user_input_directive(
+            message="Video polling exceeded the safe retry limit without any tree change.",
+            screen_type="VIDEO",
+            tree_hash=_current_tree_hash(payload),
+            reason="video_polling_stuck",
+            extra={"consecutive_video_polls": consecutive_polls},
+        )
+
+    indicator = get_video_completion_signal(payload.get("platform", "unknown"))
+    if isinstance(indicator, dict) and _match_completion_indicator(payload.get("tree") or {}, indicator):
         log_event(
             payload.get("platform", "unknown"),
             event_kind="video_complete_detected",
@@ -621,14 +647,15 @@ def step_2_7_polling_completion(payload: dict) -> dict | None:
             },
         )
 
+    event_kind = "video_still_polling" if isinstance(indicator, dict) else "video_polling_no_signal"
     log_event(
         payload.get("platform", "unknown"),
-        event_kind="video_still_polling",
+        event_kind=event_kind,
         screen_type="VIDEO",
         skeleton_hash=skeleton_hash,
         consultation_id=_extract_active_consultation_id(payload) or "",
         course_id=_course_id(payload),
-        payload={"indicator": indicator},
+        payload={"indicator": indicator, "consecutive_video_polls": consecutive_polls},
     )
     return {
         "directive": "execute_tree",
