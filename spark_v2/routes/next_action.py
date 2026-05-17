@@ -580,6 +580,9 @@ def step_2_7_polling_completion(payload: dict) -> dict | None:
     # raw Mac hashes when the prior after_tree is unavailable. The old v7
     # Escape+wait close assumption does not apply to current Khan; when the tree
     # meaningfully changes, fall through so Step 5 can classify the new state.
+    # 2026-05-17 live Khan evidence also showed Step 4 lenient polling continuity
+    # masking Step 5 after completion, so Step 2.7 is now the sole owner of
+    # equal-vs-different polling-state routing.
     last_result = payload.get("last_result")
     if not isinstance(last_result, dict):
         return None
@@ -595,6 +598,18 @@ def step_2_7_polling_completion(payload: dict) -> dict | None:
     else:
         changed = last_result.get("tree_hash_before") != last_result.get("tree_hash_after")
 
+    if not changed:
+        return {
+            "directive": "execute_tree",
+            "directive_id": _make_directive_id(),
+            "consultation_id": _extract_active_consultation_id(payload),
+            "tree": _video_poll_tree(),
+            "screen": last_result.get("screen", "UNKNOWN"),
+            "expected_next": [],
+            "extract": None,
+            "chat_messages": [],
+            "skeleton_hash": str(last_result.get("directive_skeleton_hash") or ""),
+        }
     if changed:
         return None
     return None
@@ -625,26 +640,8 @@ def step_3_failure_retry(payload: dict) -> dict | None:
 
 
 def step_4_signature_match(payload: dict) -> dict | None:
-    # Ported from v7 server.py:605-620 and 04_VIDEO_POLL_ARCHAEOLOGY.md §A2/§D1.
-    # The earlier current_master gate was a porting error caught on the
-    # 2026-05-17 16:36/16:40/16:43 Khan polling exits; Step 4 must re-poll
-    # based on prior polling state alone once Step 2.7 has fallen through.
-    last_result = payload.get("last_result")
-    if isinstance(last_result, dict) and bool(last_result.get("continue_loop")):
-        prior_master = get_master_category(last_result.get("screen"))
-        if prior_master in {"VIDEO", "ARTICLE"}:
-            return {
-                "directive": "execute_tree",
-                "directive_id": _make_directive_id(),
-                "consultation_id": _extract_active_consultation_id(payload),
-                "tree": _video_poll_tree(),
-                "screen": last_result.get("screen", "UNKNOWN"),
-                "expected_next": [],
-                "extract": None,
-                "chat_messages": [],
-                "skeleton_hash": str(last_result.get("directive_skeleton_hash") or ""),
-            }
-
+    # Phase F cache routing only. Polling continuity is owned exclusively by
+    # Step 2.7 so a meaningful post-poll tree change can reach Step 5.
     platform = payload.get("platform", "unknown")
     tree = payload.get("tree") or {}
     skeleton = extract_skeleton(tree)

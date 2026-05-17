@@ -78,7 +78,10 @@ class PollingV7PortTests(unittest.TestCase):
                 "after_tree": tree_a,
             },
         }
-        self.assertIsNone(next_action.step_2_7_polling_completion(payload))
+        directive = next_action.step_2_7_polling_completion(payload)
+        self.assertEqual(directive["directive"], "execute_tree")
+        self.assertEqual(directive["tree"]["action"], "video_poll")
+        self.assertEqual(directive["screen"], "VIDEO_PLAYING")
 
     def test_step_2_7_structural_change_falls_through_to_step_5(self) -> None:
         tree_a = {
@@ -125,6 +128,7 @@ class PollingV7PortTests(unittest.TestCase):
             },
         }
         self.assertIsNone(next_action.step_2_7_polling_completion(payload))
+        self.assertIsNone(next_action.step_4_signature_match(payload))
 
     def test_step_2_7_tree_changed_falls_through(self) -> None:
         payload = {
@@ -140,7 +144,7 @@ class PollingV7PortTests(unittest.TestCase):
         }
         self.assertIsNone(next_action.step_2_7_polling_completion(payload))
 
-    def test_step_2_7_tree_unchanged_falls_through(self) -> None:
+    def test_step_2_7_tree_unchanged_reissues_video_poll(self) -> None:
         payload = {
             "platform": "platform_a",
             "tree": {"role": "AXWebArea"},
@@ -150,11 +154,49 @@ class PollingV7PortTests(unittest.TestCase):
                 "screen": "VIDEO_PLAYING",
                 "tree_hash_before": "same",
                 "tree_hash_after": "same",
+                "directive_skeleton_hash": "hash_same",
             },
         }
-        self.assertIsNone(next_action.step_2_7_polling_completion(payload))
+        directive = next_action.step_2_7_polling_completion(payload)
+        self.assertEqual(directive["directive"], "execute_tree")
+        self.assertEqual(directive["tree"]["action"], "video_poll")
+        self.assertEqual(directive["screen"], "VIDEO_PLAYING")
+        self.assertEqual(directive["skeleton_hash"], "hash_same")
 
-    def test_step_4_polling_continuity_reissues_video_poll(self) -> None:
+    def test_step_2_7_structural_hash_equal_reissues_video_poll(self) -> None:
+        tree = {
+            "role": "AXApplication",
+            "name": "Chrome",
+            "children": [
+                {
+                    "role": "AXWebArea",
+                    "name": "Khan Academy",
+                    "children": [
+                        {"role": "AXButton", "name": "Pause"},
+                    ],
+                }
+            ],
+        }
+        payload = {
+            "platform": "platform_a",
+            "tree": tree,
+            "client_state": {},
+            "last_result": {
+                "continue_loop": True,
+                "screen": "VIDEO_PLAYING",
+                "directive_skeleton_hash": "hash_a",
+                "tree_hash_before": compute_tree_hash(tree),
+                "tree_hash_after": compute_tree_hash(tree),
+                "after_tree": tree,
+            },
+        }
+        directive = next_action.step_2_7_polling_completion(payload)
+        self.assertEqual(directive["directive"], "execute_tree")
+        self.assertEqual(directive["screen"], "VIDEO_PLAYING")
+        self.assertEqual(directive["tree"]["action"], "video_poll")
+        self.assertEqual(directive["skeleton_hash"], "hash_a")
+
+    def test_step_4_no_longer_reissues_polling_continuity_for_video(self) -> None:
         payload = {
             "platform": "platform_a",
             "tree": {"role": "AXWebArea", "children": [{"role": "AXButton", "name": "Completely unrelated"}]},
@@ -165,28 +207,7 @@ class PollingV7PortTests(unittest.TestCase):
                 "directive_skeleton_hash": "hash_a",
             },
         }
-        directive = next_action.step_4_signature_match(payload)
-        self.assertEqual(directive["directive"], "execute_tree")
-        self.assertEqual(directive["screen"], "VIDEO_PLAYING")
-        self.assertEqual(directive["tree"]["action"], "video_poll")
-        self.assertEqual(directive["skeleton_hash"], "hash_a")
-
-    def test_step_4_polling_continuity_reissues_for_article_any_tree_shape(self) -> None:
-        payload = {
-            "platform": "platform_a",
-            "tree": {"role": "AXWebArea", "children": [{"role": "AXStaticText", "name": "Anything at all"}]},
-            "client_state": {},
-            "last_result": {
-                "continue_loop": True,
-                "screen": "ARTICLE_READING",
-                "directive_skeleton_hash": "hash_b",
-            },
-        }
-        directive = next_action.step_4_signature_match(payload)
-        self.assertEqual(directive["directive"], "execute_tree")
-        self.assertEqual(directive["screen"], "ARTICLE_READING")
-        self.assertEqual(directive["tree"]["action"], "video_poll")
-        self.assertEqual(directive["skeleton_hash"], "hash_b")
+        self.assertIsNone(next_action.step_4_signature_match(payload))
 
     def test_step_4_non_polling_uses_existing_exact_hash_lookup(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
