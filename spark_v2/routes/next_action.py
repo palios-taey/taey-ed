@@ -100,25 +100,18 @@ def _cache_short_circuit_consultation_id() -> str:
     return f"cache_short_circuit_{int(time.time())}"
 
 
-def _match_completion_indicator(tree: dict, indicator: dict | None) -> bool:
-    if not isinstance(indicator, dict):
-        return False
-    pattern_type = str(indicator.get("pattern_type") or "").strip()
-    pattern_value = str(indicator.get("pattern_value") or "").strip()
-    if not pattern_type or not pattern_value:
-        return False
-    blob = json.dumps(tree or {}, ensure_ascii=True).lower()
-    needle = pattern_value.lower()
-    if pattern_type in {
-        "axdescription_prefix",
-        "axdescription_suffix",
-        "role_state",
-        "css_class",
-        "progressbar_value",
-        "other",
-    }:
-        return needle in blob
-    return needle in blob
+def _current_tree_master_category(payload: dict) -> str:
+    tree = payload.get("tree") or {}
+    if isinstance(tree, dict):
+        for key in ("screen_type", "screen"):
+            value = tree.get(key)
+            if isinstance(value, str) and value.strip():
+                return get_master_category(value)
+    for key in ("screen_type_hint", "screen"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return get_master_category(value)
+    return "UNKNOWN"
 
 
 def _cache_short_circuit_active(payload: dict, last_result: dict) -> tuple[bool, str, dict | None]:
@@ -585,62 +578,39 @@ def step_2_validate_previous_action(payload: dict) -> dict | None:
 
 
 def step_2_7_polling_completion(payload: dict) -> dict | None:
+    # Ported from v7 server.py:535-565 and 04_VIDEO_POLL_ARCHAEOLOGY.md §A2.
+    # Polling completion is server-owned: changed tree after continue_loop means done;
+    # unchanged tree falls through to Step 4 re-match with no consultation here.
     last_result = payload.get("last_result")
     if not isinstance(last_result, dict):
         return None
-    if not bool(last_result.get("continue_loop")) and str(last_result.get("action") or "") != "video_poll":
+    if not bool(last_result.get("continue_loop")):
         return None
+    if not last_result.get("tree_hash_before") or not last_result.get("tree_hash_after"):
+        return None
+
     if last_result.get("tree_hash_before") != last_result.get("tree_hash_after"):
-        return None
-
-    platform_data = load_knowledge(payload.get("platform", "unknown"))
-    indicator = (platform_data.get("global") or {}).get("video_completion_signal")
-    if not isinstance(indicator, dict):
-        return None
-
-    skeleton_hash = _current_skeleton_hash(payload)
-    if _match_completion_indicator(payload.get("tree") or {}, indicator):
-        log_event(
-            payload.get("platform", "unknown"),
-            event_kind="video_complete_detected",
-            screen_type="VIDEO_COMPLETE_ADVANCEMENT",
-            skeleton_hash=skeleton_hash,
-            consultation_id=_extract_active_consultation_id(payload) or "",
-            course_id=_course_id(payload),
-            payload={"indicator": indicator},
-        )
-        if _needs_screenshot_capture(payload):
-            return _need_screenshot_directive()
-        return _spawn_consultation(
-            payload,
-            tier=0,
-            metadata={
-                "tier": 0,
-                "screen_type_hint": "VIDEO_COMPLETE_ADVANCEMENT",
-                "polling_completion": True,
+        return {
+            "directive": "execute_tree",
+            "directive_id": _make_directive_id(),
+            "tree": {
+                "type": "sequence",
+                "children": [
+                    {
+                        "type": "action",
+                        "action": "press_key",
+                        "params": {"key": "Escape"},
+                    },
+                    {
+                        "type": "action",
+                        "action": "wait",
+                        "params": {"seconds": 2.0},
+                    },
+                ],
             },
-        )
-
-    log_event(
-        payload.get("platform", "unknown"),
-        event_kind="video_still_polling",
-        screen_type="VIDEO",
-        skeleton_hash=skeleton_hash,
-        consultation_id=_extract_active_consultation_id(payload) or "",
-        course_id=_course_id(payload),
-        payload={"indicator": indicator},
-    )
-    return {
-        "directive": "execute_tree",
-        "directive_id": _make_directive_id(),
-        "consultation_id": _extract_active_consultation_id(payload),
-        "tree": _video_poll_tree(),
-        "screen": "VIDEO",
-        "expected_next": ["VIDEO", "TRANSITION", "VIDEO_COMPLETE_ADVANCEMENT"],
-        "extract": None,
-        "chat_messages": [],
-        "skeleton_hash": skeleton_hash,
-    }
+            "screen": f"{last_result.get('screen') or 'CONTENT'}_COMPLETE",
+        }
+    return None
 
 
 def step_3_failure_retry(payload: dict) -> dict | None:
@@ -668,6 +638,26 @@ def step_3_failure_retry(payload: dict) -> dict | None:
 
 
 def step_4_signature_match(payload: dict) -> dict | None:
+    # Ported from v7 server.py:605-620 and 04_VIDEO_POLL_ARCHAEOLOGY.md §A2/§D1.
+    # Unchanged polling screens re-enter the cheap match/execute loop without consultation.
+    last_result = payload.get("last_result")
+    if isinstance(last_result, dict) and bool(last_result.get("continue_loop")):
+        prior_master = get_master_category(last_result.get("screen"))
+        if prior_master in {"VIDEO", "ARTICLE"}:
+            current_master = _current_tree_master_category(payload)
+            if current_master == prior_master:
+                return {
+                    "directive": "execute_tree",
+                    "directive_id": _make_directive_id(),
+                    "consultation_id": _extract_active_consultation_id(payload),
+                    "tree": _video_poll_tree(),
+                    "screen": last_result.get("screen", "UNKNOWN"),
+                    "expected_next": [],
+                    "extract": None,
+                    "chat_messages": [],
+                    "skeleton_hash": str(last_result.get("directive_skeleton_hash") or ""),
+                }
+
     platform = payload.get("platform", "unknown")
     tree = payload.get("tree") or {}
     skeleton = extract_skeleton(tree)
