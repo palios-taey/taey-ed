@@ -5,12 +5,129 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from app.tasks.compute_tree_hash import compute_tree_hash
 from spark_v2.learning import cache as cache_mod
 from spark_v2.routes import next_action
 from spark_v2.tasks import consultation_request, knowledge_loader
+from spark_v2.tasks.prompt_codex import prune_ax_tree
+from spark_v2.tasks.skeleton import extract_skeleton, hash_skeleton
 
 
 class PollingV7PortTests(unittest.TestCase):
+    def test_step_2_7_ignores_chrome_memory_usage_hash_noise(self) -> None:
+        tree_a = {
+            "role": "AXApplication",
+            "name": "Chrome",
+            "children": [
+                {
+                    "role": "AXTabGroup",
+                    "name": "Tabs",
+                    "children": [
+                        {
+                            "role": "AXRadioButton",
+                            "name": "Tab 1 - Memory usage - 500 MB",
+                        }
+                    ],
+                },
+                {
+                    "role": "AXWebArea",
+                    "name": "Khan Academy",
+                    "children": [
+                        {"role": "AXLink", "name": "Replay video"},
+                    ],
+                },
+            ],
+        }
+        tree_b = {
+            "role": "AXApplication",
+            "name": "Chrome",
+            "children": [
+                {
+                    "role": "AXTabGroup",
+                    "name": "Tabs",
+                    "children": [
+                        {
+                            "role": "AXRadioButton",
+                            "name": "Tab 1 - Memory usage - 800 MB",
+                        }
+                    ],
+                },
+                {
+                    "role": "AXWebArea",
+                    "name": "Khan Academy",
+                    "children": [
+                        {"role": "AXLink", "name": "Replay video"},
+                    ],
+                },
+            ],
+        }
+        self.assertNotEqual(compute_tree_hash(tree_a), compute_tree_hash(tree_b))
+        self.assertEqual(
+            hash_skeleton(extract_skeleton(prune_ax_tree(tree_a))),
+            hash_skeleton(extract_skeleton(prune_ax_tree(tree_b))),
+        )
+        payload = {
+            "platform": "platform_a",
+            "tree": tree_b,
+            "client_state": {},
+            "last_result": {
+                "continue_loop": True,
+                "screen": "VIDEO_PLAYING",
+                "tree_hash_before": compute_tree_hash(tree_a),
+                "tree_hash_after": compute_tree_hash(tree_b),
+                "after_tree": tree_a,
+            },
+        }
+        self.assertIsNone(next_action.step_2_7_polling_completion(payload))
+
+    def test_step_2_7_structural_change_returns_deterministic_close(self) -> None:
+        tree_a = {
+            "role": "AXApplication",
+            "name": "Chrome",
+            "children": [
+                {
+                    "role": "AXWebArea",
+                    "name": "Khan Academy",
+                    "children": [
+                        {"role": "AXButton", "name": "Pause"},
+                    ],
+                }
+            ],
+        }
+        tree_b = {
+            "role": "AXApplication",
+            "name": "Chrome",
+            "children": [
+                {
+                    "role": "AXWebArea",
+                    "name": "Khan Academy",
+                    "children": [
+                        {"role": "AXLink", "name": "Replay"},
+                        {"role": "AXLink", "name": "Up next"},
+                    ],
+                }
+            ],
+        }
+        self.assertNotEqual(
+            hash_skeleton(extract_skeleton(prune_ax_tree(tree_a))),
+            hash_skeleton(extract_skeleton(prune_ax_tree(tree_b))),
+        )
+        payload = {
+            "platform": "platform_a",
+            "tree": tree_b,
+            "client_state": {},
+            "last_result": {
+                "continue_loop": True,
+                "screen": "VIDEO_PLAYING",
+                "tree_hash_before": compute_tree_hash(tree_a),
+                "tree_hash_after": compute_tree_hash(tree_b),
+                "after_tree": tree_a,
+            },
+        }
+        directive = next_action.step_2_7_polling_completion(payload)
+        self.assertEqual(directive["directive"], "execute_tree")
+        self.assertEqual(directive["screen"], "VIDEO_PLAYING_COMPLETE")
+
     def test_step_2_7_tree_changed_returns_deterministic_close(self) -> None:
         payload = {
             "platform": "platform_a",

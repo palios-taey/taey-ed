@@ -36,7 +36,7 @@ from spark_v2.tasks.knowledge_loader import (
     record_failed_recovery_attempt,
     save_knowledge,
 )
-from spark_v2.tasks.prompt_codex import UNIVERSAL_LAYER_PATH, load_onboarding_messages
+from spark_v2.tasks.prompt_codex import UNIVERSAL_LAYER_PATH, load_onboarding_messages, prune_ax_tree
 from spark_v2.tasks.screen_signatures import compute_signature
 from spark_v2.tasks.skeleton import extract_skeleton, hash_skeleton
 from spark_v2.tasks.screen_type_util import get_master_category
@@ -86,6 +86,15 @@ def _current_tree_hash(payload: dict) -> str:
 
 def _current_skeleton_hash(payload: dict) -> str:
     return hash_skeleton(extract_skeleton(payload.get("tree") or {}))
+
+
+def _structural_hash(tree: object) -> str | None:
+    if not isinstance(tree, dict) or not tree:
+        return None
+    pruned = prune_ax_tree(tree)
+    if not isinstance(pruned, dict) or not pruned:
+        return None
+    return hash_skeleton(extract_skeleton(pruned))
 
 
 def _video_poll_tree() -> dict:
@@ -565,8 +574,10 @@ def step_2_validate_previous_action(payload: dict) -> dict | None:
 
 def step_2_7_polling_completion(payload: dict) -> dict | None:
     # Ported from v7 server.py:535-565 and 04_VIDEO_POLL_ARCHAEOLOGY.md §A2.
-    # Polling completion is server-owned: changed tree after continue_loop means done;
-    # unchanged tree falls through to Step 4 re-match with no consultation here.
+    # Polling completion is server-owned, but 2026-05-17 Chrome tab-strip
+    # memory-usage label churn proved Mac tree_hash can change with no meaningful
+    # content change. Compare pruned structural hashes first; only fall back to
+    # raw Mac hashes when the prior after_tree is unavailable.
     last_result = payload.get("last_result")
     if not isinstance(last_result, dict):
         return None
@@ -575,7 +586,14 @@ def step_2_7_polling_completion(payload: dict) -> dict | None:
     if not last_result.get("tree_hash_before") or not last_result.get("tree_hash_after"):
         return None
 
-    if last_result.get("tree_hash_before") != last_result.get("tree_hash_after"):
+    current_structural_hash = _structural_hash(payload.get("tree"))
+    prior_structural_hash = _structural_hash(last_result.get("after_tree"))
+    if current_structural_hash and prior_structural_hash:
+        changed = current_structural_hash != prior_structural_hash
+    else:
+        changed = last_result.get("tree_hash_before") != last_result.get("tree_hash_after")
+
+    if changed:
         return {
             "directive": "execute_tree",
             "directive_id": _make_directive_id(),
