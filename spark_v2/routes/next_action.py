@@ -106,6 +106,26 @@ def _consulting_directive(consultation_id: str, poll_interval: float = 3.0) -> d
     }
 
 
+def _needs_screenshot_capture(payload: dict) -> bool:
+    """True when we are about to spawn a fresh consultation but Mac has not yet sent a screenshot."""
+    client_state = payload.get("client_state") or {}
+    active_consultation_id = client_state.get("active_consultation_id")
+    if active_consultation_id:
+        return False
+    screenshot_b64 = payload.get("screenshot_b64")
+    if isinstance(screenshot_b64, str) and screenshot_b64.strip():
+        return False
+    return True
+
+
+def _need_screenshot_directive() -> dict:
+    return {
+        "directive": "need_screenshot",
+        "directive_id": _make_directive_id(),
+        "reason": "spark requires visual ground truth before classification",
+    }
+
+
 def _prompt_payload_from_request(payload: dict, tier: int, chat_override: bool = False) -> dict:
     return {
         "platform": payload.get("platform"),
@@ -117,6 +137,17 @@ def _prompt_payload_from_request(payload: dict, tier: int, chat_override: bool =
         "tier": tier,
         "chat_override": chat_override,
     }
+
+
+def _spawn_consultation(payload: dict, *, tier: int, metadata: dict) -> dict:
+    consult = request_consultation(
+        platform=payload.get("platform", "unknown"),
+        tree=payload.get("tree") or {},
+        screenshot_b64=payload.get("screenshot_b64"),
+        prompt_payload=_prompt_payload_from_request(payload, tier=tier, chat_override=bool(metadata.get("chat_override"))),
+        metadata=metadata,
+    )
+    return _consulting_directive(consult["consultation_id"], poll_interval=3.0)
 
 
 def _platform_url_hint(platform: str, payload: dict) -> str:
@@ -161,18 +192,17 @@ def step_0_chat_override(payload: dict) -> dict | None:
                 payload["chat_message"] = user_response
     if not isinstance(chat_message, str) or not chat_message.strip():
         return None
-    consult = request_consultation(
-        platform=payload.get("platform", "unknown"),
-        tree=payload.get("tree") or {},
-        screenshot_b64=payload.get("screenshot_b64"),
-        prompt_payload=_prompt_payload_from_request(payload, tier=3, chat_override=True),
+    if _needs_screenshot_capture(payload):
+        return _need_screenshot_directive()
+    return _spawn_consultation(
+        payload,
+        tier=3,
         metadata={
             "tier": 3,
             "chat_override": True,
             "screen_type_hint": "UNKNOWN",
         },
     )
-    return _consulting_directive(consult["consultation_id"], poll_interval=3.0)
 
 
 def step_1_active_consultation_poll(payload: dict) -> dict | None:
@@ -320,19 +350,17 @@ def step_3_failure_retry(payload: dict) -> dict | None:
         return None
     if last_result.get("success") or not last_result.get("failed_bt"):
         return None
-
-    consult = request_consultation(
-        platform=payload.get("platform", "unknown"),
-        tree=payload.get("tree") or {},
-        screenshot_b64=payload.get("screenshot_b64"),
-        prompt_payload=_prompt_payload_from_request(payload, tier=1),
+    if _needs_screenshot_capture(payload):
+        return _need_screenshot_directive()
+    return _spawn_consultation(
+        payload,
+        tier=1,
         metadata={
             "tier": 1,
             "screen_type_hint": last_result.get("screen", "UNKNOWN"),
             "failure_reason": str(last_result.get("action", "bt_failure")),
         },
     )
-    return _consulting_directive(consult["consultation_id"], poll_interval=3.0)
 
 
 def step_4_signature_match(payload: dict) -> dict | None:
@@ -346,6 +374,18 @@ def step_5_knowledge_gate_and_classify(payload: dict) -> dict | None:
     platform_data = load_knowledge(platform)
     provisional_data = load_provisional(platform)
     current_hash = _current_tree_hash(payload)
+
+    if platform == "unknown":
+        if _needs_screenshot_capture(payload):
+            return _need_screenshot_directive()
+        return _spawn_consultation(
+            payload,
+            tier=0,
+            metadata={
+                "tier": 0,
+                "screen_type_hint": "UNKNOWN",
+            },
+        )
 
     if is_first_touch(platform_data) and provisional_data is None:
         active_request = find_active_discovery_request(platform)
@@ -408,7 +448,7 @@ def step_5_knowledge_gate_and_classify(payload: dict) -> dict | None:
                     tree_hash=current_hash,
                     reason="discovery_invalid_result",
                     extra={"_discovery_request_id": active_request},
-                )
+            )
             provisional_data = load_provisional(platform)
         elif status not in {"pending", "harvested"}:
             return _user_input_directive(
@@ -419,20 +459,19 @@ def step_5_knowledge_gate_and_classify(payload: dict) -> dict | None:
                 screen_type="ONBOARDING_DISCOVERY",
                 tree_hash=current_hash,
                 reason="discovery_unexpected_status",
-                extra={"_discovery_request_id": active_request},
+                    extra={"_discovery_request_id": active_request},
             )
 
-    consult = request_consultation(
-        platform=platform,
-        tree=payload.get("tree") or {},
-        screenshot_b64=payload.get("screenshot_b64"),
-        prompt_payload=_prompt_payload_from_request(payload, tier=0),
+    if _needs_screenshot_capture(payload):
+        return _need_screenshot_directive()
+    return _spawn_consultation(
+        payload,
+        tier=0,
         metadata={
             "tier": 0,
             "screen_type_hint": "UNKNOWN",
         },
     )
-    return _consulting_directive(consult["consultation_id"], poll_interval=3.0)
 
 
 def build_unknown_placeholder(payload: dict) -> dict:
