@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import subprocess
 import time
 import uuid
@@ -12,12 +13,13 @@ from pathlib import Path
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from spark_v2.routes._generate_system_prompt import GENERATE_SYSTEM_PROMPT
 from spark_v2.utils.atomic_write import atomic_write_json
 
 router = APIRouter()
 
 GENERATE_DIR_PREFIX = "/tmp/taey-ed-generate-"
+CONSULTATIONS_DIR = Path("/home/user/taey-ed/consultations")
+SOLVE_PROMPT_PATH = CONSULTATIONS_DIR / "SOLVE_PROMPT_v1.md"
 DEFAULT_MODEL = "claude-opus-4-7"
 DEFAULT_TIMEOUT_S = 180.0
 DEFAULT_MAX_BUDGET_USD = 2.5
@@ -25,6 +27,49 @@ DEFAULT_MAX_BUDGET_USD = 2.5
 
 def _json_compact(value: object) -> str:
     return json.dumps(value, separators=(",", ":"), ensure_ascii=True)
+
+
+def _read_text(path: Path) -> str:
+    return path.read_text(encoding="utf-8")
+
+
+def _extract_named_section(markdown: str, heading: str, level: int = 2) -> str:
+    pattern = rf"^{'#' * level} {re.escape(heading)}$"
+    match = re.search(pattern, markdown, flags=re.MULTILINE)
+    if not match:
+        raise ValueError(f"Section heading not found: {heading}")
+    start = match.end()
+    next_match = re.search(rf"^#{{1,{level}}} .*$", markdown[start:], flags=re.MULTILINE)
+    end = start + next_match.start() if next_match else len(markdown)
+    return markdown[start:end].strip()
+
+
+def _extract_fenced_block(text: str, language: str) -> str:
+    match = re.search(rf"```{re.escape(language)}\n(.*?)\n```", text, flags=re.DOTALL)
+    if not match:
+        raise ValueError(f"Fenced {language} block not found")
+    return match.group(1).strip()
+
+
+def _load_solve_prompt_spec(path: Path = SOLVE_PROMPT_PATH) -> dict:
+    markdown = _read_text(path)
+    system_prompt = _extract_fenced_block(_extract_named_section(markdown, "System Prompt", level=2), "text")
+    user_sections = json.loads(
+        _extract_fenced_block(_extract_named_section(markdown, "User Message Sections", level=2), "json")
+    )
+    taxonomy = json.loads(
+        _extract_fenced_block(_extract_named_section(markdown, "Question-Type Taxonomy", level=2), "json")
+    )
+    if not isinstance(user_sections, dict) or not isinstance(taxonomy, dict):
+        raise ValueError("Solve prompt spec is malformed")
+    return {
+        "system_prompt": system_prompt,
+        "user_sections": {str(key): str(value) for key, value in user_sections.items()},
+        "taxonomy": taxonomy,
+    }
+
+
+SOLVE_PROMPT_SPEC = _load_solve_prompt_spec()
 
 
 def _extract_json_object(text: str) -> str:
@@ -64,23 +109,34 @@ def _extract_json_object(text: str) -> str:
 
 
 def _build_user_message(payload: dict) -> str:
+    templates = SOLVE_PROMPT_SPEC["user_sections"]
     sections = [
-        "Section A - Question text\n" + str(payload.get("question") or ""),
+        templates["question_text"].replace("{QUESTION}", str(payload.get("question") or "")),
     ]
     if payload.get("options") is not None:
-        sections.append("Section B - Options\n" + _json_compact(payload.get("options")))
+        sections.append(
+            templates["options"].replace("{OPTIONS_JSON}", _json_compact(payload.get("options")))
+        )
     if payload.get("items") is not None:
-        sections.append("Section B - Items\n" + _json_compact(payload.get("items")))
+        sections.append(
+            templates["items"].replace("{ITEMS_JSON}", _json_compact(payload.get("items")))
+        )
     if payload.get("context"):
-        sections.append("Section C - Reference context\n" + _json_compact(payload.get("context")))
-    sections.append("Section D - Screenshot\nThe screenshot is attached inline with this request.")
+        sections.append(
+            templates["reference_context"].replace("{CONTEXT_JSON}", _json_compact(payload.get("context")))
+        )
+    sections.append(templates["screenshot"])
     if payload.get("image_descriptions"):
-        sections.append("Section E - Image descriptions\n" + _json_compact(payload.get("image_descriptions")))
+        sections.append(
+            templates["image_descriptions"].replace(
+                "{IMAGE_DESCRIPTIONS_JSON}",
+                _json_compact(payload.get("image_descriptions")),
+            )
+        )
     sections.append(
-        "Section F - Solve contract\n"
-        f"question_type={payload.get('question_type')}\n"
-        f"has_text_field={bool(payload.get('has_text_field'))}\n"
-        "Emit JSON only conforming to your system prompt."
+        templates["solve_contract"]
+        .replace("{QUESTION_TYPE}", str(payload.get("question_type") or ""))
+        .replace("{HAS_TEXT_FIELD}", str(bool(payload.get("has_text_field"))))
     )
     return "\n\n".join(sections)
 
@@ -170,20 +226,28 @@ def _validate_result(question_type: str, parsed: dict) -> None:
         if not parsed.get("error"):
             raise ValueError("unsuccessful response missing error")
         return
-    if question_type in {"solve_choice", "solve", "solve_complex", "navigate"}:
-        answer = parsed.get("answer")
-        if not isinstance(answer, str) or not answer.strip():
-            raise ValueError(f"successful {question_type} response missing answer")
-    elif question_type == "solve_checkbox":
-        selected = parsed.get("selected")
-        if not isinstance(selected, list) or not selected:
-            raise ValueError("successful solve_checkbox response missing selected list")
-    elif question_type == "solve_matching":
-        matches = parsed.get("matches")
-        if not isinstance(matches, dict) or not matches:
-            raise ValueError("successful solve_matching response missing matches dict")
-    else:
+    taxonomy = SOLVE_PROMPT_SPEC["taxonomy"].get("question_types", {})
+    spec = taxonomy.get(question_type)
+    if not isinstance(spec, dict):
         raise ValueError(f"unsupported question_type: {question_type}")
+    required_keys = spec.get("required_keys", {})
+    if not isinstance(required_keys, dict) or not required_keys:
+        raise ValueError(f"question_type spec is malformed: {question_type}")
+    for key, validator in required_keys.items():
+        value = parsed.get(key)
+        if validator == "non_empty_string":
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"successful {question_type} response missing {key}")
+            continue
+        if validator == "non_empty_list":
+            if not isinstance(value, list) or not value:
+                raise ValueError(f"successful {question_type} response missing {key}")
+            continue
+        if validator == "non_empty_dict":
+            if not isinstance(value, dict) or not value:
+                raise ValueError(f"successful {question_type} response missing {key}")
+            continue
+        raise ValueError(f"unsupported validator for {question_type}.{key}: {validator}")
 
 
 @router.post("/api/v1/generate")
@@ -205,11 +269,12 @@ async def generate(request: Request) -> JSONResponse:
         screenshot_path.write_bytes(screenshot_bytes)
 
         system_prompt_path = request_dir / "system_prompt.txt"
-        system_prompt_path.write_text(GENERATE_SYSTEM_PROMPT, encoding="utf-8")
+        system_prompt_path.write_text(SOLVE_PROMPT_SPEC["system_prompt"], encoding="utf-8")
 
         request_payload = dict(payload)
         request_payload["_request_id"] = request_id
         request_payload["_created_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        request_payload["_solve_prompt_path"] = str(SOLVE_PROMPT_PATH)
         atomic_write_json(request_dir / "request.json", request_payload)
 
         user_message = _build_user_message(payload)

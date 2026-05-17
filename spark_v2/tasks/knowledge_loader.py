@@ -91,6 +91,19 @@ def load_provisional(platform: str) -> dict | None:
     return data if data else None
 
 
+def increment_validating_count(platform: str) -> int:
+    platform_dir = _platform_dir(platform)
+    platform_dir.mkdir(parents=True, exist_ok=True)
+    path = platform_dir / "knowledge.json"
+    data = load_knowledge(platform) if path.exists() else _empty_shell(platform)
+    meta = data.setdefault("_meta", {})
+    current = int(meta.get("validating_consults_total") or 0)
+    updated = current + 1
+    meta["validating_consults_total"] = updated
+    atomic_write_json(path, data)
+    return updated
+
+
 def merge_provisional_to_global(platform: str, provisional_data: dict) -> dict:
     platform_dir = _platform_dir(platform)
     platform_dir.mkdir(parents=True, exist_ok=True)

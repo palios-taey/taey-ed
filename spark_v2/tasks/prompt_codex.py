@@ -14,19 +14,7 @@ logger = logging.getLogger(__name__)
 
 CONSULTATIONS_DIR = Path("/home/user/taey-ed/consultations")
 UNIVERSAL_LAYER_PATH = CONSULTATIONS_DIR / "UNIVERSAL_LAYER_v1.md"
-
-IDENTITY_BLOCK = "\n".join(
-    [
-        "You are Taey-Ed's behavior-tree generator for browser automation.",
-        "Your job: emit ONE executable BT JSON describing the next action on this screen.",
-        "",
-        "Hard rules:",
-        "- JSON only. No prose preamble. No markdown fences. First char { , last char } .",
-        "- Reason internally; emit JSON. Internal narration MUST NOT leak into output.",
-        "- Honor the auditable-intention output schema (Section 7 below) on EVERY response.",
-        "- When in doubt, screen_type=UNKNOWN with empty tree. NEVER guess.",
-    ]
-)
+WORKER_PROMPT_SPEC = CONSULTATIONS_DIR / "CLAUDE_CLI_WORKER_PROMPT_v1.md"
 
 HARD_TREE_CHAR_LIMIT = 200000
 
@@ -61,6 +49,17 @@ def _extract_named_section(markdown: str, heading: str, level: int = 3) -> str:
     return markdown[start:end].strip()
 
 
+def _extract_fenced_block(text: str, language: str | None = None) -> str:
+    if language:
+        pattern = rf"```{re.escape(language)}\n(.*?)\n```"
+    else:
+        pattern = r"```(?:\w+)?\n(.*?)\n```"
+    match = re.search(pattern, text, flags=re.DOTALL)
+    if not match:
+        raise ValueError("Fenced block not found")
+    return match.group(1).strip()
+
+
 def _strip_provenance_notes(text: str) -> str:
     lines: list[str] = []
     for line in text.splitlines():
@@ -78,10 +77,12 @@ def _strip_provenance_notes(text: str) -> str:
 @lru_cache(maxsize=4)
 def load_universal_layer_sections(path: str) -> dict[str, str]:
     markdown = _read_text(Path(path))
+    identity = _strip_provenance_notes(_extract_named_section(markdown, "Section 1.5 — Identity Contract", level=2))
     principles = _strip_provenance_notes(_extract_section(markdown, 2))
     handlers = _strip_provenance_notes(_extract_section(markdown, 3))
     output_schema = _strip_provenance_notes(_extract_section(markdown, 7))
     return {
+        "identity": identity,
         "principles": principles,
         "handlers": handlers,
         "output_schema": output_schema,
@@ -92,10 +93,7 @@ def load_universal_layer_sections(path: str) -> dict[str, str]:
 def load_onboarding_messages(path: str = str(UNIVERSAL_LAYER_PATH)) -> dict[str, str]:
     markdown = _read_text(Path(path))
     section = _extract_named_section(markdown, "Canonical Message Templates", level=3)
-    fenced = re.search(r"```json\n(.*?)\n```", section, flags=re.DOTALL)
-    if fenced is None:
-        raise ValueError("Canonical Message Templates JSON block not found in Universal Layer")
-    parsed = json.loads(fenced.group(1))
+    parsed = json.loads(_extract_fenced_block(section, "json"))
     onboarding_message = str(parsed.get("onboarding_message") or "").strip()
     discovery_message = str(parsed.get("discovery_in_progress_message") or "").strip()
     if not onboarding_message or not discovery_message:
@@ -104,6 +102,44 @@ def load_onboarding_messages(path: str = str(UNIVERSAL_LAYER_PATH)) -> dict[str,
         "onboarding_message": onboarding_message,
         "discovery_in_progress_message": discovery_message,
     }
+
+
+@lru_cache(maxsize=2)
+def load_output_schema_constraints(path: str = str(UNIVERSAL_LAYER_PATH)) -> dict[str, list[str]]:
+    markdown = _read_text(Path(path))
+    section = _extract_named_section(markdown, "Required-Keys Tuple (machine readable)", level=3)
+    parsed = json.loads(_extract_fenced_block(section, "json"))
+    required = parsed.get("required")
+    tree_root_types = parsed.get("tree_root_types")
+    confidence_values = parsed.get("confidence_values")
+    if not isinstance(required, list) or not isinstance(tree_root_types, list) or not isinstance(confidence_values, list):
+        raise ValueError("Output schema constraints are malformed")
+    return {
+        "required": [str(item) for item in required],
+        "tree_root_types": [str(item) for item in tree_root_types],
+        "confidence_values": [str(item) for item in confidence_values],
+    }
+
+
+@lru_cache(maxsize=2)
+def load_worker_prompt_sections(path: str = str(WORKER_PROMPT_SPEC)) -> dict[str, str]:
+    markdown = _read_text(Path(path))
+    block_8 = _extract_named_section(markdown, "Block 8 — Reconsult Context (Tier 1, if reconsult)", level=3)
+    reconsult_template = _extract_fenced_block(block_8, "text")
+    user_message_templates = json.loads(
+        _extract_fenced_block(
+            _extract_named_section(markdown, "Worker User Message Templates (machine readable)", level=3),
+            "json",
+        )
+    )
+    if not isinstance(user_message_templates, dict):
+        raise ValueError("Worker user message templates are malformed")
+    sections = {
+        "reconsult_template": reconsult_template,
+    }
+    for key, value in user_message_templates.items():
+        sections[f"user_message_{key}"] = str(value)
+    return sections
 
 
 def _drop_provenance(value: Any) -> Any:
@@ -192,31 +228,35 @@ def format_provisional(provisional_data: dict | None) -> str:
 def format_reconsult_context(last_result: dict | None, tier: int) -> str:
     if not last_result:
         return ""
-    lines = [f"TIER {tier} RECONSULT — previous attempt did not advance the screen."]
     failed_bt = last_result.get("failed_bt")
-    if failed_bt:
-        lines.extend(
-            [
-                "",
-                "Failed BT (the one that did not advance the screen):",
-                _json_block(failed_bt),
-            ]
-        )
     bt_debug_tail = last_result.get("bt_debug_tail")
-    if bt_debug_tail:
-        lines.extend(["", "BT execution log tail:", bt_debug_tail])
     user_response = last_result.get("user_response")
-    if user_response:
-        lines.extend(["", "User guidance:", user_response])
-    lines.extend(
-        [
-            "",
-            "Build a FUNDAMENTALLY DIFFERENT BT. Do NOT tweak parameters. If no",
-            "alternative is plausible from the tree, emit screen_type=UNKNOWN with",
-            "an empty tree.",
-        ]
+    sections = load_worker_prompt_sections()
+    rendered = sections["reconsult_template"].replace("{TIER}", str(tier))
+    rendered = rendered.replace(
+        "{FAILED_BT}",
+        (
+            "Failed BT (the one that did not advance the screen):\n"
+            + _json_block(failed_bt)
+            + "\n\n"
+        )
+        if failed_bt
+        else "",
     )
-    return "\n".join(lines).strip()
+    rendered = rendered.replace(
+        "{BT_DEBUG_TAIL}",
+        ("BT execution log tail:\n" + str(bt_debug_tail).strip() + "\n\n")
+        if bt_debug_tail
+        else "",
+    )
+    rendered = rendered.replace(
+        "{USER_GUIDANCE}",
+        ("User guidance:\n" + str(user_response).strip() + "\n\n")
+        if user_response
+        else "",
+    )
+    rendered = re.sub(r"\n{3,}", "\n\n", rendered)
+    return rendered.strip()
 
 
 def _find_web_area(node: Any) -> dict | None:
@@ -441,7 +481,7 @@ def assemble_system_prompt(
     tier: int,
 ) -> str:
     blocks = [
-        ("identity", IDENTITY_BLOCK),
+        ("identity", universal_sections["identity"]),
         ("principles", universal_sections["principles"]),
         ("handlers", universal_sections["handlers"]),
         ("output_schema", universal_sections["output_schema"]),
@@ -475,24 +515,27 @@ def assemble_user_message(
     relevant_kb_chunks: list[dict] | None,
     screen_context: dict,
 ) -> str:
+    worker_sections = load_worker_prompt_sections()
     pruned_tree = prune_ax_tree(tree)
     tree_text = _json_compact(pruned_tree)
     text_index = _extract_text_index(tree)
 
-    header_lines = [
-        f"Platform: {platform_display_name}",
-        f"Screen URL: {current_url or 'unavailable'}",
-        f"Last known screen_type: {last_screen_type or 'none'}",
-        f"Consultation tier: {tier if tier else 'fresh'}",
-        f"Course (if known): {course_id or 'unknown'}",
-    ]
+    header = (
+        worker_sections["user_message_header"]
+        .replace("{PLATFORM_DISPLAY_NAME}", platform_display_name)
+        .replace("{CURRENT_URL}", current_url or "unavailable")
+        .replace("{LAST_SCREEN_TYPE}", last_screen_type or "none")
+        .replace("{TIER}", str(tier if tier else "fresh"))
+        .replace("{COURSE_ID}", course_id or "unknown")
+    )
 
     sections = [
-        "\n".join(header_lines),
-        "Section A — AX Tree\n" + tree_text,
-        "Section B — Readable AX Text Index\n" + (text_index or "none"),
-        "Section C — Screenshot\n"
-        + ("Inline screenshot attachment is present." if screenshot_present else "No screenshot attachment is present."),
+        header,
+        worker_sections["user_message_ax_tree"].replace("{AX_TREE_JSON}", tree_text),
+        worker_sections["user_message_text_index"].replace("{TEXT_INDEX}", text_index or "none"),
+        worker_sections["user_message_screenshot_present"]
+        if screenshot_present
+        else worker_sections["user_message_screenshot_absent"],
     ]
 
     if relevant_kb_chunks and _exercise_like_context(screen_context):
@@ -506,13 +549,14 @@ def assemble_user_message(
         if len(chunk_lines) > 1:
             if chunk_lines[-1] == "---":
                 chunk_lines.pop()
-            sections.append("Section D — Relevant KB Chunks\n" + "\n".join(chunk_lines))
+            sections.append(
+                worker_sections["user_message_relevant_kb_chunks"].replace(
+                    "{KB_CHUNKS}",
+                    "\n".join(chunk_lines),
+                )
+            )
 
-    sections.append(
-        "Section E — Closing directive\n"
-        "Emit ONE JSON object conforming to the Output Schema in your system prompt.\n"
-        "Return JSON only."
-    )
+    sections.append(worker_sections["user_message_closing_directive"])
 
     user_message = "\n\n".join(sections)
     logger.info("prompt_codex: user message size=%d", len(user_message))

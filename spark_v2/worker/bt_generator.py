@@ -15,6 +15,7 @@ from spark_v2.tasks.prompt_codex import (
     UNIVERSAL_LAYER_PATH,
     assemble_system_prompt,
     assemble_user_message,
+    load_output_schema_constraints,
     load_universal_layer_sections,
 )
 
@@ -25,6 +26,7 @@ DEFAULT_MODEL = "claude-opus-4-7"
 DEFAULT_TIMEOUT_S = 180.0
 DEFAULT_MAX_BUDGET_USD = 2.5
 UNIVERSAL_LAYER_SECTIONS = load_universal_layer_sections(str(UNIVERSAL_LAYER_PATH))
+OUTPUT_SCHEMA_CONSTRAINTS = load_output_schema_constraints(str(UNIVERSAL_LAYER_PATH))
 
 
 class BTGenerationError(RuntimeError):
@@ -82,15 +84,7 @@ def _extract_json_object(text: str) -> str:
 
 def _validate_bt(payload: dict) -> list[str]:
     warnings: list[str] = []
-    required = (
-        "screen_type",
-        "tree",
-        "expected_next",
-        "extract",
-        "target_source",
-        "why_safe",
-        "confidence",
-    )
+    required = OUTPUT_SCHEMA_CONSTRAINTS["required"]
     for key in required:
         if key not in payload:
             raise BTGenerationError(f"missing BT response key: {key}")
@@ -99,14 +93,14 @@ def _validate_bt(payload: dict) -> list[str]:
     if not isinstance(tree, dict):
         raise BTGenerationError("BT tree must be a JSON object")
     tree_type = tree.get("type")
-    if tree_type not in {"sequence", "action"}:
+    if tree_type not in set(OUTPUT_SCHEMA_CONSTRAINTS["tree_root_types"]):
         raise BTGenerationError("BT tree root must be sequence or action")
     if tree_type == "sequence" and not isinstance(tree.get("children"), list):
         raise BTGenerationError("sequence tree must contain a children list")
     if tree_type == "action" and not isinstance(tree.get("action"), str):
         raise BTGenerationError("action tree must contain an action string")
 
-    if payload.get("confidence") not in {"high", "medium", "low"}:
+    if payload.get("confidence") not in set(OUTPUT_SCHEMA_CONSTRAINTS["confidence_values"]):
         raise BTGenerationError("confidence must be high, medium, or low")
     if not isinstance(payload.get("screen_type"), str) or not payload.get("screen_type").strip():
         raise BTGenerationError("screen_type must be a non-empty string")
