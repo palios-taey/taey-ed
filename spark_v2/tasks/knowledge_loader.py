@@ -113,15 +113,6 @@ def load_provisional(platform: str) -> dict | None:
     return data if data else None
 
 
-def get_video_completion_signal(platform: str) -> dict | None:
-    canonical_signal = (load_knowledge(platform).get("global") or {}).get("video_completion_signal")
-    if isinstance(canonical_signal, dict):
-        return canonical_signal
-    provisional = load_provisional(platform)
-    provisional_signal = ((provisional or {}).get("global") or {}).get("video_completion_signal")
-    return provisional_signal if isinstance(provisional_signal, dict) else None
-
-
 def load_writable_provisional(platform: str) -> dict:
     data = copy.deepcopy(load_provisional(platform) or _empty_provisional_shell(platform))
     data.setdefault("_recovery_entries", [])
