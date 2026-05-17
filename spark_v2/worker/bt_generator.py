@@ -132,21 +132,8 @@ def _call_claude_cli(
     full_user = user_message
     if screenshot_path is not None:
         full_user = (
-            f"VISION REQUIRED. Before emitting any JSON, you MUST invoke the Read tool exactly once "
-            f"on this image path:\n  {screenshot_path}\n\n"
-            "The Read tool will return the rendered screenshot as visual content. You need this because "
-            "the AX tree alone CANNOT disambiguate visual notation (MathJax fractions vs multiplication, "
-            "stacked glyphs, color-coded feedback, modal overlays, button-state changes, etc.). "
-            "Skipping the Read step has caused real BT misclassifications in production — "
-            "e.g. a vertical-fraction 9/m was misread as 9m because Claude tried to infer "
-            "from y-coordinates instead of looking at the rendered image.\n\n"
-            "Workflow:\n"
-            "  1. Call Read on the path above.\n"
-            "  2. Examine what is visually rendered (math notation, colors, button states, modal text).\n"
-            "  3. Cross-reference with the AX tree below.\n"
-            "  4. Emit ONE JSON BT per the output schema in your system prompt.\n\n"
-            "If the Read call fails (image unreadable, file missing), emit screen_type=UNKNOWN "
-            "with empty tree and document the read failure in _notes.\n\n"
+            f"You MUST first use your Read tool to examine this image: {screenshot_path}\n\n"
+            "After reading the image, complete the task using both the image and the AX tree context.\n\n"
             f"{user_message}"
         )
 
@@ -195,19 +182,8 @@ def _call_claude_cli(
             raise BTGenerationError(
                 f"claude reported error: {(outer.get('result') or '')[:300]}"
             )
-        # Vision usage check — softened from hard-raise to warning-on-response.
-        # claude --print is non-deterministic about tool invocation; hard-failing every
-        # time Read is skipped surfaces as user_input_needed on Mac which kills the run.
-        # Better: emit the BT but record the omission so we can spot misclassifications
-        # downstream and so the auditable-intention output carries the signal.
-        vision_used = outer.get("num_turns", 0) >= 2
-        vision_warning = None
-        if screenshot_path is not None and not vision_used:
-            vision_warning = (
-                f"claude responded with num_turns={outer.get('num_turns', 0)} — "
-                f"Read tool was NOT invoked on the screenshot. BT was generated from AX tree alone. "
-                f"Watch for visual-notation misclassifications (math fractions, button states, modal text)."
-            )
+        if screenshot_path is not None and outer.get("num_turns", 0) < 2:
+            raise BTGenerationError("claude did not read the screenshot before answering")
 
         text = outer.get("result")
         if not text:
@@ -219,11 +195,7 @@ def _call_claude_cli(
             "session_id": outer.get("session_id", ""),
             "model": model,
             "system_prompt_flag": flag_path,
-            "vision_used": vision_used,
         }
-        if vision_warning is not None:
-            metadata["vision_warning"] = vision_warning
-            logger.warning("bt_generator: %s", vision_warning)
         return text, metadata
     raise last_error or BTGenerationError("claude system prompt file invocation failed")
 
