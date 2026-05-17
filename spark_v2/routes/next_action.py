@@ -15,6 +15,8 @@ from spark_v2.discovery import (
     poll_for_result,
     validate_and_promote_to_provisional,
 )
+from spark_v2.learning import invalidation
+from spark_v2.learning.cache import load_cached_bt
 from spark_v2.learning.outcome_log import log_event, log_graduation_event, log_outcome
 from spark_v2.recovery import (
     capture_user_guidance,
@@ -32,8 +34,10 @@ from spark_v2.tasks.knowledge_loader import (
     load_knowledge,
     load_provisional,
     record_failed_recovery_attempt,
+    save_knowledge,
 )
 from spark_v2.tasks.prompt_codex import UNIVERSAL_LAYER_PATH, load_onboarding_messages
+from spark_v2.tasks.screen_signatures import compute_signature
 from spark_v2.tasks.skeleton import extract_skeleton, hash_skeleton
 from spark_v2.tasks.screen_type_util import get_master_category
 
@@ -82,6 +86,51 @@ def _current_tree_hash(payload: dict) -> str:
 
 def _current_skeleton_hash(payload: dict) -> str:
     return hash_skeleton(extract_skeleton(payload.get("tree") or {}))
+
+
+def _video_poll_tree() -> dict:
+    return {
+        "type": "action",
+        "action": "video_poll",
+        "params": {},
+    }
+
+
+def _cache_short_circuit_consultation_id() -> str:
+    return f"cache_short_circuit_{int(time.time())}"
+
+
+def _match_completion_indicator(tree: dict, indicator: dict | None) -> bool:
+    if not isinstance(indicator, dict):
+        return False
+    pattern_type = str(indicator.get("pattern_type") or "").strip()
+    pattern_value = str(indicator.get("pattern_value") or "").strip()
+    if not pattern_type or not pattern_value:
+        return False
+    blob = json.dumps(tree or {}, ensure_ascii=True).lower()
+    needle = pattern_value.lower()
+    if pattern_type in {
+        "axdescription_prefix",
+        "axdescription_suffix",
+        "role_state",
+        "css_class",
+        "progressbar_value",
+        "other",
+    }:
+        return needle in blob
+    return needle in blob
+
+
+def _cache_short_circuit_active(payload: dict, last_result: dict) -> tuple[bool, str, dict | None]:
+    if _extract_active_consultation_id(payload):
+        return False, "", None
+    skeleton_hash = str(last_result.get("directive_skeleton_hash") or "")
+    if not skeleton_hash:
+        return False, "", None
+    entry = load_cached_bt(payload.get("platform", "unknown"), skeleton_hash)
+    if not isinstance(entry, dict):
+        return False, skeleton_hash, None
+    return str(entry.get("cache_class") or "") == "DETERMINISTIC_BT", skeleton_hash, entry
 
 
 def _user_input_directive(
@@ -135,8 +184,14 @@ def _need_screenshot_directive() -> dict:
     }
 
 
-def _prompt_payload_from_request(payload: dict, tier: int, chat_override: bool = False) -> dict:
-    return {
+def _prompt_payload_from_request(
+    payload: dict,
+    tier: int,
+    chat_override: bool = False,
+    cache_steering_entry: dict | None = None,
+    cache_steering_hash: str | None = None,
+) -> dict:
+    prompt = {
         "platform": payload.get("platform"),
         "last_result": payload.get("last_result"),
         "chat_message": payload.get("chat_message"),
@@ -146,14 +201,31 @@ def _prompt_payload_from_request(payload: dict, tier: int, chat_override: bool =
         "tier": tier,
         "chat_override": chat_override,
     }
+    if cache_steering_entry:
+        prompt["cache_steering_entry"] = cache_steering_entry
+        prompt["cache_steering_hash"] = cache_steering_hash
+    return prompt
 
 
-def _spawn_consultation(payload: dict, *, tier: int, metadata: dict) -> dict:
+def _spawn_consultation(
+    payload: dict,
+    *,
+    tier: int,
+    metadata: dict,
+    cache_steering_entry: dict | None = None,
+    cache_steering_hash: str | None = None,
+) -> dict:
     consult = request_consultation(
         platform=payload.get("platform", "unknown"),
         tree=payload.get("tree") or {},
         screenshot_b64=payload.get("screenshot_b64"),
-        prompt_payload=_prompt_payload_from_request(payload, tier=tier, chat_override=bool(metadata.get("chat_override"))),
+        prompt_payload=_prompt_payload_from_request(
+            payload,
+            tier=tier,
+            chat_override=bool(metadata.get("chat_override")),
+            cache_steering_entry=cache_steering_entry,
+            cache_steering_hash=cache_steering_hash,
+        ),
         metadata=metadata,
     )
     return _consulting_directive(consult["consultation_id"], poll_interval=3.0)
@@ -434,17 +506,25 @@ def step_2_validate_previous_action(payload: dict) -> dict | None:
             )
 
     if success and continue_loop:
-        _log_execution_outcome(payload, step2_validated=False, wrong_answer_retry=False, worker_fallback=False)
-        return {
-            "directive": "wait",
-            "directive_id": _make_directive_id(),
-            "seconds": 5.0,
-            "reason": "polling_continue_loop",
-        }
+        return None
 
     if success and before_hash != after_hash and not continue_loop:
         _log_execution_outcome(payload, step2_validated=True, wrong_answer_retry=False, worker_fallback=False)
         consultation_id = _extract_active_consultation_id(payload) or str(last_result.get("consultation_id") or "")
+        cache_short_circuit, skeleton_hash, cache_entry = _cache_short_circuit_active(payload, last_result)
+        if cache_short_circuit:
+            knowledge = load_knowledge(payload.get("platform", "unknown"))
+            invalidation.on_post_promotion_success(skeleton_hash, payload.get("platform", "unknown"), knowledge)
+            save_knowledge(payload.get("platform", "unknown"), knowledge)
+            log_event(
+                payload.get("platform", "unknown"),
+                event_kind="cache_validation_success",
+                screen_type=_current_screen_type(payload, last_result),
+                skeleton_hash=skeleton_hash,
+                consultation_id=consultation_id or _cache_short_circuit_consultation_id(),
+                course_id=_course_id(payload),
+                payload={"cache_class": (cache_entry or {}).get("cache_class")},
+            )
         graduation = graduate_active_recovery_entries(payload.get("platform", "unknown"), consultation_id or "validated")
         if graduation.get("graduated_entry_ids"):
             log_graduation_event(
@@ -480,6 +560,21 @@ def step_2_validate_previous_action(payload: dict) -> dict | None:
 
     if not success and last_result.get("failed_bt"):
         _log_execution_outcome(payload, step2_validated=False, wrong_answer_retry=False, worker_fallback=False)
+        cache_short_circuit, skeleton_hash, cache_entry = _cache_short_circuit_active(payload, last_result)
+        if cache_short_circuit:
+            knowledge = load_knowledge(payload.get("platform", "unknown"))
+            invalidation.on_post_promotion_failure(skeleton_hash, payload.get("platform", "unknown"), knowledge)
+            save_knowledge(payload.get("platform", "unknown"), knowledge)
+            log_event(
+                payload.get("platform", "unknown"),
+                event_kind="cache_validation_failure",
+                screen_type=_current_screen_type(payload, last_result),
+                skeleton_hash=skeleton_hash,
+                consultation_id=_extract_active_consultation_id(payload)
+                or str(last_result.get("consultation_id") or _cache_short_circuit_consultation_id()),
+                course_id=_course_id(payload),
+                payload={"cache_class": (cache_entry or {}).get("cache_class")},
+            )
         record_failed_recovery_attempt(
             payload.get("platform", "unknown"),
             _extract_active_consultation_id(payload) or str(last_result.get("consultation_id") or "failed"),
@@ -490,8 +585,62 @@ def step_2_validate_previous_action(payload: dict) -> dict | None:
 
 
 def step_2_7_polling_completion(payload: dict) -> dict | None:
-    _ = payload
-    return None
+    last_result = payload.get("last_result")
+    if not isinstance(last_result, dict):
+        return None
+    if not bool(last_result.get("continue_loop")) and str(last_result.get("action") or "") != "video_poll":
+        return None
+    if last_result.get("tree_hash_before") != last_result.get("tree_hash_after"):
+        return None
+
+    platform_data = load_knowledge(payload.get("platform", "unknown"))
+    indicator = (platform_data.get("global") or {}).get("video_completion_signal")
+    if not isinstance(indicator, dict):
+        return None
+
+    skeleton_hash = _current_skeleton_hash(payload)
+    if _match_completion_indicator(payload.get("tree") or {}, indicator):
+        log_event(
+            payload.get("platform", "unknown"),
+            event_kind="video_complete_detected",
+            screen_type="VIDEO_COMPLETE_ADVANCEMENT",
+            skeleton_hash=skeleton_hash,
+            consultation_id=_extract_active_consultation_id(payload) or "",
+            course_id=_course_id(payload),
+            payload={"indicator": indicator},
+        )
+        if _needs_screenshot_capture(payload):
+            return _need_screenshot_directive()
+        return _spawn_consultation(
+            payload,
+            tier=0,
+            metadata={
+                "tier": 0,
+                "screen_type_hint": "VIDEO_COMPLETE_ADVANCEMENT",
+                "polling_completion": True,
+            },
+        )
+
+    log_event(
+        payload.get("platform", "unknown"),
+        event_kind="video_still_polling",
+        screen_type="VIDEO",
+        skeleton_hash=skeleton_hash,
+        consultation_id=_extract_active_consultation_id(payload) or "",
+        course_id=_course_id(payload),
+        payload={"indicator": indicator},
+    )
+    return {
+        "directive": "execute_tree",
+        "directive_id": _make_directive_id(),
+        "consultation_id": _extract_active_consultation_id(payload),
+        "tree": _video_poll_tree(),
+        "screen": "VIDEO",
+        "expected_next": ["VIDEO", "TRANSITION", "VIDEO_COMPLETE_ADVANCEMENT"],
+        "extract": None,
+        "chat_messages": [],
+        "skeleton_hash": skeleton_hash,
+    }
 
 
 def step_3_failure_retry(payload: dict) -> dict | None:
@@ -519,7 +668,67 @@ def step_3_failure_retry(payload: dict) -> dict | None:
 
 
 def step_4_signature_match(payload: dict) -> dict | None:
-    _ = payload
+    platform = payload.get("platform", "unknown")
+    tree = payload.get("tree") or {}
+    skeleton = extract_skeleton(tree)
+    skeleton_hash = hash_skeleton(skeleton)
+    signature = compute_signature(tree)
+    if signature and signature != skeleton_hash:
+        skeleton_hash = signature
+
+    entry = load_cached_bt(platform, skeleton_hash)
+    if not isinstance(entry, dict):
+        return None
+
+    cache_class = str(entry.get("cache_class") or "")
+    screen_type = str(entry.get("screen_type") or "UNKNOWN")
+    if cache_class == "DETERMINISTIC_BT":
+        consultation_id = _cache_short_circuit_consultation_id()
+        log_event(
+            platform,
+            event_kind="cache_hit",
+            screen_type=screen_type,
+            skeleton_hash=skeleton_hash,
+            consultation_id=consultation_id,
+            course_id=_course_id(payload),
+            payload={"cache_class": cache_class, "cost_usd": 0.0},
+        )
+        return {
+            "directive": "execute_tree",
+            "directive_id": _make_directive_id(),
+            "consultation_id": consultation_id,
+            "tree": entry.get("bt", {"type": "sequence", "children": []}),
+            "screen": screen_type,
+            "expected_next": entry.get("expected_next", []),
+            "extract": None,
+            "chat_messages": [],
+            "skeleton_hash": skeleton_hash,
+        }
+
+    if cache_class == "PROCEDURAL_TEMPLATE":
+        if _needs_screenshot_capture(payload):
+            return _need_screenshot_directive()
+        log_event(
+            platform,
+            event_kind="cache_hit",
+            screen_type=screen_type,
+            skeleton_hash=skeleton_hash,
+            consultation_id="",
+            course_id=_course_id(payload),
+            payload={"cache_class": cache_class, "cost_usd": None},
+        )
+        return _spawn_consultation(
+            payload,
+            tier=0,
+            metadata={
+                "tier": 0,
+                "screen_type_hint": screen_type,
+                "cache_class": cache_class,
+            },
+            cache_steering_entry=entry,
+            cache_steering_hash=skeleton_hash,
+        )
+
     return None
 
 

@@ -126,8 +126,13 @@ def load_output_schema_constraints(path: str = str(UNIVERSAL_LAYER_PATH)) -> dic
 @lru_cache(maxsize=2)
 def load_worker_prompt_sections(path: str = str(WORKER_PROMPT_SPEC)) -> dict[str, str]:
     markdown = _read_text(Path(path))
+    block_7 = _extract_named_section(markdown, "Block 7 — Cache short-circuit (if applicable)", level=3)
     block_8 = _extract_named_section(markdown, "Block 8 — Reconsult Context (Tier 1, if reconsult)", level=3)
     reconsult_template = _extract_fenced_block(block_8, "text")
+    block_7_match = re.search(r'"([^"]*cached_bts\[<hash>\][^"]*)"', block_7)
+    if not block_7_match:
+        raise ValueError("Cache short-circuit template missing from worker prompt spec")
+    cache_steering_template = block_7_match.group(1).strip()
     user_message_templates = json.loads(
         _extract_fenced_block(
             _extract_named_section(markdown, "Worker User Message Templates (machine readable)", level=3),
@@ -137,6 +142,7 @@ def load_worker_prompt_sections(path: str = str(WORKER_PROMPT_SPEC)) -> dict[str
     if not isinstance(user_message_templates, dict):
         raise ValueError("Worker user message templates are malformed")
     sections = {
+        "cache_steering_template": cache_steering_template,
         "reconsult_template": reconsult_template,
     }
     for key, value in user_message_templates.items():
@@ -245,10 +251,6 @@ def format_platform_knowledge(platform_data: dict) -> str:
     if _is_populated(widget_classes):
         blocks.append("Known widget mechanics:\n" + _json_block(widget_classes))
 
-    cached_bts = compact.get("cached_bts", {})
-    if _is_populated(cached_bts):
-        blocks.append("Cached behavior-tree metadata:\n" + _json_block(cached_bts))
-
     if not blocks:
         return f"Platform: {display_name} — first encounter, no learned patterns yet."
     return f"Platform: {display_name}\n" + "\n\n".join(blocks)
@@ -326,6 +328,19 @@ def format_reconsult_context(last_result: dict | None, tier: int) -> str:
     )
     rendered = re.sub(r"\n{3,}", "\n\n", rendered)
     return rendered.strip()
+
+
+def format_cache_steering(entry: dict | None, skeleton_hash: str | None) -> str:
+    if not isinstance(entry, dict) or str(entry.get("cache_class") or "") != "PROCEDURAL_TEMPLATE":
+        return ""
+    sections = load_worker_prompt_sections()
+    instruction = sections["cache_steering_template"].replace("<hash>", str(skeleton_hash or "unknown"))
+    payload = {
+        "screen_type": entry.get("screen_type"),
+        "cache_class": entry.get("cache_class"),
+        "bt": entry.get("bt"),
+    }
+    return instruction + "\n\nCached structural template:\n" + _json_block(payload)
 
 
 def _find_web_area(node: Any) -> dict | None:
@@ -548,6 +563,8 @@ def assemble_system_prompt(
     provisional_data: dict | None,
     last_result: dict | None,
     tier: int,
+    cache_steering_entry: dict | None = None,
+    cache_steering_hash: str | None = None,
 ) -> str:
     platform_block, provisional_block = render_knowledge_for_worker(platform_data, provisional_data)
     blocks = [
@@ -559,6 +576,9 @@ def assemble_system_prompt(
     ]
     if provisional_block:
         blocks.append(("provisional", provisional_block))
+    cache_steering_block = format_cache_steering(cache_steering_entry, cache_steering_hash)
+    if cache_steering_block:
+        blocks.append(("cache_steering", cache_steering_block))
     reconsult_block = format_reconsult_context(last_result, tier)
     if reconsult_block:
         blocks.append(("reconsult", reconsult_block))

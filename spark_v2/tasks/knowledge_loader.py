@@ -98,6 +98,13 @@ def load_knowledge(platform: str) -> dict:
     return data
 
 
+def save_knowledge(platform: str, data: dict) -> dict:
+    platform_dir = _platform_dir(platform)
+    platform_dir.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(platform_dir / "knowledge.json", data)
+    return data
+
+
 def load_provisional(platform: str) -> dict | None:
     path = _platform_dir(platform) / "provisional_knowledge.json"
     if not path.exists():

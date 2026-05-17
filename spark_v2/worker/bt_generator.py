@@ -230,6 +230,8 @@ def generate_bt(
         provisional_data=provisional_data,
         last_result=last_result,
         tier=tier,
+        cache_steering_entry=prompt_payload.get("cache_steering_entry"),
+        cache_steering_hash=prompt_payload.get("cache_steering_hash"),
     )
     try:
         user_message = assemble_user_message(

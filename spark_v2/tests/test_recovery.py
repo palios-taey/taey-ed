@@ -43,13 +43,16 @@ class RecoveryTests(unittest.TestCase):
             request_writer.RECOVERY_DIR = Path(tmp) / "recovery"
             request_writer.PROMPT_TEMPLATE_PATH = Path(tmp) / "prompt.md"
             request_writer.PROMPT_TEMPLATE_PATH.write_text("A {PLATFORM_DISPLAY_NAME} {FAILED_PROVISIONAL_ATTEMPTS}")
-            request_id = request_writer.create_request(
-                {
-                    "platform": "khan_academy",
-                    "platform_display_name": "Khan Academy",
-                    "provisional": {"_recovery_entries": [], "_meta": {"failed_attempts": [{"x": 1}]}}
-                }
-            )
+            with patch("spark_v2.recovery.request_writer.subprocess.run") as mock_run:
+                mock_run.return_value.returncode = 0
+                mock_run.return_value.stderr = ""
+                request_id = request_writer.create_request(
+                    {
+                        "platform": "khan_academy",
+                        "platform_display_name": "Khan Academy",
+                        "provisional": {"_recovery_entries": [], "_meta": {"failed_attempts": [{"x": 1}]}}
+                    }
+                )
             prompt = (request_writer.RECOVERY_DIR / request_id / "prompt.txt").read_text()
             self.assertIn("Khan Academy", prompt)
             self.assertIn('"x": 1', prompt)
