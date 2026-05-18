@@ -165,7 +165,15 @@ ESCALATION LEVEL: {escalation_level} (attempt {spark_attempts})
 2. Execution uses TITLE, DESCRIPTION, and ROLE to find elements, NEVER element_id.
    Element IDs in tree.json are for YOUR visual reference only.
 3. NEVER target "Skip" buttons. Exercises must be SOLVED or ESCALATED.
-4. NEVER click "Up next" on Khan Academy (mastery-adaptive, skips content).
+4. "Up next" rule on Khan is CONTEXTUAL, not absolute:
+     - ALLOWED on TRANSITION_* and *_COMPLETE / *_CORRECT screens: "Up next: exercise"
+       (or "Up next: video" / "Up next: article") is the canonical advance after
+       finishing the prior unit. Equivalent to picking the next item from the sidebar.
+     - FORBIDDEN mid-VIDEO (skips remaining content) and on NAVIGATION screens where
+       the next item should be the next NON-COMPLETED sidebar lesson (Up next might
+       jump past unfinished prerequisites — mastery-adaptive skip).
+     Heuristic: if the screen type indicates a completion/transition state, "Up next"
+     is the right click. Otherwise prefer explicit sidebar navigation.
 5. NEVER put a screen in its own expected_next (creates silent infinite loops).
 6. video_poll must be the ONLY action in its tree. No other children.
    Pipeline re-match loop handles screen transitions after video completes.
@@ -190,6 +198,26 @@ ESCALATION LEVEL: {escalation_level} (attempt {spark_attempts})
 12. RESPONSE-KEY CONTRACT (uniform across question_types):
       solve / solve_choice / solve_complex / navigate → read $llm.answer (string)
       solve_checkbox                                    → read $llm.selected (list)
+      solve_matching                                    → read $llm.matches (dict)
+13. UNIVERSAL IMAGE/HIDDEN-CONTENT EXTRACTION (all platforms): when the answer
+    depends on content embedded in an image, dropdown, modal, or any element
+    NOT directly readable from the AX tree as text, the BT MUST do a two-step
+    extraction BEFORE asking the LLM to choose an answer:
+      Step A (extract): open / OCR / enumerate the hidden content into the BT's
+        blackboard. Examples: for dropdowns, click each popup and
+        discover_menu the options; for image-based questions, send_to_llm with
+        question_type='solve' asking the LLM to DESCRIBE each option's
+        diagram/text first (return structured text).
+      Step B (reason): a second send_to_llm call uses the extracted structured
+        data as `context` and asks for the actual answer.
+    If the AX tree already contains the full question + option text and no
+    image content is essential to picking the answer, single-step is fine —
+    do NOT add unnecessary two-step overhead. This rule fires when the
+    option text is degenerate (e.g., "(Choice A) A box with arrows"), when
+    diagrams carry numeric values, or when the screen has hidden menus.
+14. RESPONSE FORMAT IS JSON ONLY. Emit a single JSON object as your final
+    output — no prose before or after. The output_schema is defined per
+    consult below.
       solve_matching                                    → read $llm.matches (dict)
     Always read the field documented for the question_type you used. No exceptions.
 
@@ -620,7 +648,9 @@ screen_type: VIDEO_COMPLETE
 expected_next: ["NAVIGATION", "EXERCISE_RADIO", "ARTICLE"]
 
 CARDINAL RULES:
-- NEVER click "Up next" on Khan Academy (mastery-adaptive, skips content)
+- "Up next" is CONTEXTUAL on Khan (see Cardinal Rule 4 in identity block):
+   ALLOWED on TRANSITION/*_COMPLETE/*_CORRECT post-completion screens.
+   FORBIDDEN on actively-playing video screens (would skip remaining content).
 - NEVER skip or seek (must watch to 100%)
 - Check sidebar completion indicator before marking complete"""
 
@@ -772,7 +802,12 @@ with each popup carrying its real options. Then select. This is REQUIRED, not op
         "verify_wait": 0.4
       }
     },
-    {
+        {
+      "type": "action",
+      "action": "wait_for_element",
+      "params": {"role": "AXButton", "target": "Check", "max_wait": 3.0}
+    },
+{
       "type": "action",
       "action": "find_and_click",
       "params": {

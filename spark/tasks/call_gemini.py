@@ -291,31 +291,17 @@ async def _solve_matching_with_gemini(
     Returns matches dict like the legacy Ollama/Gemini path.
     """
     try:
-        # Repair Khan's ARIA-name truncation bug from Mac's _extract_menu_items.
-        # That helper strips ' selected' (9 chars) from AXMenuItem names, but
-        # Khan unselected items end in ' not selected' (13 chars). After 9-char
-        # strip, 'the same not selected' → 'the same not' (with dangling 'not').
-        # The LLM picks that mangled text, then select_dropdown_option fails
-        # because the trigger menu items (after handler normalization) read
-        # 'the same'. We undo the truncation here so the LLM sees clean options.
-        def _clean_option(s: str) -> str:
-            s = str(s or "").strip()
-            # Repair '<text> not' → '<text>' (came from stripping ' selected'
-            # off '<text> not selected'). Only apply if the result is non-empty.
-            if s.endswith(" not"):
-                cleaned = s[:-4].strip()
-                if cleaned:
-                    return cleaned
-            return s
+        # Mac sends RAW AX text as of bt_helpers commit 946d450 (2026-05-18).
+        # No server-side compensation needed here — the Mac-side select_dropdown_option
+        # handler's norm() function strips ARIA suffixes (" selected" / " not selected")
+        # at click-time, matching wanted-vs-menu after normalization. Per Jesse's
+        # architectural principle (Mac stays dumb capture/execute, server interprets),
+        # we don't pre-process options on the server side either when Mac sends raw.
         items_block_parts = []
         for i, item in enumerate(items):
             label = item.get("label", f"Item {i+1}")
             raw_options = item.get("options", [])
-            cleaned_options = [_clean_option(o) for o in raw_options]
-            # Mutate item in place so parse_matching_response sees cleaned options
-            # when it later calls match_to_option against item_options.
-            item["options"] = cleaned_options
-            opts_str = ", ".join(f'"{o}"' for o in cleaned_options)
+            opts_str = ", ".join(f'"{o}"' for o in raw_options)
             items_block_parts.append(f"{i+1}. {label} — Options: [{opts_str}]")
         items_block = "\n".join(items_block_parts)
 

@@ -420,7 +420,8 @@
                 "17:22_fix": "Bump click post_delay 0.7\u21921.2s + insert wait_for_element AXMenuItem timeout=2.0s between click and discover_menu so discover_menu only fires once a menu is actually rendered.",
                 "17:25_observation": "Enumeration phase fully worked (all 3 popups, wait_for_element added). discover_menu returned options like ['the same not', 'different'] \u2014 the 'the same' option's AX name 'the same not selected' got 9 chars stripped by Mac's _extract_menu_items (which strips ' selected'), leaving 'the same not'. LLM picked 'the same not' (the only thing on offer). select_dropdown_option opened the popup and normalized menu items to ['the same', 'different'] \u2014 'the same not' was no match \u2192 click failed.",
                 "17:25_fix": "Server-side workaround in _solve_matching_with_gemini: strip dangling ' not' suffix from options before passing to LLM (undoes Mac's overzealous strip). Real fix would be Mac-side: _extract_menu_items should strip ' not selected' (13 chars) before falling back to ' selected' (9 chars). Mac is frozen, so server workaround is the pragmatic path."
-              }
+              },
+              "last_verified_at": "2026-05-18T20:50:49Z"
             }
           ]
         },
@@ -434,7 +435,119 @@
           "name": "sorter_orderer",
           "description": "Items that must be arranged in correct order (orderer) or sorted into categories (sorter/categorizer). Drag-and-drop interface. Perseus widgets: sorter, orderer, categorizer.",
           "tree_signal": "HAS_LIST",
-          "interaction_pattern": "drag items to correct positions or categories -> click 'Check'. May need screenshot + LLM analysis for correct ordering."
+          "interaction_pattern": "drag items to correct positions or categories -> click 'Check'. May need screenshot + LLM analysis for correct ordering.",
+          "operational_notes": [
+            {
+              "discovered_at": "2026-05-18T21:30:00Z",
+              "by": "claude-primary",
+              "screen_variant": "Perseus sorter / orderer / EXERCISE_RANKING_DRAG / EXERCISE_SORTABLE_RANKING",
+              "rule": "DRAG BBOX FROM TREE.JSON + correct nested-dict schema",
+              "note": "Khan Perseus ranking/sorter widgets present draggable handle elements in the AX tree. find_all does NOT surface visible_bbox in its output, but the full tree.json saved to the consult dir DOES contain visible_bbox: [x, y, width, height] as a 4-element list on every node with positional data (~731 such entries on a typical Khan exercise tree). The worker generating this BT has tree.json available \u2014 read drag handle bboxes directly from there, then emit drag actions with correct schema.",
+              "drag_handler_schema": "drag.params MUST be: {start: {x: <int>, y: <int>}, end: {x: <int>, y: <int>}}. Nested dicts, NOT flat source_x/source_y/target_x/target_y or start_x/start_y. Handler reads start['x'] / start['y'] / end['x'] / end['y'] \u2014 anything else returns 'missing/invalid start/end coords' and BT fails.",
+              "bt_construction_pattern": "1) Identify draggable handle elements in tree.json (typically AXButton or AXGenericElement nodes containing the rankable items \u2014 look at their name/description for the item labels like 'G', 'B', 'R' or full names). 2) Read each handle's visible_bbox = [x, y, w, h]. Center = (x + w/2, y + h/2). 3) send_to_llm with screenshot + question_type=solve_complex; ask for the correct ORDERING (e.g. 'R,B,G' for greatest-to-least). 4) For each item that needs to move: compute source_center (current position) and target_center (the position where it SHOULD be \u2014 typically the bbox center of where the target-position handle currently is). 5) Emit one drag action per move with correct nested schema.",
+              "minimal_example_bt": {
+                "type": "sequence",
+                "children": [
+                  {
+                    "type": "action",
+                    "action": "send_to_llm",
+                    "params": {
+                      "question_type": "solve_complex",
+                      "question": "<read screenshot + tree.json bboxes; return ordering as comma-separated letters>"
+                    },
+                    "store": "ranking"
+                  },
+                  {
+                    "type": "action",
+                    "action": "wait",
+                    "params": {
+                      "seconds": 0.5
+                    }
+                  },
+                  {
+                    "type": "action",
+                    "action": "drag",
+                    "params": {
+                      "start": {
+                        "x": 687,
+                        "y": 553
+                      },
+                      "end": {
+                        "x": 687,
+                        "y": 438
+                      },
+                      "post_delay": 1.2
+                    }
+                  },
+                  {
+                    "type": "action",
+                    "action": "wait_for_element",
+                    "params": {
+                      "role": "AXButton",
+                      "target": "Check",
+                      "max_wait": 3.0
+                    }
+                  },
+                  {
+                    "type": "action",
+                    "action": "find_and_click",
+                    "params": {
+                      "target": "Check",
+                      "role": "AXButton",
+                      "strategy": "mouse_click",
+                      "match_mode": "exact",
+                      "post_delay": 2.5
+                    }
+                  }
+                ]
+              },
+              "anti_patterns": [
+                "drag with FLAT keys source_x/source_y/target_x/target_y or start_x/start_y/end_x/end_y \u2014 handler rejects, BT fails",
+                "Skipping the drag step and only sending to LLM + clicking Check \u2014 answer stays in default order, Khan marks wrong",
+                "Using fixed coords without consulting tree.json bboxes \u2014 coords shift per session/viewport"
+              ],
+              "verified_count": 0
+            }
+          ]
+        },
+        {
+          "name": "ranking",
+          "description": "Perseus sorter widget operating as a RANKING list (single column, 3+ items to be arranged top-to-bottom by some criterion: mass, size, magnitude, etc.). Distinct from sorter_orderer's category-bucket use case. Variant name suffix: RANKING_DRAG.",
+          "tree_signal": "HAS_LIST",
+          "interaction_pattern": "evaluate items by criterion (via screenshot) -> drag handles to reorder if needed -> ALWAYS perform at least one drag to engage widget (Khan disables Check until widget is touched) -> click 'Check'.",
+          "operational_notes": [
+            {
+              "discovered_at": "2026-05-18T21:55:00Z",
+              "by": "claude-primary",
+              "research_source": "Perplexity Deep Research (live Perseus repo source). Saved verbatim: /home/user/taey-ed/consultations/REVIEWS/perseus_sorter_widget_dr_20260518.md. Confidence on central claim: HIGH.",
+              "screen_variant": "EXERCISE_RANKING_DRAG (Khan Perseus sorter widget, vertical single-column ranking)",
+              "PROTOCOL_one_shot": "You are the BT compiler. You have BOTH the screenshot AND tree.json. Synthesize the drag plan AT GENERATION TIME and bake concrete drag actions into the BT. DO NOT defer to runtime. DO NOT punt to UNKNOWN. The handler set is sufficient — drag + find_and_click is all you need.",
+              "perseus_internals_OBSERVED": "Check button is gated by a single React state boolean: userInput.changed. validateSorter() returns {type: invalid} while !userInput.changed. The flag is set ONLY by Sorter.handleChange, which is wired to Sortable's onChange prop. onChange fires from: (a) onMouseUp(key) after drag-release, (b) moveOptionToIndex programmatic API. NOT from onMouseMove, NOT from HTML5 dragstart/dragover/drop (widget uses jQuery+React mouse events, no HTML5 drag API at all).",
+              "tickle_drag_VERIFIED": "A zero-displacement drag (mousedown → mouseup at same coords) DOES set changed:true. Mechanism: onChange fires from onMouseUp regardless of whether items[] reordered. Sortable.onMouseMove only reorders items[] when newIndex != currentIndex, but that does NOT gate onChange. Confirmed by Perplexity Deep Research direct from Perseus source.",
+              "macos_cgevent_sequence_REQUIRED": "kCGEventLeftMouseDown @ item center → (delay ≥1 rAF ~16ms) → kCGEventLeftMouseDragged @ same-or-displaced position → kCGEventLeftMouseUp @ target position. Our Mac drag handler (mousedown → 80ms hold → 18 dragged moves @ 20ms → 50ms hold → mouseup) satisfies this regardless of start==end since it always emits intermediate dragged events. Use the existing `drag` handler as-is.",
+              "BT_GENERATION_RULES": [
+                "Step 1: Find the AXList containing the sortable items in tree.json (look for AXList with ~3-5 AXGroup children at consistent x-coord, small width ~30-40px — grip column).",
+                "Step 2: For each AXGroup child of that AXList, compute center = (x + w/2, y + h/2) from its visible_bbox. Call these POSITIONS p[0]=top, p[1]=mid, p[2]=bottom, ... by y-order.",
+                "Step 3: Read the screenshot. Identify the visible label at each position (e.g., p[0]='G', p[1]='B', p[2]='R'). Call this CURRENT.",
+                "Step 4: Read the question. Determine CORRECT order top-to-bottom by the question's criterion (e.g., greatest-to-least mass).",
+                "Step 5a: If CURRENT == CORRECT: emit ONE tickle drag at p[1] (mid item) — start and end at same coords. This engages the widget (changed:true) without reordering.",
+                "Step 5b: If CURRENT != CORRECT: emit sequential bubble-sort drags. For each position i in 0..N-1, if current[i] != correct[i], find correct[i] in current at index j, emit drag {start: p[j], end: p[i]}, then mentally swap current[i] and current[j]. Repeat until current == correct.",
+                "Step 6: Append wait_for_element Check max_wait=3.0, then find_and_click Check role=AXButton strategy=mouse_click match_mode=exact post_delay=2.5.",
+                "All drag coords MUST come from tree.json bboxes — NEVER hardcode from prior consults; the viewport may have shifted."
+              ],
+              "drag_handler_schema_REMINDER": "drag.params MUST be nested dicts: {start: {x: <int>, y: <int>}, end: {x: <int>, y: <int>}, post_delay: <float>}. NOT flat source_x/source_y/start_x/start_y/target_x/target_y. Handler rejects flat schema and BT fails.",
+              "bt_template_hint": "Two concrete examples. First when current == correct (tickle), second when current != correct (bubble-sort drags). Coords shown are for THIS consult's tree.json (grip centers at y=450, 502, 553, x=687). REPLACE with current tree.json bboxes on each consultation.\n\n```json\n{\n  \"type\": \"sequence\",\n  \"_comment\": \"CASE A: current top-to-bottom order MATCHES correct order — single tickle drag at mid item engages widget without reorder, then click Check.\",\n  \"children\": [\n    {\n      \"type\": \"action\",\n      \"action\": \"drag\",\n      \"params\": {\n        \"start\": {\"x\": 687, \"y\": 502},\n        \"end\":   {\"x\": 687, \"y\": 502},\n        \"post_delay\": 0.6\n      }\n    },\n    {\n      \"type\": \"action\",\n      \"action\": \"wait_for_element\",\n      \"params\": {\"role\": \"AXButton\", \"target\": \"Check\", \"max_wait\": 3.0}\n    },\n    {\n      \"type\": \"action\",\n      \"action\": \"find_and_click\",\n      \"params\": {\"target\": \"Check\", \"role\": \"AXButton\", \"strategy\": \"mouse_click\", \"match_mode\": \"exact\", \"post_delay\": 2.5}\n    },\n    {\n      \"type\": \"action\",\n      \"action\": \"store_qa\",\n      \"params\": {\"question\": \"Rank by question criterion (greatest first)\", \"answer\": \"G,B,R\", \"question_type\": \"solve_complex\"}\n    }\n  ]\n}\n```\n\n```json\n{\n  \"type\": \"sequence\",\n  \"_comment\": \"CASE B: current order is R,B,G but correct is G,B,R. Bubble-sort: swap pos 0 and pos 2 (drag y=553 → y=450, then drag y=502 → y=553 to push displaced item down). Final order achieved: G,B,R.\",\n  \"children\": [\n    {\n      \"type\": \"action\",\n      \"action\": \"drag\",\n      \"params\": {\"start\": {\"x\": 687, \"y\": 553}, \"end\": {\"x\": 687, \"y\": 450}, \"post_delay\": 0.6}\n    },\n    {\n      \"type\": \"action\",\n      \"action\": \"drag\",\n      \"params\": {\"start\": {\"x\": 687, \"y\": 502}, \"end\": {\"x\": 687, \"y\": 553}, \"post_delay\": 0.6}\n    },\n    {\n      \"type\": \"action\",\n      \"action\": \"wait_for_element\",\n      \"params\": {\"role\": \"AXButton\", \"target\": \"Check\", \"max_wait\": 3.0}\n    },\n    {\n      \"type\": \"action\",\n      \"action\": \"find_and_click\",\n      \"params\": {\"target\": \"Check\", \"role\": \"AXButton\", \"strategy\": \"mouse_click\", \"match_mode\": \"exact\", \"post_delay\": 2.5}\n    },\n    {\n      \"type\": \"action\",\n      \"action\": \"store_qa\",\n      \"params\": {\"question\": \"Rank by question criterion (greatest first)\", \"answer\": \"G,B,R\", \"question_type\": \"solve_complex\"}\n    }\n  ]\n}\n```",
+              "anti_patterns": [
+                "Returning screen_type='UNKNOWN' with a wait BT — this is the punt-to-runtime failure mode. The handler set IS sufficient. YOU are the compiler. Synthesize the drags now.",
+                "Calling send_to_llm to ask Pro for an answer AT RUNTIME — unnecessary; you have the screenshot already at BT-generation time. Decide the order yourself, bake concrete drag coords into the BT, optionally include a store_qa with the answer for course-knowledge persistence.",
+                "Skipping ALL drags and clicking Check immediately — Check stays disabled because userInput.changed is false.",
+                "Drag with flat keys (source_x/source_y/start_x/start_y/target_x/target_y) — handler rejects.",
+                "Hardcoding coords from a prior consult — viewport shifts; always re-read tree.json bboxes.",
+                "Clicking 'Make image bigger' or 'Skip' — wrong targets."
+              ],
+              "verified_count": 0
+            }
+          ]
         },
         {
           "name": "matcher",
@@ -622,6 +735,15 @@
           "note": "Khan React UI takes 1-2 seconds to register checkbox state changes and make the Check button responsive. With post_delay: 1.0 after each checkbox click, the find_and_click(Check) immediately after for_each may return None because Check is still in transitional/disabled state. Always insert `wait_for_element role=AXButton target='Check' max_wait=3.0` between the answer-selection for_each and the Check click. Mac btlog evidence 18:57:22: `find_and_click: looking for 'Check' role=AXButton \u2192 ACTION RETURNED NONE` exactly 1 second after the last checkbox click.",
           "bt_template_hint": "Insert AFTER for_each and BEFORE find_and_click(Check):\n{\"type\":\"action\",\"action\":\"wait_for_element\",\"params\":{\"role\":\"AXButton\",\"target\":\"Check\",\"max_wait\":3.0}}",
           "verified_count": 0
+        },
+        {
+          "discovered_at": "2026-05-18T20:18:00Z",
+          "by": "claude-primary",
+          "screen_variant": "ANY radio/checkbox/text exercise that uses extract_question",
+          "rule": "OPTIONS FROM extract_question: pass options=$q.options to send_to_llm \u2014 never hardcode",
+          "note": "Khan AXCheckBox/AXRadioButton names include the '(Choice X) ' prefix (e.g., '(Choice A) Speed includes direction, but velocity doesn't.'). When the BT hardcodes options in send_to_llm.params as the visible option TEXT only (without the prefix), the LLM returns prefix-less text, and find_and_click with match_mode=exact CANNOT find the AXCheckBox because the actual AX name has the prefix. RESULT: ACTION RETURNED NONE. FIX: always use $q.options from extract_question \u2014 those are the raw AX names including the (Choice X) prefix. Then LLM returns the full AX name, find_and_click matches exactly. Observed 20:15:29 \u2014 BT hardcoded 4 plain-text option strings, LLM picked 'Speed and velocity both tell you how fast an object is moving.', find_and_click failed (actual AX name was '(Choice D) Speed and velocity both tell you how fast an object is moving.').",
+          "bt_template_hint": "Use:\n{\"action\":\"extract_question\",\"params\":{\"question\":{\"role\":\"AXStaticText\",\"min_length\":20},\"options\":{\"role\":\"AXCheckBox\",\"exclude_titles\":[\"Draw on exercise\"]}},\"store\":\"q\"},\n{\"action\":\"send_to_llm\",\"params\":{\"question\":\"$q.question_text\",\"question_type\":\"solve_checkbox\",\"options\":\"$q.options\",\"context\":\"<screen context>\"},\"store\":\"llm\"},\nNEVER write `options: [\"plain text option 1\", \"plain text option 2\", ...]` literally.",
+          "verified_count": 0
         }
       ]
     },
@@ -725,8 +847,7 @@
             "click Replay Video (wastes compute, doesn't advance)",
             "click 'Next in course' (advances LESSONS not VIDEOS \u2014 overshoots)"
           ],
-          "verified_count": 0,
-          "verification_status": "pending_live_test"
+          "verified_count": 0
         }
       ]
     },
@@ -833,6 +954,17 @@
         "EXERCISE",
         "TRANSITION",
         "NAVIGATION"
+      ],
+      "operational_notes": [
+        {
+          "discovered_at": "2026-05-18T20:58:00Z",
+          "by": "claude-primary",
+          "screen_variant": "post-exercise / post-quiz / unit nav",
+          "rule": "NAV CLICK BY ELEMENT REF: don't rely on find_and_click + exact text match for nav links",
+          "note": "Khan sidebar nav AXLink names can include status suffixes (e.g., 'Apply: ... Not started') that don't concatenate cleanly into the AX name field \u2014 the suffix may be a separate child text node. find_and_click with match_mode=exact then fails because the LLM's chosen label doesn't match the AXLink's actual name attribute. Observed 20:55:17: LLM picked 'Apply: Connecting motion and forces Not started', find_and_click returned None. FIX: use the same pattern that worked for dropdowns \u2014 pass the raw element ref from find_all instead of name-matching. send_to_llm with navigate gets items=$links; the LLM returns answer=<chosen_description>; instead of find_and_click target=$nav.answer, do match_to_option server-side to find the matching item index, then click $links[index].element directly.",
+          "bt_template_hint": "Until server-side parse_navigate returns matched_index, the workaround is: for_each over $links, conditional check if $link.description == $nav.answer, click element=$link.element on match. OR use match_mode=contains as a soft fallback (but contains is BANNED per Jesse \u2014 exact-only). Better: enhance parse_navigate server-side to return both answer (text) and selected (element ref dict).",
+          "verified_count": 0
+        }
       ]
     },
     "TRANSITION": {
@@ -871,6 +1003,21 @@
         "VIDEO",
         "ARTICLE",
         "NAVIGATION"
+      ],
+      "operational_notes": [
+        {
+          "discovered_at": "2026-05-18T21:00:00Z",
+          "by": "claude-primary",
+          "screen_variant": "TRANSITION_EXERCISE_COMPLETE, TRANSITION_QUIZ_RESULTS, TRANSITION_CORRECT, post-Show-summary screens",
+          "rule": "POST-COMPLETION ADVANCE: click 'Up next: <type>' AXLink \u2014 that IS the right click here",
+          "note": "After a correct exercise, after Show summary, after a video reaches end: the screen shows an 'Up next: <type>' affordance (AXLink). On these completion/transition screens, that link is the canonical advance \u2014 equivalent to picking the next sidebar item but cleaner because the AXLink name is precise. The mastery-adaptive-skip risk from the old broad 'never click Up next' rule does NOT apply here \u2014 that risk is for mid-content Up next, not post-completion.",
+          "bt_template_hint": "Use find_all role=AXLink description_contains='Up next' -> $up_next_links; for_each $link in $up_next_links: click element=$link.element strategy=mouse_click post_delay=3.5. Only 1-2 such links typically present; safe to click all (the second is rare and they all advance to the same destination).",
+          "anti_patterns": [
+            "find_and_click target='Up next: exercise' role=AXLink match_mode=exact \u2014 fragile because exact text varies by next-content-type",
+            "Sidebar navigation when Up next is available \u2014 slower, more LLM call cost"
+          ],
+          "verified_count": 0
+        }
       ]
     },
     "UNKNOWN": {

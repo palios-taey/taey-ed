@@ -826,6 +826,7 @@ def build_bt_from_tree(
         load_knowledge, load_learned,
         get_handlers_for_screen, get_quirks_for_screen,
         get_question_types_for_screen,
+        get_operational_notes_for_screen,
     )
 
     tags = analyze_tree(tree)
@@ -869,6 +870,16 @@ def build_bt_from_tree(
         knowledge_ctx = _build_knowledge_context(knowledge, screen_type, quirks, learned)
         if knowledge_ctx:
             prompt_parts.append(knowledge_ctx)
+
+        # 3-tier operational_notes: platform / category / matched-subtype.
+        # These carry concrete BT templates and discovered-failure lessons that
+        # subtype-specific BT generation depends on (e.g. drag-engagement rules
+        # for Perseus sorter widgets). Loading must use the CLASSIFIED variant
+        # passed in via screen_type, not "UNKNOWN" — the matcher resolves the
+        # subtype by substring match against the variant suffix.
+        op_notes = get_operational_notes_for_screen(knowledge, screen_type)
+        if op_notes:
+            prompt_parts.append(op_notes)
 
         # Selective handler docs
         prompt_parts.append(get_handler_docs(handler_names))
