@@ -7,7 +7,7 @@ router = APIRouter()
 
 @router.get("/health")
 def health():
-    return {"status": "healthy", "version": "8.1.0", "phase": 8}
+    return {"status": "healthy", "version": "8.1.0", "phase": "8+verified-bt-bypass"}
 
 
 @router.get("/screen-memory/stats")

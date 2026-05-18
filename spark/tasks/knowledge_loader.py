@@ -6,10 +6,14 @@ Provides JIT context assembly for build_bt_from_tree().
 import json
 import logging
 import os
+import re
 import tempfile
 import time
 from pathlib import Path
 from typing import Optional
+
+from spark.tasks.atomic_write import atomic_write_json
+from spark.tasks.screen_type_util import get_master_category
 
 logger = logging.getLogger("taey-ed")
 
@@ -265,6 +269,169 @@ def get_operational_notes_for_screen(knowledge: dict, screen_type: str) -> str:
     if not sections:
         return ""
     return "## Operational notes (lessons from prior consultations)\n\n" + "\n\n".join(sections)
+
+
+def _normalize_subtype_name(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(name).lower())
+
+
+def _variant_subtype_key(screen_type: str, master_type: str) -> str:
+    if screen_type == master_type:
+        return ""
+    prefix = f"{master_type}_"
+    suffix = screen_type[len(prefix):] if screen_type.startswith(prefix) else screen_type
+    return _normalize_subtype_name(suffix)
+
+
+def _parse_bt_template_hint_json(bt_template_hint: str) -> dict | None:
+    if not isinstance(bt_template_hint, str):
+        return None
+    matches = re.findall(r"```json\s*(\{.*?\})\s*```", bt_template_hint, flags=re.DOTALL)
+    candidates = list(reversed(matches))
+    stripped = bt_template_hint.strip()
+    if stripped.startswith("{") and stripped.endswith("}"):
+        candidates.append(stripped)
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return None
+
+
+def _coerce_bt_template(template: dict | None) -> dict | None:
+    if not isinstance(template, dict):
+        return None
+    if isinstance(template.get("tree"), dict):
+        return template
+    if isinstance(template.get("behavior_tree"), dict):
+        return {
+            "tree": template["behavior_tree"],
+            "extract": template.get("extract"),
+            "expected_next": template.get("expected_next", []),
+        }
+    if template.get("type") in {"action", "sequence", "selector", "parallel", "conditional"}:
+        return {
+            "tree": template,
+            "extract": None,
+            "expected_next": [],
+        }
+    return None
+
+
+def _iter_verified_bt_templates(knowledge: dict, screen_type: str, min_verified: int = 1) -> list[dict]:
+    master_type = get_master_category(screen_type) or screen_type
+    screen_info = knowledge.get("screen_types", {}).get(master_type, {})
+    subtypes = screen_info.get("subtypes", [])
+    subtype_key = _variant_subtype_key(screen_type, master_type)
+
+    ordered_subtypes = []
+    if subtype_key:
+        exact = [
+            subtype for subtype in subtypes
+            if _normalize_subtype_name(subtype.get("name", "")) == subtype_key
+        ]
+        ordered_subtypes.extend(exact)
+        ordered_subtypes.extend(
+            subtype for subtype in subtypes
+            if _normalize_subtype_name(subtype.get("name", "")) != subtype_key
+        )
+    else:
+        ordered_subtypes = list(subtypes)
+
+    templates = []
+    for subtype in ordered_subtypes:
+        subtype_name = subtype.get("name", "")
+        for note in subtype.get("operational_notes") or []:
+            try:
+                verified_count = int(note.get("verified_count", 0) or 0)
+            except (TypeError, ValueError):
+                verified_count = 0
+            if verified_count < min_verified:
+                continue
+
+            parsed = None
+            if isinstance(note.get("bt_template"), dict):
+                parsed = _coerce_bt_template(note.get("bt_template"))
+            if parsed is None:
+                parsed = _coerce_bt_template(
+                    _parse_bt_template_hint_json(str(note.get("bt_template_hint") or ""))
+                )
+            if parsed is None:
+                continue
+
+            templates.append({
+                "template": parsed,
+                "source": {
+                    "kind": "operational_note",
+                    "master_screen_type": master_type,
+                    "screen_type": screen_type,
+                    "subtype_name": subtype_name,
+                    "discovered_at": note.get("discovered_at", ""),
+                    "note": note.get("note", ""),
+                    "verified_count": verified_count,
+                },
+            })
+    return templates
+
+
+def get_verified_bt_template(knowledge: dict, screen_type: str, min_verified: int = 1) -> dict | None:
+    """Return the first verified operational-note BT template for a screen variant."""
+    templates = _iter_verified_bt_templates(knowledge, screen_type, min_verified=min_verified)
+    if not templates:
+        return None
+    return templates[0]["template"]
+
+
+def get_verified_bt_template_entry(knowledge: dict, screen_type: str, min_verified: int = 1) -> dict | None:
+    """Return template + source metadata for the first verified operational note."""
+    templates = _iter_verified_bt_templates(knowledge, screen_type, min_verified=min_verified)
+    return templates[0] if templates else None
+
+
+def increment_operational_note_verified_count(platform: str, source: dict, increment: int = 1) -> bool:
+    """Increment verified_count for a specific operational note source."""
+    if not isinstance(source, dict) or source.get("kind") != "operational_note":
+        return False
+
+    knowledge_path = _platforms_dir() / platform / "knowledge.json"
+    if not knowledge_path.exists():
+        return False
+
+    try:
+        knowledge = json.loads(knowledge_path.read_text())
+        master_type = source.get("master_screen_type") or source.get("screen_type") or ""
+        screen = knowledge.get("screen_types", {}).get(master_type, {})
+        subtypes = screen.get("subtypes", [])
+        subtype_name = source.get("subtype_name", "")
+        target_note = source.get("note", "")
+        discovered_at = source.get("discovered_at", "")
+
+        for subtype in subtypes:
+            if subtype.get("name") != subtype_name:
+                continue
+            notes = subtype.get("operational_notes") or []
+            for note in notes:
+                if note.get("note") != target_note:
+                    continue
+                if discovered_at and note.get("discovered_at") != discovered_at:
+                    continue
+                note["verified_count"] = int(note.get("verified_count", 0) or 0) + increment
+                note["last_verified_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                atomic_write_json(knowledge_path, knowledge)
+                cache_key = str(knowledge_path)
+                _knowledge_cache.pop(cache_key, None)
+                _knowledge_cache_mtime.pop(cache_key, None)
+                logger.info(
+                    f"increment_operational_note_verified_count: {platform}/{master_type}/{subtype_name} "
+                    f"-> {note['verified_count']}"
+                )
+                return True
+    except Exception as e:
+        logger.warning(f"increment_operational_note_verified_count failed: {e}")
+    return False
 
 
 def record_operational_note(
