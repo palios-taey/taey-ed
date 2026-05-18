@@ -10,23 +10,26 @@ import time
 from pathlib import Path
 
 from spark_v2.tasks.knowledge_loader import load_knowledge, load_provisional
-from spark_v2.tasks.prompt_codex import (
-    AXTreeTooLargeError,
-    UNIVERSAL_LAYER_PATH,
-    assemble_system_prompt,
-    assemble_user_message,
-    load_output_schema_constraints,
-    load_universal_layer_sections,
-)
+from spark_v2.tasks.build_consultation_prompt import build_consultation_prompt
 
 logger = logging.getLogger(__name__)
+prompt_logger = logging.getLogger("spark_v2.tasks.prompt_codex")
 
 CONSULT_DIR = Path("/tmp/taey-ed-consult-v2")
 DEFAULT_MODEL = "claude-opus-4-7"
 DEFAULT_TIMEOUT_S = 180.0
 DEFAULT_MAX_BUDGET_USD = 2.5
-UNIVERSAL_LAYER_SECTIONS = load_universal_layer_sections(str(UNIVERSAL_LAYER_PATH))
-OUTPUT_SCHEMA_CONSTRAINTS = load_output_schema_constraints(str(UNIVERSAL_LAYER_PATH))
+BT_RESPONSE_REQUIRED = [
+    "screen_type",
+    "tree",
+    "expected_next",
+    "extract",
+    "target_source",
+    "why_safe",
+    "confidence",
+]
+BT_TREE_ROOT_TYPES = {"sequence", "action"}
+BT_CONFIDENCE_VALUES = {"high", "medium", "low"}
 
 
 class BTGenerationError(RuntimeError):
@@ -84,8 +87,7 @@ def _extract_json_object(text: str) -> str:
 
 def _validate_bt(payload: dict) -> list[str]:
     warnings: list[str] = []
-    required = OUTPUT_SCHEMA_CONSTRAINTS["required"]
-    for key in required:
+    for key in BT_RESPONSE_REQUIRED:
         if key not in payload:
             raise BTGenerationError(f"missing BT response key: {key}")
 
@@ -93,14 +95,14 @@ def _validate_bt(payload: dict) -> list[str]:
     if not isinstance(tree, dict):
         raise BTGenerationError("BT tree must be a JSON object")
     tree_type = tree.get("type")
-    if tree_type not in set(OUTPUT_SCHEMA_CONSTRAINTS["tree_root_types"]):
+    if tree_type not in BT_TREE_ROOT_TYPES:
         raise BTGenerationError("BT tree root must be sequence or action")
     if tree_type == "sequence" and not isinstance(tree.get("children"), list):
         raise BTGenerationError("sequence tree must contain a children list")
     if tree_type == "action" and not isinstance(tree.get("action"), str):
         raise BTGenerationError("action tree must contain an action string")
 
-    if payload.get("confidence") not in set(OUTPUT_SCHEMA_CONSTRAINTS["confidence_values"]):
+    if payload.get("confidence") not in BT_CONFIDENCE_VALUES:
         raise BTGenerationError("confidence must be high, medium, or low")
     if not isinstance(payload.get("screen_type"), str) or not payload.get("screen_type").strip():
         raise BTGenerationError("screen_type must be a non-empty string")
@@ -110,6 +112,15 @@ def _validate_bt(payload: dict) -> list[str]:
     if payload.get("screen_type") != "UNKNOWN" and not str(payload.get("why_safe", "")).strip():
         warnings.append("non-UNKNOWN response with empty why_safe")
     return warnings
+
+
+def _normalize_v7_response_shape(payload: dict) -> dict:
+    normalized = dict(payload)
+    normalized.setdefault("expected_next", [])
+    normalized.setdefault("extract", None)
+    normalized.setdefault("target_source", "")
+    normalized.setdefault("why_safe", "")
+    return normalized
 
 
 def _call_claude_cli(
@@ -219,41 +230,51 @@ def generate_bt(
 ) -> dict:
     tree, metadata, prompt_payload, consult_dir = _load_consult_context(consultation_id)
     platform = metadata.get("platform") or prompt_payload.get("platform") or "unknown"
-    platform_data = load_knowledge(platform)
-    provisional_data = load_provisional(platform)
     last_result = prompt_payload.get("last_result")
+    load_knowledge(platform)
+    load_provisional(platform)
     tier = int(metadata.get("tier") or prompt_payload.get("tier") or 0)
-
-    system_prompt = assemble_system_prompt(
-        universal_sections=UNIVERSAL_LAYER_SECTIONS,
-        platform_data=platform_data,
-        provisional_data=provisional_data,
-        last_result=last_result,
-        tier=tier,
-        cache_steering_entry=prompt_payload.get("cache_steering_entry"),
-        cache_steering_hash=prompt_payload.get("cache_steering_hash"),
-    )
-    try:
-        user_message = assemble_user_message(
-            platform_display_name=platform_data.get("platform", {}).get("display_name", platform),
-            current_url=prompt_payload.get("current_url"),
-            last_screen_type=(last_result or {}).get("screen"),
-            tier=tier,
-            course_id=((prompt_payload.get("client_state") or {}).get("course_id")),
-            tree=tree,
-            screenshot_present=(consult_dir / "screenshot.png").exists(),
-            relevant_kb_chunks=prompt_payload.get("relevant_kb_chunks"),
-            screen_context={
-                "tree": tree,
-                "screen_type_hint": metadata.get("screen_type_hint") or (last_result or {}).get("screen"),
-            },
+    is_reconsultation = tier > 0
+    reconsult_context = ""
+    if is_reconsultation:
+        failure_reason = str(metadata.get("failure_reason") or (last_result or {}).get("action") or "unknown")
+        previous_screen = str((last_result or {}).get("screen") or metadata.get("screen_type_hint") or "unknown")
+        reconsult_context = (
+            f"\nRECONSULTATION: Previous BT for screen '{previous_screen}' FAILED.\n"
+            f"Failure reason: {failure_reason}\n"
+            f"DO NOT guess again — research it carefully before proposing the next tree.\n"
         )
-    except AXTreeTooLargeError as exc:
-        raise BTGenerationError(str(exc)) from exc
+        if failure_reason == "wrong_answer_same_question":
+            reconsult_context += (
+                "WRONG ANSWER DETECTED: The quiz re-presented the same question after submission.\n"
+                "The previous BT's answer was incorrect. Fix the question_type or answer selection logic.\n"
+            )
+
+    system_prompt = build_consultation_prompt(
+        consultation_id=consultation_id,
+        platform=platform,
+        tree=tree,
+        escalation_level="spark_claude",
+        spark_attempts=tier,
+        reconsult_context=reconsult_context,
+        is_reconsultation=is_reconsultation,
+    )
+    user_message = (
+        f"Consultation directory: {consult_dir}\n"
+        "Read screenshot.png, tree.json, and metadata.json from that directory.\n"
+        "Return exactly one JSON object matching the recipe format. No prose. No markdown fences."
+    )
+    prompt_logger.info("prompt_codex: system prompt size=%d", len(system_prompt))
+    prompt_logger.info("prompt_codex: user message size=%d", len(user_message))
+    if len(system_prompt) > 10000:
+        prompt_logger.warning("prompt_codex: system prompt size=%d exceeds 10000 chars", len(system_prompt))
+    if len(user_message) > 50000:
+        prompt_logger.warning("prompt_codex: user message size=%d exceeds 50000 chars", len(user_message))
 
     sys_prompt_path = consult_dir / "system_prompt.txt"
     sys_prompt_path.write_text(system_prompt, encoding="utf-8")
     (consult_dir / "prompt.txt").write_text(system_prompt, encoding="utf-8")
+    (consult_dir / "user_instruction.txt").write_text(user_message, encoding="utf-8")
     screenshot_path = consult_dir / "screenshot.png"
     screenshot_arg = screenshot_path if screenshot_path.exists() else None
     full_user, raw_text, call_metadata = _call_claude_cli(
@@ -268,7 +289,7 @@ def generate_bt(
     (consult_dir / "raw_response.txt").write_text(raw_text, encoding="utf-8")
 
     candidate = _extract_json_object(raw_text)
-    parsed = json.loads(candidate)
+    parsed = _normalize_v7_response_shape(json.loads(candidate))
     warnings = _validate_bt(parsed)
     if warnings:
         logger.warning("bt_generator: validation warnings for %s: %s", consultation_id, warnings)
