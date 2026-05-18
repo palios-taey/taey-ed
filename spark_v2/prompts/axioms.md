@@ -41,8 +41,17 @@ for_each, conditional
 - `video_poll` must be the ONLY action in its tree (no other children)
 
 ### Response Format
-POST http://localhost:5002/api/v1/consult/{id}/respond
+Emit a SINGLE JSON object as your final output. No prose before or after. Required keys:
 ```json
-{"screen_type": "NAME", "tree": {...}, "extract": {...}, "expected_next": ["NEXT_SCREEN"]}
+{
+  "screen_type": "NAME",
+  "tree": {...},
+  "extract": null,
+  "expected_next": ["NEXT_SCREEN"],
+  "target_source": "selector or path producing the BT (e.g., AXButton[name=Check])",
+  "why_safe": "one-line justification this BT will not click Skip/Up next, will solve not skip",
+  "confidence": "high"
+}
 ```
-Weaviate storage is AUTOMATIC. Do NOT write to config.yaml.
+Use `"target_source": ""` and `"why_safe": ""` only for `screen_type == "UNKNOWN"`.
+Weaviate storage is AUTOMATIC. Do NOT write to config.yaml. Do NOT POST anywhere.
