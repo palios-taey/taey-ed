@@ -102,12 +102,14 @@ class Blackboard:
 
 class ExecutionContext:
     def __init__(self, app_name: str, platform: str, course_id: str,
-                 extract_config: dict = None, stop_event=None):
+                 extract_config: dict = None, stop_event=None,
+                 use_local_kb: bool = True):
         self.app_name = app_name
         self.platform = platform
         self.course_id = course_id
         self.extract_config = extract_config or {}
         self.stop_event = stop_event
+        self.use_local_kb = use_local_kb
         self.blackboard = Blackboard()
         self._handlers: Dict[str, Callable] = {}
 
@@ -338,6 +340,7 @@ def execute_tree(
     course_id: str = "unknown",
     extract_config: dict = None,
     stop_event=None,
+    use_local_kb: bool = True,
 ) -> dict:
     """
     Execute a behavior tree from YAML definition.
@@ -359,6 +362,7 @@ def execute_tree(
         course_id=course_id,
         extract_config=extract_config,
         stop_event=stop_event,
+        use_local_kb=use_local_kb,
     )
     register_all_handlers(ctx)
 

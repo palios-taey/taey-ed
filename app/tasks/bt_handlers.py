@@ -330,6 +330,7 @@ def register_all_handlers(ctx: ExecutionContext):
         from app.tasks.call_spark import call_spark
         from app.tasks.build_kb_context import build_kb_context
         from app.tasks.capture_macapptree import capture_screenshot
+        from app.tasks import local_kb
         import base64
 
         question = params.get("question", "")
@@ -355,6 +356,24 @@ def register_all_handlers(ctx: ExecutionContext):
             payload["image_descriptions"] = image_descriptions
         if has_text_field:
             payload["has_text_field"] = True
+
+        # Local KB top-K retrieval (Jesse 2026-05-18): only here, only when a
+        # send_to_llm is actually about to fire. Previously fired per /next_action
+        # poll tick in pipeline.py, which spammed /api/v1/embed every 5-6s during
+        # video polling. Best-effort: any failure logs and continues without it.
+        if getattr(ctx, "use_local_kb", True) and question:
+            try:
+                chunks = local_kb.query(
+                    course_id=ctx.course_id, question_text=question, top_k=5
+                )
+                if chunks:
+                    payload["relevant_kb_chunks"] = [c.to_dict() for c in chunks]
+                    btlog(
+                        f"local_kb retrieval: course={ctx.course_id} "
+                        f"{len(chunks)} chunks (top score {chunks[0].score:.3f})"
+                    )
+            except Exception as e:
+                btlog(f"local_kb retrieval failed (continuing): {e}")
 
         # Always include screenshot so Spark can use vision when needed
         try:
