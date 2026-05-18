@@ -54,6 +54,174 @@ router = APIRouter()
 CLAUDE_PRIMARY_PLATFORMS = {"khan_academy"}
 
 
+def _escalate_to_claude_diagnosing(
+    platform: str,
+    tree: dict | None,
+    consultation_id: str,
+    reason: str,
+    screen_type_hint: str = "UNKNOWN",
+    bt_debug_tail: str = "",
+    failed_bt: dict | None = None,
+) -> dict:
+    """Route any failure through the Mira-side claude diagnosis loop.
+
+    Per Jesse's directive (2026-05-18): the Mac app + API do not escalate to
+    user. Everything that isn't perfectly handled goes to claude-on-Mira.
+    State is keyed by (platform, skeleton_hash) so reconsults across multiple
+    consult_ids see the same diagnosis state. Pings claude once per stuck-screen
+    cycle; returns a wait directive so Mac keeps polling without surfacing a
+    dialog. Only escalates to user_input_needed when claude EXPLICITLY touches
+    the gave_up.flag in the state dir — Mac/Spark never make that decision.
+    """
+    try:
+        from spark.tasks.skeleton import (
+            extract_skeleton as _ext_sk, skeleton_hash as _skel_hash,
+        )
+        _screen_hash = _skel_hash(_ext_sk(tree)) if tree else "unknown"
+    except Exception:
+        _screen_hash = "unknown"
+
+    diag_dir = Path("/tmp/taey-ed-claude-diagnosing") / f"{platform}_{_screen_hash[:16]}"
+    diag_dir.mkdir(parents=True, exist_ok=True)
+    diagnosing = diag_dir / "diagnosing.flag"
+    done = diag_dir / "diagnosis_done.flag"
+    gave_up = diag_dir / "gave_up.flag"
+    retry_p = diag_dir / "retries.txt"
+
+    # Only path to user: claude explicitly gave up by touching gave_up.flag.
+    # Mac/Spark cannot create this flag — only the Mira-side claude session can.
+    if gave_up.exists():
+        from spark.tasks.classify_screen import _describe_screen
+        return _with_chat({
+            "directive": "user_input_needed",
+            "directive_id": _make_directive_id(),
+            "reason": f"Claude diagnosis exhausted: {reason}",
+            "screen_type": screen_type_hint,
+            "screen_description": _describe_screen(tree) if tree else "",
+            "consultation_id": consultation_id,
+        }, platform, [
+            build_status("Claude exhausted diagnosis — need your help"),
+            build_question(f"Claude diagnosis exhausted: {reason}"),
+        ])
+
+    retries = 0
+    if retry_p.exists():
+        try:
+            retries = int(retry_p.read_text().strip())
+        except (ValueError, OSError):
+            retries = 0
+
+    # Claude finished diagnosing (knowledge.json updated). Clear flags + abandon
+    # the stale consult so Mac's next /next_action runs the FRESH pipeline,
+    # which spawns a new worker call using the updated knowledge.json.
+    if done.exists():
+        retries += 1
+        retry_p.write_text(str(retries))
+        done.unlink()
+        diagnosing.unlink(missing_ok=True)
+        # Abandon the stale consult so its metadata.status flips off
+        # "complete" — Mac's next request will find no active consult
+        # and trigger fresh pipeline.
+        if consultation_id:
+            try:
+                _stale_path = Path("/tmp/taey-ed-consult") / consultation_id
+                _meta_p = _stale_path / "metadata.json"
+                if _meta_p.exists():
+                    _m = json.loads(_meta_p.read_text())
+                    _m["status"] = "abandoned"
+                    _m["abandoned_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                    _m["abandoned_reason"] = "claude_diagnosis_complete_retry"
+                    _meta_p.write_text(json.dumps(_m, indent=2))
+                # Remove response.json so Mac status poll won't see it as complete
+                _resp = _stale_path / "response.json"
+                if _resp.exists():
+                    _resp.unlink()
+            except Exception:
+                logger.exception("failed to abandon stale consult on diagnosis_done")
+        logger.info(
+            f"Claude diagnosis complete for {platform}_{_screen_hash[:16]} — "
+            f"abandoned stale consult {consultation_id}, retry cycle {retries}"
+        )
+        return _with_chat({
+            "directive": "wait",
+            "directive_id": _make_directive_id(),
+            "seconds": 3.0,
+            "reason": "claude_diagnosis_complete",
+            "message": "Claude diagnosis complete — retrying with updated knowledge.",
+            "consultation_id": "",
+        }, platform, [
+            build_status("Claude diagnosis complete — retrying with updated knowledge"),
+        ])
+
+    # Notify claude exactly once per stuck-screen cycle (until done/gave_up).
+    if not diagnosing.exists():
+        diagnosing.touch()
+        # Compose Mac execution log section if present — saves Claude a roundtrip
+        # to CCM by inlining the failure log directly into the notification.
+        bt_log_section = ""
+        if bt_debug_tail and bt_debug_tail.strip():
+            # Truncate to last ~80 lines / 4000 chars to keep notification readable
+            lines = bt_debug_tail.splitlines()[-80:]
+            tail = "\n".join(lines)[-4000:]
+            bt_log_section = f"\nMAC BT EXECUTION LOG (last lines):\n{tail}\n"
+        failed_bt_section = ""
+        if failed_bt:
+            try:
+                import json as _json
+                failed_bt_section = (
+                    "\nPRIOR FAILED BT:\n```json\n"
+                    + _json.dumps(failed_bt, indent=2)[:3000]
+                    + "\n```\n"
+                )
+            except Exception:
+                failed_bt_section = ""
+        try:
+            from spark.tasks.notify_tmux import notify_spark_claude as _notify
+            _notify(
+                f"CLAUDE_DIAGNOSIS_REQUIRED — production loop\n"
+                f"Consult: /tmp/taey-ed-consult/{consultation_id}\n"
+                f"Platform: {platform}\n"
+                f"Screen type hint: {screen_type_hint}\n"
+                f"Screen hash: {_screen_hash[:16]}\n"
+                f"State dir: {diag_dir}\n"
+                f"Reason: {reason}\n"
+                f"Prior diagnosis cycles: {retries}\n"
+                f"{bt_log_section}"
+                f"{failed_bt_section}\n"
+                f"INSTRUCTIONS:\n"
+                f"1. The Mac execution log above (if present) shows exactly where the prior BT failed.\n"
+                f"2. Read consult artifacts at /tmp/taey-ed-consult/{consultation_id}/ for tree/screenshot.\n"
+                f"3. Edit /home/user/taey-ed/spark/platforms/{platform}/knowledge.json\n"
+                f"   under screen_types.{{master_type}}.subtypes.{{subtype}}.operational_notes[].\n"
+                f"   Rule must be generalizable.\n"
+                f"4. When done: touch {done}\n"
+                f"5. Only if truly unsolvable: touch {gave_up}\n"
+            )
+        except Exception:
+            logger.exception("notify_spark_claude failed in escalate helper")
+        # Persist Mac log in the diag state dir for future cycles to read
+        if bt_debug_tail and bt_debug_tail.strip():
+            try:
+                (diag_dir / "last_bt_debug.log").write_text(bt_debug_tail)
+            except Exception:
+                pass
+        logger.warning(
+            f"Claude diagnosis triggered for {consultation_id} "
+            f"({platform}, {screen_type_hint}, hash={_screen_hash[:16]}, reason={reason!r})"
+        )
+
+    return _with_chat({
+        "directive": "wait",
+        "directive_id": _make_directive_id(),
+        "seconds": 30.0,
+        "reason": "claude_diagnosing",
+        "message": f"Claude diagnosing this screen — Mac will retry automatically. ({reason})",
+        "consultation_id": consultation_id,
+    }, platform, [
+        build_status("Claude diagnosing this screen — will retry automatically"),
+    ])
+
+
 def _maybe_claude_consult(
     request,
     platform: str,
@@ -103,7 +271,7 @@ def _maybe_claude_consult(
 # Key: "{platform}:{variant}" → {"count": int, "last_failed": float}
 # Reset when a DIFFERENT variant succeeds on the same platform.
 _variant_failures: dict[str, dict] = {}
-MAX_VARIANT_FAILURES = 2  # After 2 failures for same variant, STOP
+MAX_VARIANT_FAILURES = 1  # ONE SHOT: after 1 failure, escalate to claude (was 2 — Jesse 2026-05-18)
 
 
 def _record_variant_failure(platform: str, variant: str):
@@ -314,6 +482,21 @@ def _consultation_or_wait(consult_result: dict) -> dict:
             "reason": consult_result.get("message", "Automatic resolution exhausted"),
             "consultation_id": consult_result.get("consultation_id", ""),
         }
+    if status == "claude_diagnosing":
+        # Mira-side Claude is editing knowledge.json. Mac sleeps and re-sends
+        # /next_action; once claude_diagnosis_done.flag is set, the next call
+        # falls through to a fresh worker dispatch using the updated knowledge.
+        return {
+            "directive": "wait",
+            "directive_id": _make_directive_id(),
+            "seconds": 30.0,
+            "reason": "claude_diagnosing",
+            "message": consult_result.get(
+                "message",
+                "Claude diagnosing this screen variant — Mac will retry automatically.",
+            ),
+            "consultation_id": consult_result.get("consultation_id", ""),
+        }
     return {
         "directive": "consulting",
         "directive_id": _make_directive_id(),
@@ -446,6 +629,82 @@ def _validate_last_action(platform: str, config: dict, lr, current_tree: dict) -
 
 @router.post("/next_action")
 def next_action(request: NextActionRequest):
+    """Production wrapper: intercept any user_input_needed at the endpoint
+    boundary and route through claude_diagnosing instead. Per Jesse 2026-05-18:
+    Mac app + API do not escalate to user. Everything that isn't perfectly
+    handled goes to the Mira-side Claude diagnosis loop.
+
+    The only path to a real user_input_needed directive is when a Mira-side
+    Claude has explicitly created a gave_up.flag in the diagnosis state dir
+    — that is handled inside _escalate_to_claude_diagnosing, not here.
+    """
+    # PRE-PIPELINE CHECK: if claude is currently diagnosing this screen
+    # (state dir has diagnosing.flag and no done/gave_up), short-circuit
+    # the entire pipeline. Without this, every Mac /next_action while
+    # claude is editing knowledge.json kicks off a fresh worker call,
+    # producing a BT that Mac executes, looping the bad behavior.
+    try:
+        if request.tree:
+            from spark.tasks.skeleton import (
+                extract_skeleton as _ext_sk_pre,
+                skeleton_hash as _skel_hash_pre,
+            )
+            _pre_hash = _skel_hash_pre(_ext_sk_pre(request.tree))
+            _pre_diag_dir = Path("/tmp/taey-ed-claude-diagnosing") / f"{request.platform}_{_pre_hash[:16]}"
+            _pre_diagnosing = _pre_diag_dir / "diagnosing.flag"
+            _pre_done = _pre_diag_dir / "diagnosis_done.flag"
+            _pre_gave_up = _pre_diag_dir / "gave_up.flag"
+            if (_pre_diag_dir.exists() and _pre_diagnosing.exists()
+                    and not _pre_done.exists() and not _pre_gave_up.exists()):
+                logger.info(
+                    f"PRE-PIPELINE: claude_diagnosing active for "
+                    f"{request.platform}_{_pre_hash[:16]} — returning wait, skipping pipeline"
+                )
+                return {
+                    "directive": "wait",
+                    "directive_id": _make_directive_id(),
+                    "seconds": 30.0,
+                    "reason": "claude_diagnosing",
+                    "message": "Claude still diagnosing this screen — Mac will retry automatically.",
+                }
+    except Exception:
+        logger.exception("PRE-PIPELINE diagnosis check failed (non-fatal)")
+
+    response = _next_action_impl(request)
+    if isinstance(response, dict) and response.get("directive") == "user_input_needed":
+        platform = request.platform
+        tree = request.tree
+        # Best-effort consultation_id from client state, then any response field
+        cs = request.client_state or ClientState()
+        consult_id = (
+            (cs.active_consultation_id or "")
+            or response.get("consultation_id", "")
+            or ""
+        )
+        reason = response.get("reason", "user_input_needed intercepted by wrapper")
+        screen_type_hint = response.get("screen_type", "UNKNOWN")
+        # Forward Mac BT execution log + failed BT into the diagnosis ping
+        lr = request.last_result
+        bt_debug_tail = (lr.bt_debug_tail or "") if lr else ""
+        failed_bt = lr.failed_bt if lr and lr.failed_bt else None
+        logger.warning(
+            f"WRAPPER: intercepted user_input_needed → claude_diagnosing "
+            f"(consult={consult_id!r}, screen={screen_type_hint!r}, "
+            f"bt_log={'yes' if bt_debug_tail else 'no'}, failed_bt={'yes' if failed_bt else 'no'})"
+        )
+        return _escalate_to_claude_diagnosing(
+            platform=platform,
+            tree=tree,
+            consultation_id=consult_id,
+            reason=reason,
+            screen_type_hint=screen_type_hint,
+            bt_debug_tail=bt_debug_tail,
+            failed_bt=failed_bt,
+        )
+    return response
+
+
+def _next_action_impl(request: NextActionRequest):
     """
     Directive Model: Mac sends state, Spark returns ONE directive.
 
@@ -556,26 +815,22 @@ def next_action(request: NextActionRequest):
                 _wf_reason = consult_status.get(
                     "_worker_failure_reason", "worker failed to generate BT"
                 )
-                from spark.tasks.classify_screen import _describe_screen
                 logger.error(
                     f"Step 1: worker_fallback for {consultation_id} — "
-                    f"surfacing as user_input_needed. reason={_wf_reason}"
+                    f"routing through claude_diagnosing helper. reason={_wf_reason}"
                 )
-                _ui_reason = (
-                    "I couldn't build a plan for this screen automatically. "
-                    f"Tell me what to do here. (reason: {_wf_reason})"
+                # Route through the single canonical helper. It checks done.flag
+                # (abandons stale consult, signals retry), gave_up.flag (user
+                # fallback), or notifies and returns wait if neither.
+                return _escalate_to_claude_diagnosing(
+                    platform=platform,
+                    tree=tree,
+                    consultation_id=consultation_id,
+                    reason=f"worker_fallback: {_wf_reason}",
+                    screen_type_hint=consult_status.get("screen_type", "UNKNOWN"),
+                    bt_debug_tail=(lr.bt_debug_tail or "") if lr else "",
+                    failed_bt=lr.failed_bt if lr and lr.failed_bt else None,
                 )
-                return _with_chat({
-                    "directive": "user_input_needed",
-                    "directive_id": _make_directive_id(),
-                    "reason": _ui_reason,
-                    "screen_type": consult_status.get("screen_type", "UNKNOWN"),
-                    "screen_description": _describe_screen(tree),
-                    "consultation_id": consultation_id,
-                }, platform, [
-                    build_status("Worker couldn't build a plan — need your help"),
-                    build_question(_ui_reason),
-                ])
             tree_def = consult_status.get("tree")
             if tree_def:
                 # Bug #8: Get skeleton_hash from CURRENT tree, not stale consultation
@@ -603,9 +858,15 @@ def next_action(request: NextActionRequest):
                     "skeleton_hash": _consult_skeleton_hash,
                 }, platform, [build_status(f"Consultation resolved — executing {_screen} automation")])
             logger.warning(f"Consultation {consultation_id} complete but no tree, re-matching")
-        elif consult_status.get("status") == "not_found":
-            logger.warning(f"Consultation {consultation_id} not found, clearing and re-matching")
-            # Fall through to Step 4 (match screen) instead of waiting forever
+        elif consult_status.get("status") in ("not_found", "abandoned"):
+            logger.warning(
+                f"Consultation {consultation_id} {consult_status.get('status')}, "
+                f"clearing and re-matching"
+            )
+            # Fall through to Step 4 (match screen) instead of waiting forever.
+            # 'abandoned' is the state set by _escalate_to_claude_diagnosing when
+            # done.flag is consumed — gets the pipeline running fresh with
+            # updated knowledge.json instead of polling the stale consult.
         else:
             return {
                 "directive": "wait",

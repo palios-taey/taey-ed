@@ -226,7 +226,20 @@ def get_operational_notes_for_screen(knowledge: dict, screen_type: str) -> str:
 
     Returns empty string if no notes exist (caller can skip the section).
     """
-    screen_info = knowledge.get("screen_types", {}).get(screen_type, {})
+    screen_types_map = knowledge.get("screen_types", {})
+    screen_info = screen_types_map.get(screen_type, {})
+    if not screen_info:
+        # Fall back to master category (e.g. EXERCISE_DROPDOWN -> EXERCISE).
+        # Knowledge.json keys are master categories; consults arrive with
+        # variant-typed screens. Without this fallback, subtype operational_notes
+        # are never delivered to the worker on variant-typed screens.
+        try:
+            from spark.tasks.screen_type_util import get_master_category
+            master = get_master_category(screen_type)
+            if master and master != screen_type:
+                screen_info = screen_types_map.get(master, {})
+        except Exception:
+            pass
     subtypes = screen_info.get("subtypes", [])
     if not subtypes:
         return ""

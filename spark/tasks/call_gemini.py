@@ -201,7 +201,9 @@ async def _solve_complex_with_gemini(
                 "model": CLAUDE_CLI_MODEL,
             }
 
-        # Parse response: same as solve_checkbox (letter-based)
+        # Parse response: letter-based when options provided, free-text otherwise.
+        # No substring-match fallback — if letter parsing fails on a letter-format
+        # request, fail explicitly rather than guessing.
         if options:
             letter_to_opt = {letters[i]: opt for i, opt in enumerate(options) if i < len(letters)}
             selected = []
@@ -209,13 +211,24 @@ async def _solve_complex_with_gemini(
                 part = part.strip().upper()
                 if len(part) == 1 and part in letter_to_opt:
                     selected.append(letter_to_opt[part])
-            # Fallback: try matching raw text to options
             if not selected:
-                for opt in options:
-                    if opt.lower() in raw_answer.lower():
-                        selected.append(opt)
+                return {
+                    "success": False,
+                    "error": (
+                        "solve_complex with options expected letter response (A, B, C, ...), "
+                        f"got: {raw_answer[:80]!r}"
+                    ),
+                    "answer": "",
+                    "question_type": "solve_complex",
+                    "model": CLAUDE_CLI_MODEL,
+                }
         else:
             selected = [raw_answer]
+
+        # Universal response contract: `answer` carries the canonical single-value
+        # answer for any caller that reads $llm.answer. `selected` retained for
+        # explicit multi-select callers using $llm.selected / for_each.
+        canonical_answer = selected[0] if len(selected) == 1 else ", ".join(selected)
 
         logger.info(
             f"solve_complex: selected {len(selected)} answers: "
@@ -224,7 +237,7 @@ async def _solve_complex_with_gemini(
 
         return {
             "success": True,
-            "answer": "complex_complete",
+            "answer": canonical_answer,
             "selected": selected,
             "raw_response": raw_answer,
             "question_type": "solve_complex",
@@ -278,11 +291,31 @@ async def _solve_matching_with_gemini(
     Returns matches dict like the legacy Ollama/Gemini path.
     """
     try:
+        # Repair Khan's ARIA-name truncation bug from Mac's _extract_menu_items.
+        # That helper strips ' selected' (9 chars) from AXMenuItem names, but
+        # Khan unselected items end in ' not selected' (13 chars). After 9-char
+        # strip, 'the same not selected' → 'the same not' (with dangling 'not').
+        # The LLM picks that mangled text, then select_dropdown_option fails
+        # because the trigger menu items (after handler normalization) read
+        # 'the same'. We undo the truncation here so the LLM sees clean options.
+        def _clean_option(s: str) -> str:
+            s = str(s or "").strip()
+            # Repair '<text> not' → '<text>' (came from stripping ' selected'
+            # off '<text> not selected'). Only apply if the result is non-empty.
+            if s.endswith(" not"):
+                cleaned = s[:-4].strip()
+                if cleaned:
+                    return cleaned
+            return s
         items_block_parts = []
         for i, item in enumerate(items):
             label = item.get("label", f"Item {i+1}")
-            item_options = item.get("options", [])
-            opts_str = ", ".join(f'"{o}"' for o in item_options)
+            raw_options = item.get("options", [])
+            cleaned_options = [_clean_option(o) for o in raw_options]
+            # Mutate item in place so parse_matching_response sees cleaned options
+            # when it later calls match_to_option against item_options.
+            item["options"] = cleaned_options
+            opts_str = ", ".join(f'"{o}"' for o in cleaned_options)
             items_block_parts.append(f"{i+1}. {label} — Options: [{opts_str}]")
         items_block = "\n".join(items_block_parts)
 
@@ -937,6 +970,13 @@ def parse_matching_response(raw: str, items: List[Dict]) -> dict:
                 matches[popup_desc] = best
             if label:
                 matches[label] = best
+            # ALWAYS key by stringified zero-based index — popup_desc and label
+            # can collide across popups on the same screen (Khan multi-blank
+            # exercises render all popups with name='Select an answer' and the
+            # same preceding label fragment). Index keys are 1:1 with $popups
+            # iteration order, never collide. BTs that need unique disambiguation
+            # use `lookup_match key="0" / "1" / "2"` literally (unrolled).
+            matches[str(idx)] = best
 
     return matches
 
