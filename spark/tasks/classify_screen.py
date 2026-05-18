@@ -220,12 +220,8 @@ def classify_screen(
         }
 
 
-def _gemini_api_call(prompt: str, screenshot_b64: Optional[str] = None,
-                     model_name: str = "gemini-2.5-pro") -> Optional[str]:
-    """Single-shot LLM call. Name retained for back-compat with the original
-    Gemini callers — now routes through Claude Opus 4.7 via the CLI runner.
-
-    The model_name parameter is ignored (kept for signature stability).
+def _llm_call(prompt: str, screenshot_b64: Optional[str] = None) -> Optional[str]:
+    """Single-shot LLM call via Claude Opus 4.7 (CLI runner).
 
     Returns raw response text, or None on any failure.
     """
@@ -337,7 +333,7 @@ def build_extract_config(
     )
 
     logger.info(f"build_extract_config: asking Gemini for {screen_type} extraction config")
-    raw = _gemini_api_call(prompt, screenshot_b64, model_name="gemini-2.5-flash")
+    raw = _llm_call(prompt, screenshot_b64)
 
     if not raw:
         logger.warning("build_extract_config: Gemini returned nothing")
@@ -938,7 +934,7 @@ def build_bt_from_tree(
     logger.info(f"build_bt_from_tree: prompt length={len(prompt)} chars")
 
     # Call Gemini 2.5 Pro — BT building requires deep reasoning
-    raw = _gemini_api_call(prompt, screenshot_b64, model_name="gemini-2.5-pro")
+    raw = _llm_call(prompt, screenshot_b64)
     if not raw:
         logger.error("build_bt_from_tree: Gemini 2.5 Pro returned nothing")
         return None
