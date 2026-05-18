@@ -3,7 +3,7 @@
   "platform": "khan_academy",
   "platform_display": "Khan Academy",
   "schema_version": "1.0",
-  "last_researched": "2026-02-28T14:40:04.817280+00:00",
+  "last_researched": "2026-05-18T15:55:00Z",
   "research_source": "perplexity_deep_research",
   "research_confidence": {
     "overall": "medium",
@@ -170,6 +170,18 @@
           "VIDEO"
         ],
         "severity": "important"
+      },
+      {
+        "id": "universal_hidden_content_extraction_required",
+        "description": "UNIVERSAL RULE: Before calling send_to_llm to choose an answer, ALL hidden content must be extracted into the prompt context. For dropdowns/comboboxes, this means: open EACH popup, enumerate its menu items via discover_menu (role=AXMenuItem), capture the option list, close the popup, then call send_to_llm with the full options on every popup. The LLM must NEVER be asked to guess options from screenshot+context alone \u2014 it gets the literal AX-rendered option strings so its returned answer matches what the click handler will see. Same principle applies to any hidden/collapsed UI: modals, expandable sections, tooltips with answer content, etc.",
+        "affects": [
+          "EXERCISE",
+          "TRANSITION",
+          "NAVIGATION"
+        ],
+        "severity": "critical",
+        "added": "2026-05-18T15:55:00Z",
+        "added_by": "claude-primary"
       }
     ],
     "completion_model": {
@@ -225,7 +237,192 @@
           "name": "dropdown",
           "description": "One or more dropdown menus embedded in a sentence or passage. User selects the correct option from each dropdown. Perseus widget: dropdown.",
           "tree_signal": "HAS_POPUP_BUTTON",
-          "interaction_pattern": "click dropdown -> select option from popup list -> repeat for all dropdowns -> click 'Check'"
+          "interaction_pattern": "click dropdown -> select option from popup list -> repeat for all dropdowns -> click 'Check'",
+          "operational_notes": [
+            {
+              "discovered_at": "2026-05-18T17:25:00Z",
+              "by": "claude-primary",
+              "screen_variant": "ANY inline dropdown(s)/combobox(es) on Khan Perseus exercises",
+              "rule": "ENUMERATE OPTIONS BEFORE ASK. Verified BT engine primitives only.",
+              "note": "Khan AXComboBox dropdowns have placeholder name='Select an answer' until clicked, and options are NOT in the AX tree until the popup opens. Universal pattern: open each popup, enumerate options via discover_menu, close, store options on the popup item via store_to_current; THEN call send_to_llm with all popups (each carrying real options); THEN iterate to select. Lookup keys by $popup.description (NOT $popup.label \u2014 placeholder collides across popups). find_and_click accepts element=$ref from a for_each-bound popup, no separate selector needed.",
+              "verified_bt_engine_primitives": [
+                "find_all \u2192 list of dicts with .element/.label/.description/.value/.bbox/.element_id",
+                "for_each items=$list variable=popup do={...} \u2014 binds current item as $popup",
+                "store: 'key' on action \u2014 writes return to blackboard[key]",
+                "store_to_current: 'field' inside for_each \u2014 writes return to current popup dict",
+                "$var, $var.field, $var.0.element resolution (digit indexing supported)",
+                "NO nested $-resolution: $popups.$_index.element will NOT work",
+                "find_and_click with element=$popup.element \u2014 accepts pre-resolved element ref",
+                "discover_menu role=AXMenuItem returns list of option strings",
+                "select_dropdown_option owns its own open/strategy ladder/normalize/verify"
+              ],
+              "bt_template": {
+                "type": "sequence",
+                "children": [
+                  {
+                    "type": "action",
+                    "action": "find_all",
+                    "params": {
+                      "role": "AXComboBox"
+                    },
+                    "store": "popups"
+                  },
+                  {
+                    "type": "action",
+                    "action": "for_each",
+                    "items": "$popups",
+                    "variable": "popup",
+                    "do": {
+                      "type": "sequence",
+                      "children": [
+                        {
+                          "type": "action",
+                          "action": "click",
+                          "params": {
+                            "element": "$popup.element",
+                            "strategy": "mouse_click",
+                            "post_delay": 1.2
+                          }
+                        },
+                        {
+                          "type": "action",
+                          "action": "wait_for_element",
+                          "params": {
+                            "role": "AXMenuItem",
+                            "max_wait": 2.0
+                          }
+                        },
+                        {
+                          "type": "action",
+                          "action": "discover_menu",
+                          "params": {
+                            "role": "AXMenuItem"
+                          },
+                          "store_to_current": "options"
+                        },
+                        {
+                          "type": "action",
+                          "action": "press_escape"
+                        },
+                        {
+                          "type": "action",
+                          "action": "wait",
+                          "params": {
+                            "seconds": 0.3
+                          }
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "type": "action",
+                    "action": "send_to_llm",
+                    "params": {
+                      "question_type": "solve_matching",
+                      "items": "$popups",
+                      "context": "<short_context>",
+                      "question": "Fill in each dropdown with the correct option based on the screenshot and the surrounding question context. Each item's `label` is its position; each item's `options` lists the actual menu choices available for THAT dropdown. Return the EXACT option string from options[] for each item."
+                    },
+                    "store": "matches"
+                  },
+                  {
+                    "type": "action",
+                    "action": "lookup_match",
+                    "params": {
+                      "matches": "$matches.matches",
+                      "key": "0"
+                    },
+                    "store": "chosen_0"
+                  },
+                  {
+                    "type": "action",
+                    "action": "select_dropdown_option",
+                    "params": {
+                      "trigger_element": "$popups.0.element",
+                      "option": "$chosen_0",
+                      "trigger_role": "AXComboBox",
+                      "open_strategy": "mouse_click",
+                      "open_wait": 0.7,
+                      "verify_wait": 0.4
+                    }
+                  },
+                  {
+                    "type": "action",
+                    "action": "lookup_match",
+                    "params": {
+                      "matches": "$matches.matches",
+                      "key": "1"
+                    },
+                    "store": "chosen_1"
+                  },
+                  {
+                    "type": "action",
+                    "action": "select_dropdown_option",
+                    "params": {
+                      "trigger_element": "$popups.1.element",
+                      "option": "$chosen_1",
+                      "trigger_role": "AXComboBox",
+                      "open_strategy": "mouse_click",
+                      "open_wait": 0.7,
+                      "verify_wait": 0.4
+                    }
+                  },
+                  {
+                    "type": "action",
+                    "action": "lookup_match",
+                    "params": {
+                      "matches": "$matches.matches",
+                      "key": "2"
+                    },
+                    "store": "chosen_2"
+                  },
+                  {
+                    "type": "action",
+                    "action": "select_dropdown_option",
+                    "params": {
+                      "trigger_element": "$popups.2.element",
+                      "option": "$chosen_2",
+                      "trigger_role": "AXComboBox",
+                      "open_strategy": "mouse_click",
+                      "open_wait": 0.7,
+                      "verify_wait": 0.4
+                    }
+                  },
+                  {
+                    "type": "action",
+                    "action": "find_and_click",
+                    "params": {
+                      "target": "Check",
+                      "role": "AXButton",
+                      "strategy": "mouse_click",
+                      "match_mode": "exact",
+                      "post_delay": 2.5
+                    }
+                  }
+                ]
+              },
+              "known_failure_modes": [
+                "Element staleness: if Wonder Blocks re-renders popups after one opens, $popup.element from outer find_all may go stale on iter 2+. If that happens (only first dropdown opens, rest fail with element-not-found), the workaround would be sequential unrolled blocks (find_all + index access) per popup \u2014 but try the canonical for_each version first."
+              ],
+              "verified_count": 0,
+              "bt_template_hint": "CANONICAL BT (handler param names verified):\n\n",
+              "ccm_observed_failures": {
+                "16:54_observation": "find_and_click element=$popup.element \u2192 resolves target='' role=None \u2192 ACTION RETURNED NONE",
+                "root_cause": "find_and_click handler does NOT read 'element' param. Only 'click'/'click_element' do.",
+                "fix": "Use 'click' action with element=$popup (whole dict, not just .element)",
+                "17:00_observation": "click element=$popup \u2192 re-find by description='Select an answer' (placeholder) fails because handle_click hardcodes role='AXPopUpButton', but Khan uses AXComboBox. Re-find returns None.",
+                "17:00_fix": "Pass element=$popup.element (raw AX ref, not dict) \u2014 handler skips re-find entirely and uses the ref directly.",
+                "17:10_observation": "All 3 popups successfully enumerated (click + discover_menu + escape worked end-to-end). send_to_llm crashed: claude_cli exit 1 with empty stderr, /api/v1/generate returned 500. API log showed question='' \u2014 likely Claude CLI needs a non-empty question.",
+                "17:10_fix": "Add 'question' field to send_to_llm.params in the canonical BT template.",
+                "17:15_observation": "Enumeration phase fully working (all 3 popups opened/enumerated/closed). send_to_llm returned matches but with only 2 unique keys for 3 popups (matches_keys=['Select an answer', 'The forces act on'] \u2014 both colliding). Lookup_match for popup_1 picked the value keyed under 'The forces act on' which was actually the answer for a DIFFERENT popup, so click on this popup's menu (options=['the same not selected', 'different']) failed to find that text.",
+                "17:15_fix": "1. parse_matching_response now also keys matches[str(idx)] = best.\n2. Worker generates UNROLLED selection phase with literal '0','1','2' keys.",
+                "17:22_observation": "Enumeration phase ran, but item[0].options=[] in api log \u2014 popup 0's discover_menu found 0 AXMenuItem because menu hadn't rendered yet (0.7s post_delay too short on first popup open). LLM got empty options for item 1, returned empty answer, matches['0']='', lookup_match returned empty, select_dropdown_option failed with 'missing option' param.",
+                "17:22_fix": "Bump click post_delay 0.7\u21921.2s + insert wait_for_element AXMenuItem timeout=2.0s between click and discover_menu so discover_menu only fires once a menu is actually rendered.",
+                "17:25_observation": "Enumeration phase fully worked (all 3 popups, wait_for_element added). discover_menu returned options like ['the same not', 'different'] \u2014 the 'the same' option's AX name 'the same not selected' got 9 chars stripped by Mac's _extract_menu_items (which strips ' selected'), leaving 'the same not'. LLM picked 'the same not' (the only thing on offer). select_dropdown_option opened the popup and normalized menu items to ['the same', 'different'] \u2014 'the same not' was no match \u2192 click failed.",
+                "17:25_fix": "Server-side workaround in _solve_matching_with_gemini: strip dangling ' not' suffix from options before passing to LLM (undoes Mac's overzealous strip). Real fix would be Mac-side: _extract_menu_items should strip ' not selected' (13 chars) before falling back to ' selected' (9 chars). Mac is frozen, so server workaround is the pragmatic path."
+              }
+            }
+          ]
         },
         {
           "name": "interactive_graph",
@@ -398,7 +595,35 @@
         "TRANSITION",
         "NAVIGATION"
       ],
-      "wrong_answer_behavior": "Incorrect answer: selected answer highlights red, audible tone may play, correct answer may or may not be shown depending on exercise type. For practice exercises: advances to next question (wrong answers reduce score percentage). For quizzes/unit tests: advances to next question, wrong answer recorded, may level down skills. After last question in any set, summary card appears showing skills leveled up/down with option to review. If exactly 1 wrong in practice exercise, 'Bonus question' may be offered."
+      "wrong_answer_behavior": "Incorrect answer: selected answer highlights red, audible tone may play, correct answer may or may not be shown depending on exercise type. For practice exercises: advances to next question (wrong answers reduce score percentage). For quizzes/unit tests: advances to next question, wrong answer recorded, may level down skills. After last question in any set, summary card appears showing skills leveled up/down with option to review. If exactly 1 wrong in practice exercise, 'Bonus question' may be offered.",
+      "operational_notes": [
+        {
+          "discovered_at": "2026-05-18T19:05:00Z",
+          "by": "claude-primary",
+          "screen_variant": "WRONG_ANSWER (any exercise type)",
+          "rule": "SMART RETRY WITH PRIOR-ANSWER EXCLUSION: Try again \u2192 re-extract \u2192 send to LLM with PREVIOUS wrong answer explicitly forbidden \u2192 click new answer \u2192 wait_for_element Check \u2192 submit.",
+          "policy_clarification_from_jesse_2026_05_18": "The auto-retry ban applies to RE-SUBMITTING THE SAME WRONG ANSWER over and over (that triggers bot detection). Claude-mediated retry with a FRESH re-evaluation of the question, producing a different answer, is allowed. Treat the failure as new information that should change the choice.",
+          "note": "Observed 18:57-18:58: LLM kept picking the SAME wrong combination (Choice A + Choice B with visually-similar arrow diagrams) on every retry because the retry context only said 'previous was wrong' without naming what was previously picked. Without a concrete exclusion, the LLM re-arrives at the same visual conclusion. THE FIX: the worker must extract the prior answer from the failed_bt context in the prompt (metadata.context.user_guidance contains the prior BT JSON and Mac log showing what was clicked), then PRE-FILL the LLM context with 'FORBIDDEN PRIOR ANSWERS: (Choice A) ..., (Choice B) ...'. ALSO: after Try again, Khan should reset checkboxes to unchecked. If state persists (worth verifying empirically), clicking a still-checked box will UNCHECK it \u2014 submit lands with zero selected \u2192 wrong again.",
+          "bt_template_hint": "Use this BT. AT GENERATION TIME, the worker MUST read the prior BT's $llm.selected list (or the click targets from Mac's btlog of the prior execution) and embed them into the send_to_llm context as a 'FORBIDDEN PRIOR ANSWERS' list. Without that, the LLM re-picks the same.\n```json\n{\n  \"type\": \"sequence\",\n  \"children\": [\n    {\n      \"type\": \"action\",\n      \"action\": \"find_and_click\",\n      \"params\": {\n        \"target\": \"Try again\",\n        \"role\": \"AXButton\",\n        \"strategy\": \"mouse_click\",\n        \"match_mode\": \"exact\",\n        \"post_delay\": 1.5\n      }\n    },\n    {\n      \"type\": \"action\",\n      \"action\": \"extract_question\",\n      \"params\": {\n        \"question\": {\n          \"role\": \"AXStaticText\",\n          \"min_length\": 20\n        },\n        \"options\": {\n          \"role\": \"AXCheckBox\",\n          \"exclude_titles\": [\n            \"Draw on exercise\"\n          ]\n        }\n      },\n      \"store\": \"q\"\n    },\n    {\n      \"type\": \"action\",\n      \"action\": \"find_all\",\n      \"params\": {\n        \"role\": \"AXCheckBox\"\n      },\n      \"store\": \"all_boxes\"\n    },\n    {\n      \"type\": \"action\",\n      \"action\": \"send_to_llm\",\n      \"params\": {\n        \"question\": \"$q.question_text\",\n        \"question_type\": \"solve_complex\",\n        \"options\": \"$q.options\",\n        \"context\": \"RETRY ATTEMPT \\u2014 PRIOR ANSWER WAS WRONG. The previously-submitted answers were marked WRONG by Khan. The worker generating this BT should populate this context with the EXACT options previously selected so the LLM does NOT pick the same combination. Format: 'FORBIDDEN PRIOR ANSWERS (do not pick these): (Choice X) ..., (Choice Y) ...'. Then the LLM picks from the REMAINING options. Use the screenshot to re-examine each option's diagram/text.\"\n      },\n      \"store\": \"llm\"\n    },\n    {\n      \"type\": \"action\",\n      \"action\": \"for_each\",\n      \"items\": \"$llm.selected\",\n      \"variable\": \"answer\",\n      \"do\": {\n        \"type\": \"action\",\n        \"action\": \"find_and_click\",\n        \"params\": {\n          \"target\": \"$answer\",\n          \"role\": \"AXCheckBox\",\n          \"strategy\": \"focus_space\",\n          \"match_mode\": \"exact\",\n          \"post_delay\": 1.0\n        }\n      }\n    },\n    {\n      \"type\": \"action\",\n      \"action\": \"wait_for_element\",\n      \"params\": {\n        \"role\": \"AXButton\",\n        \"target\": \"Check\",\n        \"max_wait\": 3.0\n      }\n    },\n    {\n      \"type\": \"action\",\n      \"action\": \"find_and_click\",\n      \"params\": {\n        \"target\": \"Check\",\n        \"role\": \"AXButton\",\n        \"strategy\": \"mouse_click\",\n        \"match_mode\": \"exact\",\n        \"post_delay\": 2.5\n      }\n    },\n    {\n      \"type\": \"action\",\n      \"action\": \"store_qa\",\n      \"params\": {\n        \"question\": \"$q.question_text\",\n        \"answer\": \"$llm.selected\",\n        \"question_type\": \"solve_complex\"\n      }\n    }\n  ]\n}\n```",
+          "wrong_answer_behavior": "MAX 1 smart retry per question. If the smart-retry fails (same wrong answer or different but still wrong), system lands back on WRONG_ANSWER with diagnosing.flag already set \u2014 escalation cycle kicks in normally.",
+          "verified_count": 0,
+          "failure_modes_observed": {
+            "18:58_observation": "Worker emitted smart-retry BT with extract_question parent_contains:'Choose' filter. Failed: 'Could not extract question text from tree'. Filter too restrictive.",
+            "18:58_fix": "extract_question must use {role: AXStaticText, min_length: 20} \u2014 no parent_contains.",
+            "19:05_observation": "Even with smart-retry-rule in place, LLM re-picks same A+B combo because retry context lacks explicit prior-answer exclusion.",
+            "19:05_fix": "BT generator must include prior $llm.selected in retry context as explicit 'do not pick these' list. Operational_note + worker prompt rule."
+          }
+        },
+        {
+          "discovered_at": "2026-05-18T19:00:00Z",
+          "by": "claude-primary",
+          "screen_variant": "ANY checkbox/radio exercise with visual diagrams",
+          "rule": "CHECK BUTTON TIMING: wait_for_element Check before clicking it after answer selection",
+          "note": "Khan React UI takes 1-2 seconds to register checkbox state changes and make the Check button responsive. With post_delay: 1.0 after each checkbox click, the find_and_click(Check) immediately after for_each may return None because Check is still in transitional/disabled state. Always insert `wait_for_element role=AXButton target='Check' max_wait=3.0` between the answer-selection for_each and the Check click. Mac btlog evidence 18:57:22: `find_and_click: looking for 'Check' role=AXButton \u2192 ACTION RETURNED NONE` exactly 1 second after the last checkbox click.",
+          "bt_template_hint": "Insert AFTER for_each and BEFORE find_and_click(Check):\n{\"type\":\"action\",\"action\":\"wait_for_element\",\"params\":{\"role\":\"AXButton\",\"target\":\"Check\",\"max_wait\":3.0}}",
+          "verified_count": 0
+        }
+      ]
     },
     "VIDEO": {
       "description": "Video screens show an embedded YouTube player (primary) or fallback player in the main content area. Below the video: transcript expandable section, 'Ask a question' discussion box, and community comments. Left sidebar shows lesson position. Video title appears above player. Energy points counter (typically 750-850) updates as video progresses. A correction text box may appear in lower-right of video for known errors (not visible in fullscreen). Some videos have associated questions that pop up during playback.",
@@ -485,7 +710,25 @@
           }
         ]
       },
-      "speed_controls": "YouTube player offers 0.25x, 0.5x, 0.75x, 1x, 1.25x, 1.5x, 1.75x, 2x speeds via the gear/settings icon in the YouTube control bar. Speeds up to 2x do NOT affect completion credit. The fallback player may lack speed controls entirely. To change speed: click gear icon in YouTube player controls -> 'Playback speed' -> select desired speed. 2x recommended for time efficiency."
+      "speed_controls": "YouTube player offers 0.25x, 0.5x, 0.75x, 1x, 1.25x, 1.5x, 1.75x, 2x speeds via the gear/settings icon in the YouTube control bar. Speeds up to 2x do NOT affect completion credit. The fallback player may lack speed controls entirely. To change speed: click gear icon in YouTube player controls -> 'Playback speed' -> select desired speed. 2x recommended for time efficiency.",
+      "operational_notes": [
+        {
+          "discovered_at": "2026-05-18T16:18:00Z",
+          "by": "claude-primary",
+          "screen_variant": "VIDEO_COMPLETE",
+          "rule": "Post-video advancement uses 'Up next' link, NEVER 'Replay Video'",
+          "note": "When a Khan video completes, the screen shows two affordances near the player: a 'Replay Video' button (do NOT click \u2014 re-watching wastes compute and never advances mastery) and an 'Up next: <content_type>' link (where content_type is 'video', 'article', 'exercise', etc). The Up next link is the ONLY correct advancement target. Its FULL text varies by next content type, so use description-substring filtering for find_all, NOT match_mode: contains on the click step.",
+          "bt_template_hint": "{\"type\":\"sequence\",\"children\":[{\"type\":\"action\",\"action\":\"find_all\",\"params\":{\"role\":\"AXLink\",\"description_contains\":\"Up next\"},\"store\":\"up_next_links\"},{\"type\":\"action\",\"action\":\"for_each\",\"items\":\"$up_next_links\",\"variable\":\"link\",\"do\":{\"type\":\"sequence\",\"children\":[  {\"type\":\"action\",\"action\":\"find_and_click\",\"params\":{\"element\":\"$link.element\",\"strategy\":\"mouse_click\",\"post_delay\":3.5}}]}}]}",
+          "anti_patterns": [
+            "click_at on hardcoded coordinates (positions shift with viewport)",
+            "find_and_click target='Up next' match_mode=contains (BANNED \u2014 match_mode must be exact)",
+            "click Replay Video (wastes compute, doesn't advance)",
+            "click 'Next in course' (advances LESSONS not VIDEOS \u2014 overshoots)"
+          ],
+          "verified_count": 0,
+          "verification_status": "pending_live_test"
+        }
+      ]
     },
     "ARTICLE": {
       "description": "Article screens present formatted educational text in the main content area with headers, paragraphs, images, embedded interactive elements ('Try it yourself' inline practice problems rendered by Perseus), and mathematical notation (MathJax/KaTeX). Left sidebar shows lesson position. 'Up next' link or arrow appears at bottom to advance. Articles may contain embedded Perseus widgets for inline practice that are NOT separately graded. Breadcrumb navigation at top shows Course > Unit > Lesson path.",

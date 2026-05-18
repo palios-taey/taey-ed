@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 CONSULT_DIR = Path("/tmp/taey-ed-consult")
 POLL_INTERVAL_S = 2.0
 MAX_CONCURRENT_JOBS = 3  # bounded so one hung Claude doesn't stall the queue
-JOB_TIMEOUT_S = 120.0
+JOB_TIMEOUT_S = 300.0  # Claude --print with full prompt_codex prompt can take 2-4 min
 
 
 def _list_pending_consultations() -> list[str]:

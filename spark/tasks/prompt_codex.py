@@ -176,6 +176,22 @@ ESCALATION LEVEL: {escalation_level} (attempt {spark_attempts})
    Always build a complete, correct tree regardless.
 10. If you don't know what to do, respond with escalation rather than guessing.
     A wrong tree wastes more time than an honest "I don't know."
+11. SCREEN-SHAPE BINDS question_type. Do not override based on perceived problem
+    difficulty. The DETECTED tag in your prompt determines the call shape:
+      HAS_TEXT_INPUT  → question_type="solve"          (LLM has the screenshot, can compute)
+      HAS_RADIO       → question_type="solve_choice"   (or solve_choice + has_text_field combo)
+      HAS_CHECKBOX    → question_type="solve_checkbox"
+      HAS_COMBOBOX    → question_type="solve_choice"   with combobox handlers
+      HAS_MANY_LINKS  → question_type="navigate"
+    solve_complex is RESERVED for screens whose answer requires reading visual
+    elements NOT in the AX tree (chart data, image content). A math word problem
+    on a text-input screen is NOT solve_complex — solve already gets the screenshot.
+    Routine "this looks computational" promotion to solve_complex is forbidden.
+12. RESPONSE-KEY CONTRACT (uniform across question_types):
+      solve / solve_choice / solve_complex / navigate → read $llm.answer (string)
+      solve_checkbox                                    → read $llm.selected (list)
+      solve_matching                                    → read $llm.matches (dict)
+    Always read the field documented for the question_type you used. No exceptions.
 
 === WHAT NOT TO DO (Anti-Patterns from V4-V9) ===
 - Use fallback nodes for OPTIONAL steps only (e.g., try Mark Complete, skip if absent)
@@ -632,7 +648,10 @@ normalizes "not selected"/"selected" suffixes → tries strategies in order
 mouse_click, ax_press) → after each, verifies trigger AXValue contains
 the chosen option → returns success only on observed state change.
 
-COMPLETE BT PATTERN (use this for any combobox/popup widget):
+COMPLETE BT PATTERN (use this for any combobox/popup widget) — ENUMERATE OPTIONS BEFORE ASKING.
+The options of an AXComboBox are NOT in the AX tree until the popup opens.
+Open each popup, capture options via discover_menu, close, then send_to_llm
+with each popup carrying its real options. Then select. This is REQUIRED, not optional.
 {
   "type": "sequence",
   "children": [
@@ -644,15 +663,6 @@ COMPLETE BT PATTERN (use this for any combobox/popup widget):
     },
     {
       "type": "action",
-      "action": "send_to_llm",
-      "params": {
-        "question_type": "solve_matching",
-        "items": "$popups"
-      },
-      "store": "matches"
-    },
-    {
-      "type": "action",
       "action": "for_each",
       "items": "$popups",
       "variable": "popup",
@@ -661,26 +671,105 @@ COMPLETE BT PATTERN (use this for any combobox/popup widget):
         "children": [
           {
             "type": "action",
-            "action": "lookup_match",
+            "action": "click",
             "params": {
-              "matches": "$matches.matches",
-              "key": "$popup.description"
-            },
-            "store": "chosen"
+              "element": "$popup.element",
+              "strategy": "mouse_click",
+              "post_delay": 1.2
+            }
           },
           {
             "type": "action",
-            "action": "select_dropdown_option",
-            "params": {
-              "trigger_element": "$popup.element",
-              "option": "$chosen",
-              "trigger_role": "AXComboBox",
-              "open_strategy": "mouse_click",
-              "open_wait": 0.7,
-              "verify_wait": 0.4
-            }
+            "action": "wait_for_element",
+            "params": {"role": "AXMenuItem", "max_wait": 2.0}
+          },
+          {
+            "type": "action",
+            "action": "discover_menu",
+            "params": {"role": "AXMenuItem"},
+            "store_to_current": "options"
+          },
+          {
+            "type": "action",
+            "action": "press_escape"
+          },
+          {
+            "type": "action",
+            "action": "wait",
+            "params": {"seconds": 0.3}
           }
         ]
+      }
+    },
+    {
+      "type": "action",
+      "action": "send_to_llm",
+      "params": {
+        "question_type": "solve_matching",
+        "question": "Fill in each dropdown with the correct option based on the screenshot and the surrounding question context. Each item's `label` describes its position in the sentence; each item's `options` lists the actual menu choices available for THAT dropdown. Return the EXACT option string from options[] for each item.",
+        "items": "$popups",
+        "context": "<short_context>"
+      },
+      "store": "matches"
+    },
+    # SELECTION PHASE: UNROLLED per-popup. parse_matching_response keys matches by
+    # stringified zero-based index ('0', '1', '2', ...) — collision-free 1:1 with
+    # $popups order. for_each + $_index cannot be used here because the BT engine
+    # does not convert int $_index to a string key. Worker MUST emit one
+    # lookup_match + select_dropdown_option pair per popup (count from find_all
+    # in the screenshot/tree), using literal "0", "1", "2" keys.
+    {
+      "type": "action",
+      "action": "lookup_match",
+      "params": {"matches": "$matches.matches", "key": "0"},
+      "store": "chosen_0"
+    },
+    {
+      "type": "action",
+      "action": "select_dropdown_option",
+      "params": {
+        "trigger_element": "$popups.0.element",
+        "option": "$chosen_0",
+        "trigger_role": "AXComboBox",
+        "open_strategy": "mouse_click",
+        "open_wait": 0.7,
+        "verify_wait": 0.4
+      }
+    },
+    {
+      "type": "action",
+      "action": "lookup_match",
+      "params": {"matches": "$matches.matches", "key": "1"},
+      "store": "chosen_1"
+    },
+    {
+      "type": "action",
+      "action": "select_dropdown_option",
+      "params": {
+        "trigger_element": "$popups.1.element",
+        "option": "$chosen_1",
+        "trigger_role": "AXComboBox",
+        "open_strategy": "mouse_click",
+        "open_wait": 0.7,
+        "verify_wait": 0.4
+      }
+    },
+    {
+      "type": "action",
+      "action": "lookup_match",
+      "params": {"matches": "$matches.matches", "key": "2"},
+      "store": "chosen_2"
+    },
+    {
+      "type": "action",
+      "action": "select_dropdown_option",
+      "params": {
+        "trigger_element": "$popups.2.element",
+        "option": "$chosen_2",
+        "trigger_role": "AXComboBox",
+        "open_strategy": "mouse_click",
+        "open_wait": 0.7,
+        "verify_wait": 0.4
       }
     },
     {
@@ -690,6 +779,7 @@ COMPLETE BT PATTERN (use this for any combobox/popup widget):
         "target": "Check",
         "role": "AXButton",
         "strategy": "mouse_click",
+        "match_mode": "exact",
         "post_delay": 2.5
       }
     }
@@ -1614,7 +1704,16 @@ def compile_prompt(
         get_operational_notes_for_screen,
     )
     knowledge = load_knowledge(platform)
-    screen_type = context.get("screen_type", "UNKNOWN")
+    raw_screen_type = context.get("screen_type", "UNKNOWN")
+    # Normalize to master category for knowledge.json lookups (EXERCISE_DROPDOWN
+    # → EXERCISE). knowledge.json is keyed by master categories; consults arrive
+    # variant-typed. Without normalization, NO subtype-aware sections (handlers,
+    # question_types, operational_notes) match for variant screens.
+    try:
+        from spark.tasks.screen_type_util import get_master_category
+        screen_type = get_master_category(raw_screen_type) or raw_screen_type
+    except Exception:
+        screen_type = raw_screen_type
 
     if knowledge and knowledge.get("screen_types"):
         # JIT: Structured knowledge context
