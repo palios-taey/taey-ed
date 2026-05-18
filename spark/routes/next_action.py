@@ -638,37 +638,78 @@ def next_action(request: NextActionRequest):
     Claude has explicitly created a gave_up.flag in the diagnosis state dir
     — that is handled inside _escalate_to_claude_diagnosing, not here.
     """
-    # PRE-PIPELINE CHECK: if claude is currently diagnosing this screen
-    # (state dir has diagnosing.flag and no done/gave_up), short-circuit
-    # the entire pipeline. Without this, every Mac /next_action while
-    # claude is editing knowledge.json kicks off a fresh worker call,
-    # producing a BT that Mac executes, looping the bad behavior.
+    # PRE-PIPELINE CHECK: GLOBAL "waiting on central guidance" lock.
+    #
+    # Per Jesse 2026-05-18: any time the system is waiting on central feedback
+    # — for ANY consultation or diagnosis cycle, on ANY platform — Mac should
+    # do nothing but wait. The previous per-(platform, hash) check leaked when
+    # Mac's tree mutated mid-diagnosis (animation, page auto-advance) and the
+    # new hash escaped the lock, cascading into fresh consultations.
+    #
+    # "Waiting on central guidance" = either of:
+    #   1. An open consultation: /tmp/taey-ed-consult/consult_*/ with no
+    #      response.json yet (the worker is still computing or pending).
+    #   2. An active diagnosis: /tmp/taey-ed-claude-diagnosing/*/ with a
+    #      diagnosing.flag and no diagnosis_done.flag / gave_up.flag.
+    #
+    # While either condition holds anywhere, every /next_action returns wait.
+    # Holds across platforms, screens, and tree mutations. Prevents cascade.
     try:
-        if request.tree:
-            from spark.tasks.skeleton import (
-                extract_skeleton as _ext_sk_pre,
-                skeleton_hash as _skel_hash_pre,
+        _waiting_reasons = []
+
+        # Condition 1: open consultations (response.json missing)
+        _consult_root = Path("/tmp/taey-ed-consult")
+        if _consult_root.exists():
+            for _consult_dir in _consult_root.iterdir():
+                if not _consult_dir.is_dir() or not _consult_dir.name.startswith("consult_"):
+                    continue
+                if (_consult_dir / "response.json").exists():
+                    continue
+                # Check metadata — abandoned/stale consults shouldn't lock us
+                _meta = _consult_dir / "metadata.json"
+                if _meta.exists():
+                    try:
+                        _m = json.loads(_meta.read_text())
+                        if _m.get("status") == "abandoned":
+                            continue
+                    except Exception:
+                        pass
+                _waiting_reasons.append(f"open_consult:{_consult_dir.name}")
+                if len(_waiting_reasons) >= 4:
+                    break
+
+        # Condition 2: active diagnosis cycles
+        _diag_root = Path("/tmp/taey-ed-claude-diagnosing")
+        if _diag_root.exists():
+            for _state_dir in _diag_root.iterdir():
+                if not _state_dir.is_dir():
+                    continue
+                if (_state_dir / "diagnosing.flag").exists() \
+                        and not (_state_dir / "diagnosis_done.flag").exists() \
+                        and not (_state_dir / "gave_up.flag").exists():
+                    _waiting_reasons.append(f"diagnosing:{_state_dir.name}")
+                    if len(_waiting_reasons) >= 4:
+                        break
+
+        if _waiting_reasons:
+            logger.info(
+                f"PRE-PIPELINE: {len(_waiting_reasons)} central-feedback wait(s) active "
+                f"({', '.join(_waiting_reasons[:3])}"
+                f"{'...' if len(_waiting_reasons) > 3 else ''}) "
+                f"— returning wait, skipping pipeline"
             )
-            _pre_hash = _skel_hash_pre(_ext_sk_pre(request.tree))
-            _pre_diag_dir = Path("/tmp/taey-ed-claude-diagnosing") / f"{request.platform}_{_pre_hash[:16]}"
-            _pre_diagnosing = _pre_diag_dir / "diagnosing.flag"
-            _pre_done = _pre_diag_dir / "diagnosis_done.flag"
-            _pre_gave_up = _pre_diag_dir / "gave_up.flag"
-            if (_pre_diag_dir.exists() and _pre_diagnosing.exists()
-                    and not _pre_done.exists() and not _pre_gave_up.exists()):
-                logger.info(
-                    f"PRE-PIPELINE: claude_diagnosing active for "
-                    f"{request.platform}_{_pre_hash[:16]} — returning wait, skipping pipeline"
-                )
-                return {
-                    "directive": "wait",
-                    "directive_id": _make_directive_id(),
-                    "seconds": 30.0,
-                    "reason": "claude_diagnosing",
-                    "message": "Claude still diagnosing this screen — Mac will retry automatically.",
-                }
+            return {
+                "directive": "wait",
+                "directive_id": _make_directive_id(),
+                "seconds": 30.0,
+                "reason": "central_feedback_pending",
+                "message": (
+                    f"Waiting on central guidance ({len(_waiting_reasons)} cycle(s)) — "
+                    f"Mac will retry automatically."
+                ),
+            }
     except Exception:
-        logger.exception("PRE-PIPELINE diagnosis check failed (non-fatal)")
+        logger.exception("PRE-PIPELINE central-feedback check failed (non-fatal)")
 
     response = _next_action_impl(request)
     if isinstance(response, dict) and response.get("directive") == "user_input_needed":

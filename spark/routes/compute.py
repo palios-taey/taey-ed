@@ -55,17 +55,43 @@ async def generate(request: GenerateRequest):
         f"question='{request.question[:60]}'"
     )
 
-    result = await generate_answer(
-        question=request.question,
-        question_type=request.question_type,
-        options=request.options,
-        context=request.context,
-        image_descriptions=request.image_descriptions,
-        has_text_field=request.has_text_field,
-        screen_config=request.screen_config,
-        items=request.items,
-        screenshot_b64=request.screenshot_b64,
-    )
+    try:
+        result = await generate_answer(
+            question=request.question,
+            question_type=request.question_type,
+            options=request.options,
+            context=request.context,
+            image_descriptions=request.image_descriptions,
+            has_text_field=request.has_text_field,
+            screen_config=request.screen_config,
+            items=request.items,
+            screenshot_b64=request.screenshot_b64,
+        )
+    except Exception as e:
+        # Genuine server crash inside the LLM call path. Log full traceback so
+        # the cause is visible in /home/user/taey-ed/logs/api.log, then 500.
+        logger.exception(
+            f"generate_answer crashed: q_type={request.question_type} "
+            f"question={request.question[:80]!r}"
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"generate_answer crashed: {type(e).__name__}: {e}",
+        )
+
     if not result.get("success"):
-        raise HTTPException(status_code=500, detail=result.get("error"))
+        # Client-input problem (empty options, malformed request, etc.) — Mac
+        # extracted bad data and called us with it. Return 422 (Unprocessable
+        # Entity), NOT 500. Previously we returned 500 here, which made every
+        # Mac-side BT failure handler treat it as "server died" and triggered
+        # the loop guard → escalation cascade. The actual fix is upstream
+        # (better extract_question filtering, or worker generating a BT
+        # appropriate for the screen variant), but returning the correct
+        # status code stops the false-positive cascade.
+        err = result.get("error", "unknown")
+        logger.warning(
+            f"generate_answer returned !success: q_type={request.question_type} "
+            f"err={err!r} question={request.question[:80]!r}"
+        )
+        raise HTTPException(status_code=422, detail=err)
     return result
