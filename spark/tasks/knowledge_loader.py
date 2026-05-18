@@ -220,64 +220,112 @@ def save_learned_observation(platform: str, screen_type: str, observation: dict)
         logger.error(f"Failed to save learned observation: {e}")
 
 
+def _render_operational_notes(notes: list) -> list:
+    """Render a list of operational_note dicts to markdown lines."""
+    lines = []
+    for n in notes:
+        disc = n.get("discovered_at", "")
+        by = n.get("by", "")
+        note = n.get("note", "")
+        template = n.get("bt_template_hint", "")
+        disambig = n.get("disambiguator", "")
+        handler_req = n.get("handler_required", "")
+        prior = n.get("prior_workaround", "")
+        verified = n.get("verified_count", 0)
+        rule = n.get("rule", "")
+
+        header = f"- *(discovered {disc} by {by}, verified×{verified})*"
+        lines.append(header)
+        if rule:
+            lines.append(f"  **Rule:** {rule}")
+        if note:
+            lines.append(f"  **Note:** {note}")
+        if template:
+            lines.append(f"  **BT template hint:** {template}")
+        if disambig:
+            lines.append(f"  **Disambiguator:** {disambig}")
+        if handler_req:
+            lines.append(f"  **Requires handler:** {handler_req}")
+        if prior:
+            lines.append(f"  **Prior workaround:** {prior}")
+    return lines
+
+
+def _match_subtype_for_variant(screen_type: str, master_type: str, subtypes: list) -> dict | None:
+    """Pick the subtype whose name matches the variant suffix.
+    EXERCISE_DROPDOWN -> "DROPDOWN" -> match subtype name "dropdown".
+    Returns None when no clean match found (caller decides whether to fall back).
+    """
+    if screen_type == master_type:
+        return None
+    prefix = f"{master_type}_"
+    suffix = screen_type[len(prefix):] if screen_type.startswith(prefix) else screen_type
+    # Normalize: strip non-alphanumerics, lowercase
+    suffix_norm = re.sub(r"[^a-z0-9]+", "", suffix.lower()) if suffix else ""
+    if not suffix_norm:
+        return None
+    for s in subtypes:
+        n_norm = re.sub(r"[^a-z0-9]+", "", str(s.get("name", "")).lower())
+        if n_norm and (n_norm == suffix_norm or suffix_norm in n_norm or n_norm in suffix_norm):
+            return s
+    return None
+
+
 def get_operational_notes_for_screen(knowledge: dict, screen_type: str) -> str:
-    """Return markdown-formatted operational notes for all subtypes of a screen type.
+    """Return markdown-formatted operational notes following Jesse's 3-tier tree:
 
-    Operational notes are concrete lessons-learned from previous claude-primary
-    consultations — exact roles, casing quirks, depth gotchas, BT templates that
-    worked. Injected into consultation prompts so next-Claude reads what
-    last-Claude figured out instead of rediscovering from scratch.
+      1. Platform-level (always)        — knowledge['global']['operational_notes'] (if present)
+      2. Category-level (always)        — screen_types.{master}.operational_notes
+      3. Sub-category-level (matched)   — screen_types.{master}.subtypes.{variant_match}.operational_notes
 
-    Returns empty string if no notes exist (caller can skip the section).
+    Sibling subtypes are NOT included. Push rules to the lowest applicable level
+    to avoid noise. Returns empty string if nothing relevant exists.
     """
     screen_types_map = knowledge.get("screen_types", {})
-    screen_info = screen_types_map.get(screen_type, {})
-    if not screen_info:
-        # Fall back to master category (e.g. EXERCISE_DROPDOWN -> EXERCISE).
-        # Knowledge.json keys are master categories; consults arrive with
-        # variant-typed screens. Without this fallback, subtype operational_notes
-        # are never delivered to the worker on variant-typed screens.
-        try:
-            from spark.tasks.screen_type_util import get_master_category
-            master = get_master_category(screen_type)
-            if master and master != screen_type:
-                screen_info = screen_types_map.get(master, {})
-        except Exception:
-            pass
-    subtypes = screen_info.get("subtypes", [])
-    if not subtypes:
-        return ""
+
+    # Resolve master category (EXERCISE_DROPDOWN -> EXERCISE)
+    try:
+        master = get_master_category(screen_type) or screen_type
+    except Exception:
+        master = screen_type
 
     sections = []
-    for subtype in subtypes:
-        notes = subtype.get("operational_notes") or []
-        if not notes:
-            continue
-        name = subtype.get("name", "unknown")
-        lines = [f"### {name}"]
-        for n in notes:
-            disc = n.get("discovered_at", "")
-            by = n.get("by", "")
-            note = n.get("note", "")
-            template = n.get("bt_template_hint", "")
-            disambig = n.get("disambiguator", "")
-            handler_req = n.get("handler_required", "")
-            prior = n.get("prior_workaround", "")
-            verified = n.get("verified_count", 0)
 
-            header = f"- *(discovered {disc} by {by}, verified×{verified})*"
-            lines.append(header)
-            if note:
-                lines.append(f"  **Note:** {note}")
-            if template:
-                lines.append(f"  **BT template hint:** {template}")
-            if disambig:
-                lines.append(f"  **Disambiguator:** {disambig}")
-            if handler_req:
-                lines.append(f"  **Requires handler:** {handler_req}")
-            if prior:
-                lines.append(f"  **Prior workaround:** {prior}")
+    # Tier 1: platform-level operational_notes (always included if present)
+    platform_notes = knowledge.get("global", {}).get("operational_notes") or []
+    if platform_notes:
+        lines = ["### platform (always applies)"] + _render_operational_notes(platform_notes)
         sections.append("\n".join(lines))
+
+    master_info = screen_types_map.get(master, {})
+
+    # Tier 2: category-level (master screen type's top-level operational_notes)
+    category_notes = master_info.get("operational_notes") or []
+    if category_notes:
+        lines = [f"### {master} (category-level)"] + _render_operational_notes(category_notes)
+        sections.append("\n".join(lines))
+
+    # Tier 3: matched subtype (only the variant's specific subtype, NOT siblings)
+    subtypes = master_info.get("subtypes", [])
+    matched_subtype = _match_subtype_for_variant(screen_type, master, subtypes)
+    if matched_subtype:
+        sub_notes = matched_subtype.get("operational_notes") or []
+        if sub_notes:
+            name = matched_subtype.get("name", "unknown")
+            lines = [f"### {master}.{name} (subtype-level — matched on variant {screen_type})"]
+            lines += _render_operational_notes(sub_notes)
+            sections.append("\n".join(lines))
+    elif screen_type == master:
+        # When the consult arrived with the master type itself (no subtype suffix),
+        # include ALL subtype notes — the worker doesn't know yet which variant applies.
+        for s in subtypes:
+            sub_notes = s.get("operational_notes") or []
+            if not sub_notes:
+                continue
+            name = s.get("name", "unknown")
+            lines = [f"### {master}.{name} (subtype-level — master-only consult, all included)"]
+            lines += _render_operational_notes(sub_notes)
+            sections.append("\n".join(lines))
 
     if not sections:
         return ""

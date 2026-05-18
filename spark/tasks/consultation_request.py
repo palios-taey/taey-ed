@@ -26,6 +26,12 @@ from .consultation_state import (
 )
 from .notify_tmux import notify_spark_claude
 from .paths import is_valid_png_b64
+from .escalation import (
+    tier_for_attempt,
+    build_packet,
+    notify_body_for_tier,
+    UNSOLVED_LOG,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -310,45 +316,67 @@ def request_consultation(
                 "path": str(consult_path),
             }
 
-        # Hard cap on diagnosis retries before forcing user escalation
+        # Diagnosis retry count: number of COMPLETED diagnosis cycles for this
+        # (platform, screen_hash). 0 = first ever, 1 = one cycle finished, etc.
         retry_count = 0
         if retry_count_path.exists():
             try:
                 retry_count = int(retry_count_path.read_text().strip())
             except (ValueError, OSError):
                 retry_count = 0
-        MAX_CLAUDE_RETRIES = 5
 
-        if retry_count >= MAX_CLAUDE_RETRIES:
+        # Resolve which tier this attempt belongs to (see escalation.py for ladder).
+        tier = tier_for_attempt(retry_count)
+
+        # Terminal tier: full ladder exhausted. Auto-mark unsolvable, log to
+        # UNSOLVED.md, return user_required. claude-primary does not give up
+        # manually — the system does, per Jesse 2026-05-18 ladder.
+        if tier == "terminal":
             logger.warning(
-                f"Claude diagnosis retries exhausted ({retry_count}) for "
-                f"screen_hash={screen_hash[:16]}. Escalating to user."
+                f"Escalation ladder exhausted ({retry_count} cycles) for "
+                f"screen_hash={screen_hash[:16]}. Auto-marking unsolvable."
             )
-            metadata["escalation_level"] = "user"
+            gave_up_flag.touch()
+            try:
+                UNSOLVED_LOG.parent.mkdir(parents=True, exist_ok=True)
+                with UNSOLVED_LOG.open("a") as fh:
+                    fh.write(
+                        f"\n## {datetime.utcnow().isoformat()}Z — {platform} {screen_hash[:16]}\n"
+                        f"- consultation_id: {consultation_id}\n"
+                        f"- attempts_exhausted: {retry_count}\n"
+                        f"- state_dir: {diag_state_dir}\n"
+                        f"- last_consult: {consult_path}\n"
+                    )
+            except Exception as e:
+                logger.error(f"UNSOLVED.md append failed: {e}")
+            metadata["escalation_level"] = "terminal"
             metadata["status"] = "user_required"
             atomic_write_json(consult_path / "metadata.json", metadata)
             notify_spark_claude(
-                f"ESCALATION TO USER: Consultation {consultation_id} for {platform} "
-                f"— {retry_count} claude diagnosis cycles failed. User input required."
+                f"TERMINAL ESCALATION — {platform} screen_hash {screen_hash[:16]} "
+                f"marked unsolvable after 6-tier exhaustion. "
+                f"Logged to {UNSOLVED_LOG}.",
+                notify_type="defect",
             )
             return {
                 "consultation_id": consultation_id,
                 "status": "user_required",
-                "message": f"Claude diagnosis cycles exhausted ({retry_count}). User input needed.",
+                "message": f"Escalation ladder exhausted ({retry_count} cycles). Marked unsolvable.",
                 "path": str(consult_path),
             }
 
-        # Diagnosis just completed: reset escalation and fall through to a fresh
-        # worker consult that picks up the updated knowledge.json via hot-reload.
+        # Diagnosis just completed: increment retry_count, reset escalation,
+        # fall through to a fresh worker consult that picks up updated
+        # knowledge.json via hot-reload.
         if done_flag.exists():
             logger.info(
-                f"Claude finished diagnosing screen_hash={screen_hash[:16]}. "
-                f"Retrying (cycle {retry_count + 1}/{MAX_CLAUDE_RETRIES})."
+                f"Diagnosis cycle complete for screen_hash={screen_hash[:16]}. "
+                f"retry_count {retry_count} -> {retry_count + 1}. "
+                f"Next tier: {tier_for_attempt(retry_count + 1)}."
             )
             retry_count_path.write_text(str(retry_count + 1))
             done_flag.unlink()
             diagnosing_flag.unlink(missing_ok=True)
-            # Reset escalation so the worker generates a fresh BT below
             spark_attempts = 0
             escalation_level = "spark_claude"
             metadata["spark_attempts"] = 0
@@ -358,58 +386,87 @@ def request_consultation(
             # Fall through to normal worker dispatch below
 
         else:
-            # First entry to diagnosing, or already-pending diagnosis.
-            # Notify claude once per (screen) cycle; subsequent reconsults on
-            # same screen just keep returning wait without re-notifying.
+            # First entry to diagnosing for this cycle, or already-pending.
+            # Notify once per cycle; build the rich-context escalation packet
+            # so the recipient (claude-primary) and any Tier 2/3 dispatch has
+            # everything it needs in one document.
             if not diagnosing_flag.exists():
                 diagnosing_flag.touch()
                 screen_type_hint = metadata.get("screen_type_hint", "UNKNOWN")
-                notify_spark_claude(
-                    f"CLAUDE_DIAGNOSIS_REQUIRED — production loop\n"
-                    f"Consult: {consult_path}\n"
-                    f"Platform: {platform}\n"
-                    f"Screen type hint: {screen_type_hint}\n"
-                    f"Screen hash: {screen_hash[:16]}\n"
-                    f"State dir: {diag_state_dir}\n"
-                    f"Spark attempts: {spark_attempts}, prior diagnosis cycles: {retry_count}\n"
-                    f"\n"
-                    f"INSTRUCTIONS:\n"
-                    f"1. Read consult artifacts at {consult_path}/\n"
-                    f"   - tree.json (AX tree)\n"
-                    f"   - screenshot.png (visual)\n"
-                    f"   - metadata.json (prior BTs + Mac error context)\n"
-                    f"2. Diagnose the failure mode (lookup-key mismatch, AX quirk, widget variant).\n"
-                    f"3. Edit /home/user/taey-ed/spark/platforms/{platform}/knowledge.json\n"
-                    f"   - Add a SCREEN-TYPE-LEVEL operational_note rule under the matching\n"
-                    f"     screen_types.{{type}}.subtypes entry (or top-level operational_notes).\n"
-                    f"   - The rule must be generalizable — not instance-specific.\n"
-                    f"4. When done: `touch {done_flag}`\n"
-                    f"   Mac will auto-retry with updated knowledge.json on next poll.\n"
-                    f"5. If you cannot solve after trying:\n"
-                    f"   `touch {gave_up_flag}` — escalates to user.\n"
+
+                # Build the packet. Operational notes rendering deferred to
+                # caller knowledge if available; here we pass empty string and
+                # let the worker prompt include them at BT-gen time.
+                try:
+                    from .knowledge_loader import (
+                        load_knowledge as _lk, get_operational_notes_for_screen,
+                    )
+                    knowledge = _lk(platform)
+                    notes_md = get_operational_notes_for_screen(knowledge, screen_type_hint)
+                except Exception as e:
+                    logger.warning(f"escalation packet: ops-notes load failed: {e}")
+                    knowledge = {}
+                    notes_md = ""
+
+                try:
+                    packet_path = build_packet(
+                        platform=platform,
+                        screen_hash=screen_hash,
+                        consult_path=consult_path,
+                        diag_state_dir=diag_state_dir,
+                        retry_count=retry_count,
+                        knowledge=knowledge,
+                        operational_notes_rendered=notes_md,
+                        screen_type_hint=screen_type_hint,
+                    )
+                except Exception as e:
+                    logger.error(f"escalation packet build failed: {e}")
+                    packet_path = diag_state_dir / "(packet_build_failed)"
+
+                body = notify_body_for_tier(
+                    tier=tier,
+                    packet_path=packet_path,
+                    platform=platform,
+                    screen_hash=screen_hash,
+                    retry_count=retry_count,
+                    consult_path=consult_path,
+                    diag_state_dir=diag_state_dir,
                 )
+                notify_spark_claude(body, notify_type="escalation")
                 logger.warning(
-                    f"Claude diagnosis triggered for {consultation_id} "
-                    f"({platform}, {screen_type_hint}, hash={screen_hash[:16]})"
+                    f"Escalation triggered for {consultation_id} "
+                    f"({platform}, {screen_type_hint}, hash={screen_hash[:16]}, "
+                    f"tier={tier}, retry_count={retry_count})"
                 )
             metadata["status"] = "claude_diagnosing"
-            metadata["escalation_level"] = "claude_diagnosing"
+            metadata["escalation_level"] = f"diagnosing_{tier}"
             atomic_write_json(consult_path / "metadata.json", metadata)
             return {
                 "consultation_id": consultation_id,
                 "status": "claude_diagnosing",
-                "message": "Claude diagnosing this screen variant — Mac will retry automatically.",
+                "message": f"Escalation tier={tier} active — Mac will retry automatically.",
                 "path": str(consult_path),
             }
 
     # Comprehensive self-contained prompt via prompt_codex
     from .prompt_codex import compile_prompt
 
+    # Pass screen_type to prompt builder so it can inject subtype-specific
+    # operational_notes from knowledge.json. Falls back to "UNKNOWN" only when
+    # we genuinely have no hint; the prompt builder treats UNKNOWN as "include
+    # all subtype notes since we don't know which applies yet" via the
+    # master-category fallback in get_operational_notes_for_screen.
+    screen_type_for_prompt = (
+        context.get("screen_type")
+        or metadata.get("screen_type_hint")
+        or "UNKNOWN"
+    )
     consultation_context = {
         "escalation_level": escalation_level,
         "course_id": context.get("course_id", "unknown"),
         "failure_reason": context.get("failure_reason", ""),
         "previous_screen_type": context.get("previous_screen", ""),
+        "screen_type": screen_type_for_prompt,
     }
 
     consultation_details = compile_prompt(
