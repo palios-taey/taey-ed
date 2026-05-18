@@ -635,6 +635,19 @@ def step_3_failure_retry(payload: dict) -> dict | None:
             "tier": 1,
             "screen_type_hint": last_result.get("screen", "UNKNOWN"),
             "failure_reason": str(last_result.get("action", "bt_failure")),
+            "previous_bt": last_result.get("failed_bt") or last_result.get("directive_tree") or None,
+            "previous_response": {
+                "screen_type": last_result.get("screen", "UNKNOWN"),
+                "action": last_result.get("action"),
+                "error": last_result.get("error") or last_result.get("failure_detail") or "",
+                "tree_hash_before": last_result.get("tree_hash_before"),
+                "tree_hash_after": last_result.get("tree_hash_after"),
+                "tree_changed": bool(
+                    last_result.get("tree_hash_before")
+                    and last_result.get("tree_hash_after")
+                    and last_result.get("tree_hash_before") != last_result.get("tree_hash_after")
+                ),
+            },
         },
     )
 

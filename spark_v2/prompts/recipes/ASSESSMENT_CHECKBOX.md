@@ -22,7 +22,7 @@ Multi-select quiz with checkboxes. Uses for_each to click each selected option.
       }},
       {"type": "action", "action": "find_and_click", "params": {
         "target": "SUBMIT_TEXT", "role": "AXButton",
-        "strategy": "mouse_click", "match_mode": "contains", "post_delay": 3.0
+        "strategy": "mouse_click", "match_mode": "exact", "post_delay": 3.0
       }},
       {"type": "action", "action": "store_qa", "params": {
         "question": "$q_data.question_text", "answer": "$llm_result.selected",

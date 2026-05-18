@@ -258,6 +258,9 @@ def generate_bt(
         spark_attempts=tier,
         reconsult_context=reconsult_context,
         is_reconsultation=is_reconsultation,
+        tier=tier,
+        previous_bt=metadata.get("previous_bt"),
+        previous_response=metadata.get("previous_response"),
     )
     user_message = (
         f"Consultation directory: {consult_dir}\n"

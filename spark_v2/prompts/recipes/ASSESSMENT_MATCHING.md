@@ -22,7 +22,7 @@ NEVER hardcode item names -- exercises change every time.
         "type": "sequence", "children": [
           {"type": "action", "action": "find_and_click", "params": {
             "target": "$_current.label", "role": "DROPDOWN_ROLE",
-            "strategy": "mouse_click", "match_mode": "contains"
+            "strategy": "mouse_click", "match_mode": "exact"
           }},
           {"type": "action", "action": "wait", "params": {"seconds": 1.0}},
           {"type": "action", "action": "lookup_match", "params": {
@@ -30,7 +30,7 @@ NEVER hardcode item names -- exercises change every time.
           }, "store": "match_answer"},
           {"type": "action", "action": "find_and_click", "params": {
             "target": "$match_answer", "role": "AXMenuItem",
-            "strategy": "mouse_click", "match_mode": "contains"
+            "strategy": "mouse_click", "match_mode": "exact"
           }},
           {"type": "action", "action": "wait", "params": {"seconds": 0.5}}
         ]

@@ -32,7 +32,7 @@ This is a TRANSITION. Find the advance button from the tree.
   "tree": {"type": "sequence", "children": [
     {"type": "action", "action": "find_and_click", "params": {
       "target": "ADVANCE_TEXT", "role": "AXLink", "strategy": "mouse_click",
-      "match_mode": "contains", "post_delay": 3.0
+      "match_mode": "exact", "post_delay": 3.0
     }}
   ]}
 }

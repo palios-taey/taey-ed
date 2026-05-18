@@ -14,6 +14,7 @@ No Weaviate exemplar dependency — works Day 1 with only RESEARCH.md + tree + s
 """
 
 import logging
+import json
 from pathlib import Path
 
 from .classify_archetype import classify_archetype
@@ -58,6 +59,9 @@ def build_consultation_prompt(
     spark_attempts: int = 0,
     reconsult_context: str = "",
     is_reconsultation: bool = False,
+    tier: int = 0,
+    previous_bt: dict | None = None,
+    previous_response: dict | None = None,
 ) -> str:
     """
     Build a focused consultation prompt using decision tree routing.
@@ -122,6 +126,26 @@ def build_consultation_prompt(
         step2 += f"\n\n{reconsult_context}"
 
     sections.append(step2)
+
+    if tier >= 1 and (previous_bt or previous_response):
+        response = previous_response or {}
+        sections.append(
+            f"=== STEP 2.5: PREVIOUS ATTEMPT FAILED (tier {tier}) ===\n"
+            "The last BT did not advance the screen. The accessibility tree before AND after the action is "
+            f"essentially identical (tree_changed: {str(bool(response.get('tree_changed'))).lower()}). "
+            "Do NOT repeat the same selectors/click pattern. Always use match_mode: exact. "
+            "Vary the target selector role (AXButton/AXLink/AXStaticText), the description/name/title axis, "
+            "or the click strategy (mouse_click/focus_enter/focus_space/ax_press). "
+            "NEVER use match_mode contains.\n\n"
+            "Previous BT (compact):\n"
+            "```json\n"
+            f"{json.dumps(previous_bt or None, ensure_ascii=True, separators=(',', ':'))}\n"
+            "```\n"
+            "Previous failure context:\n"
+            f"  action: {response.get('action') or ''}\n"
+            f"  error: {response.get('error') or ''}\n"
+            f"  tree_changed: {str(bool(response.get('tree_changed'))).lower()}"
+        )
 
     # === STEP 3: RECIPE CARD ===
     sections.append(f"=== STEP 2: BUILD THE BEHAVIOR TREE ({archetype}) ===\n{recipe}")

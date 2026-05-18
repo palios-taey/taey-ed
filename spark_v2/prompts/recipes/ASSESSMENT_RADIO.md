@@ -16,11 +16,11 @@ Multiple choice quiz with radio buttons. Extract question, get LLM answer, click
       }, "store": "llm_result"},
       {"type": "action", "action": "find_and_click", "params": {
         "target": "$llm_result.answer", "role": "AXRadioButton",
-        "strategy": "mouse_click", "match_mode": "contains", "post_delay": 1.0
+        "strategy": "mouse_click", "match_mode": "exact", "post_delay": 1.0
       }},
       {"type": "action", "action": "find_and_click", "params": {
         "target": "SUBMIT_TEXT", "role": "AXButton",
-        "strategy": "mouse_click", "match_mode": "contains", "post_delay": 3.0
+        "strategy": "mouse_click", "match_mode": "exact", "post_delay": 3.0
       }},
       {"type": "action", "action": "store_qa", "params": {
         "question": "$q_data.question_text", "answer": "$llm_result.answer",

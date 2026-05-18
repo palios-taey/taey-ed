@@ -18,7 +18,7 @@ NEVER hardcode item names -- content varies per user/course.
       }, "store": "nav_result"},
       {"type": "action", "action": "find_and_click", "params": {
         "target": "$nav_result.answer", "role": "AXLink",
-        "strategy": "mouse_click", "match_mode": "contains", "post_delay": 3.0
+        "strategy": "mouse_click", "match_mode": "exact", "post_delay": 3.0
       }}
     ]
   }

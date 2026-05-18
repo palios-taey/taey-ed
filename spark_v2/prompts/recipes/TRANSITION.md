@@ -21,7 +21,8 @@ Single navigation click. No content extraction, no question answering.
 ### Checklist
 - [ ] Look at screenshot -- which button advances? (Resume, Next, Continue, Start, Up next, Let's go)
 - [ ] Check tree for exact text and AX role (AXButton, AXLink, AXStaticText)
-- [ ] Use match_mode "contains" only if text varies across instances
+- [ ] Always use match_mode exact.
+- [ ] If text varies between instances, scope with find_all + description_contains filter, then click the exact selected label.
 - [ ] post_delay 3.0+ for any click that changes the page
 - [ ] No extract section needed
 - [ ] screen_type should be reusable (e.g., "PRACTICE_START" not "Unit_3_Start")
