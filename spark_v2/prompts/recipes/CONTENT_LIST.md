@@ -14,6 +14,7 @@ NEVER hardcode item names -- content varies per user/course.
         "role": "AXLink", "description_contains": "FILTER"
       }, "store": "nav_items"},
       {"type": "action", "action": "send_to_llm", "params": {
+        "question": "Pick the next item to complete from this list. Skip items marked completed/done/checkmark. Prefer the item the platform indicates is up next (look for indicators like UP NEXT, NEXT, Continue, or the first non-completed item in order). Return the exact label string of the chosen item.",
         "question_type": "navigate", "items": "$nav_items"
       }, "store": "nav_result"},
       {"type": "action", "action": "find_and_click", "params": {
@@ -29,6 +30,7 @@ NEVER hardcode item names -- content varies per user/course.
 - [ ] Find common text pattern in list items for description_contains -- look at the tree for what the items share
 - [ ] NEVER use literal text like "Unit 1" -- always use $nav_result.answer
 - [ ] Check role: usually AXLink but could be AXButton -- verify in tree
+- [ ] question field is MANDATORY for question_type: navigate. Describe what to pick in terms of completion state + ordering. Without question text the solver rejects the call.
 - [ ] No extract section needed (navigation, not content)
 
 ### Distinction

@@ -40,6 +40,12 @@ for_each, conditional
 - Complete BEFORE navigate (answer -> submit -> next)
 - `video_poll` must be the ONLY action in its tree (no other children)
 
+### send_to_llm Question Requirements
+Every send_to_llm node MUST include a non-empty `question` field, regardless of question_type.
+For solve/solve_choice/solve_complex/solve_checkbox/solve_matching, question is the assessment question text.
+For navigate, question is the navigation instruction (what to pick and how to decide).
+Solver rejects calls with empty question text.
+
 ### Response Format
 Emit a SINGLE JSON object as your final output. No prose before or after. Required keys:
 ```json
