@@ -54,9 +54,11 @@ def _extract_menu_items(tree: dict, role: str) -> list:
         if node.get("role") == role:
             text = node.get("title") or node.get("value") or node.get("description") or ""
             text = str(text).strip()
-            if text.endswith(" selected"):
-                text = text[:-9].strip()
-            # Strip decorative unicode arrows
+            # REMOVED: " selected" / " not selected" suffix strip — server handles ARIA
+            # suffix normalization in spark/tasks/call_gemini.py so Mac stays a dumb
+            # capture/execute layer (per Jesse 2026-05-18 architectural principle).
+            # The old 9-char strip mangled labels like "the same not selected" -> "the same not".
+            # Strip decorative unicode arrows (display-only chars, never answer text)
             text = text.replace("\u2192", "").replace("→", "").strip()
             if text and text not in items:
                 items.append(text)
