@@ -436,7 +436,7 @@ def _store_and_return_bt(result: dict, platform: str, tree: dict, sig_hash: str,
     from spark.tasks.variant_cache import store_variant_bt, is_non_deterministic, register_hash
     extract_config = result.get("extract")
     try:
-        if not is_non_deterministic(variant_type):
+        if not is_non_deterministic(platform, variant_type):
             store_variant_bt(platform, variant_type, result["tree"],
                              extract_config, result.get("expected_next"),
                              source="gemini_bt")
@@ -1221,7 +1221,7 @@ def _next_action_impl(request: NextActionRequest):
         logger.info(f"  Step 4: Hash hit → variant={variant}")
 
         # For deterministic variants, try to reuse stored BT
-        if not is_non_deterministic(variant):
+        if not is_non_deterministic(platform, variant):
             bt_entry = lookup_variant_bt(platform, variant)
             if bt_entry and bt_entry.get("behavior_tree"):
                 stored_bt = bt_entry["behavior_tree"]
@@ -1371,7 +1371,7 @@ def _next_action_impl(request: NextActionRequest):
         logger.warning(f"  Step 5B: fingerprint logging failed (non-blocking): {e}")
 
     # Step 5C: Check variant BT cache (deterministic variants only)
-    if variant != "UNKNOWN" and not is_non_deterministic(variant):
+    if variant != "UNKNOWN" and not is_non_deterministic(platform, variant):
         bt_entry = lookup_variant_bt(platform, variant)
         if bt_entry and bt_entry.get("behavior_tree"):
             stored_bt = bt_entry["behavior_tree"]
@@ -1407,7 +1407,7 @@ def _next_action_impl(request: NextActionRequest):
             result_variant = result.get("screen_type", "UNKNOWN")
             logger.info(f"  Step 5D: Pro built BT for UNKNOWN → {result_variant}")
             # Store variant BT if deterministic
-            if not is_non_deterministic(result_variant):
+            if not is_non_deterministic(platform, result_variant):
                 store_variant_bt(platform, result_variant, result["tree"],
                                  result.get("extract"), result.get("expected_next"))
             register_hash(platform, skel_hash, result_variant)
@@ -1434,7 +1434,7 @@ def _next_action_impl(request: NextActionRequest):
                                      course_id=cs.course_id)
 
     # If Pro built a BT successfully, store it under the variant for reuse
-    if result.get("directive") == "execute_tree" and not is_non_deterministic(variant):
+    if result.get("directive") == "execute_tree" and not is_non_deterministic(platform, variant):
         bt = result.get("tree")
         if bt:
             store_variant_bt(platform, variant, bt,

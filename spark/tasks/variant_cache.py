@@ -20,6 +20,11 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .knowledge_loader import (
+    get_verified_bt_template_entry,
+    increment_operational_note_verified_count,
+    load_knowledge,
+)
 from .paths import VARIANT_BTS_DIR, HASH_INDEX_DIR
 
 logger = logging.getLogger("taey-ed")
@@ -39,14 +44,18 @@ NON_DETERMINISTIC_VARIANTS = {
 }
 
 
-def is_non_deterministic(variant: str) -> bool:
+def is_non_deterministic(platform: str, variant: str) -> bool:
     """Check if a variant needs a fresh BT every time.
     Any EXERCISE_* variant is non-deterministic (questions change per instance).
     """
-    if variant in NON_DETERMINISTIC_VARIANTS:
-        return True
-    # Catch-all: any variant starting with EXERCISE_ is non-deterministic
-    return variant.startswith("EXERCISE_")
+    if variant in NON_DETERMINISTIC_VARIANTS or variant.startswith("EXERCISE_"):
+        try:
+            knowledge = load_knowledge(platform)
+            return get_verified_bt_template_entry(knowledge, variant, min_verified=1) is None
+        except Exception as e:
+            logger.warning(f"variant_cache: verified template check failed for {platform}/{variant}: {e}")
+            return True
+    return False
 
 
 # ── Atomic file I/O ──
@@ -96,7 +105,20 @@ def lookup_variant_bt(platform: str, variant: str) -> dict | None:
     data = _load_variants(platform)
     entry = data["variants"].get(variant)
     if not entry or not entry.get("behavior_tree"):
-        return None
+        knowledge = load_knowledge(platform)
+        template_entry = get_verified_bt_template_entry(knowledge, variant, min_verified=1)
+        if not template_entry:
+            return None
+        template = template_entry["template"]
+        return {
+            "behavior_tree": template["tree"],
+            "extract": template.get("extract"),
+            "expected_next": template.get("expected_next", []),
+            "master_type": template_entry["source"].get("master_screen_type", variant.split("_")[0]),
+            "validated": True,
+            "success_count": int(template_entry["source"].get("verified_count", 0) or 0),
+            "source": template_entry["source"],
+        }
     return {
         "behavior_tree": entry["behavior_tree"],
         "extract": entry.get("extract"),
@@ -104,6 +126,7 @@ def lookup_variant_bt(platform: str, variant: str) -> dict | None:
         "master_type": entry.get("master_type", variant.split("_")[0]),
         "validated": entry.get("validated", False),
         "success_count": entry.get("success_count", 0),
+        "source": entry.get("source"),
     }
 
 
@@ -113,7 +136,7 @@ def store_variant_bt(
     bt: dict,
     extract: dict = None,
     expected_next: list = None,
-    source: str = "gemini_pro",
+    source="gemini_pro",
 ):
     """Store or update a BT for a variant."""
     data = _load_variants(platform)
@@ -140,15 +163,22 @@ def store_variant_bt(
 
 def mark_variant_validated(platform: str, variant: str):
     """Increment success count and set validated=True."""
+    source = None
+    resolved = lookup_variant_bt(platform, variant)
+    if resolved:
+        source = resolved.get("source")
+
     data = _load_variants(platform)
     entry = data["variants"].get(variant)
-    if not entry:
-        return
-    entry["validated"] = True
-    entry["success_count"] = entry.get("success_count", 0) + 1
-    entry["last_success"] = datetime.now(timezone.utc).isoformat()
-    _atomic_write(_variant_path(platform), data)
-    logger.info(f"variant_cache: validated {variant} (count={entry['success_count']})")
+    if entry:
+        entry["validated"] = True
+        entry["success_count"] = entry.get("success_count", 0) + 1
+        entry["last_success"] = datetime.now(timezone.utc).isoformat()
+        _atomic_write(_variant_path(platform), data)
+        logger.info(f"variant_cache: validated {variant} (count={entry['success_count']})")
+
+    if isinstance(source, dict) and source.get("kind") == "operational_note":
+        increment_operational_note_verified_count(platform, source)
 
 
 def invalidate_variant_bt(platform: str, variant: str):
