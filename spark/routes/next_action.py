@@ -1322,17 +1322,28 @@ def _next_action_impl(request: NextActionRequest):
             "reason": "classification_needed",
         }
 
-    # Step 5B: Flash classification (screenshot only, ~$0.002)
-    from spark.tasks.flash_classify import classify_screen_flash
-    logger.info("  Step 5B: Flash classifying screen...")
-    classification = classify_screen_flash(
+    # Step 5B: Screen classification via Claude CLI (Opus 4.7).
+    # Per Jesse 2026-05-12: no Gemini in the codebase. The previous
+    # flash_classify.py path was using the Gemini API with an empty key, which
+    # silently fell back to UNKNOWN for every screen — that broke every
+    # downstream subtype-aware path (operational_notes loading, variant cache,
+    # learned observations). The replacement uses the existing
+    # classify_screen() Claude CLI path at spark.tasks.classify_screen:100.
+    from spark.tasks.classify_screen import classify_screen
+    logger.info("  Step 5B: Classifying screen via Claude CLI...")
+    classification = classify_screen(
+        tree=tree,
         screenshot_b64=request.screenshot_b64,
         platform=platform,
     )
-    variant = classification.get("variant", "UNKNOWN")
     screen_type = classification.get("screen_type", "UNKNOWN")
+    # classify_screen returns the variant under 'platform_variant'; downstream
+    # callers expect 'variant'. Fall back to master screen_type when no
+    # variant was extracted (Pro is allowed to return only the master type
+    # for genuinely ambiguous screens).
+    variant = classification.get("platform_variant") or screen_type
     logger.info(
-        f"  Step 5B: Flash result: type={screen_type} variant={variant} "
+        f"  Step 5B: Classified type={screen_type} variant={variant} "
         f"note={classification.get('confidence_note', '')}"
     )
 
