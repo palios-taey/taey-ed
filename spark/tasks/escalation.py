@@ -1,11 +1,11 @@
 """
 Escalation ladder for taey-ed consultation failures.
 
-Ladder (per Jesse 2026-05-18):
+Ladder (per Jesse 2026-05-19, corrected):
     Attempts 1-2  -> Tier 1: claude-primary edits knowledge.json operational_note
     Attempt  3    -> Tier 2: Perplexity DR via taeys-hands
-    Attempts 4-5  -> Tier 3: Full Family fan-out, 2 loops
-    Attempt  6+   -> Terminal: gave_up.flag + UNSOLVED.md entry
+    Attempt  4    -> Tier 3: Full Family fan-out (single loop)
+    Attempt  5+   -> Terminal: gave_up.flag + UNSOLVED.md entry
 
 Architecture: this module owns the packet builder + tier resolver. The actual
 trigger lives in consultation_request.py — when retry_count hits a tier
@@ -42,22 +42,27 @@ def tier_for_attempt(retry_count: int) -> str:
     retry_count is the number of completed diagnosis cycles, i.e. how many
     times claude-primary has been asked to edit knowledge.json for this
     (platform, screen_hash). 0 means this is the FIRST diagnosis request.
+
+    Ladder per Jesse 2026-05-19 (4 attempts total):
+      retry_count 0  -> tier1 (claude-primary, attempt 1)
+      retry_count 1  -> tier1 (claude-primary, attempt 2)
+      retry_count 2  -> tier2 (Perplexity DR, attempt 3)
+      retry_count 3  -> tier3 (full Family, attempt 4, single loop)
+      retry_count 4+ -> terminal (mark unsolvable)
     """
     if retry_count <= 1:
         return "tier1"
     if retry_count == 2:
         return "tier2"
-    if retry_count in (3, 4):
+    if retry_count == 3:
         return "tier3"
     return "terminal"
 
 
 def family_loop_for_tier3(retry_count: int) -> int:
-    """Return 1 or 2 for the Tier 3 loop number. Only valid when tier=tier3."""
+    """Return 1 (the only Family loop). Kept for signature stability."""
     if retry_count == 3:
         return 1
-    if retry_count == 4:
-        return 2
     raise ValueError(f"family_loop_for_tier3 called with retry_count={retry_count}")
 
 
@@ -246,11 +251,10 @@ def build_packet(
         except Exception as e:
             logger.warning(f"escalation: tree.json parse failed: {e}")
 
-    # Family loop annotation for Tier 3
+    # Family loop annotation for Tier 3 (single loop per Jesse 2026-05-19)
     family_loop_note = ""
     if tier == "tier3":
-        loop = family_loop_for_tier3(retry_count)
-        family_loop_note = f"\n- tier3_loop: {loop} of 2"
+        family_loop_note = "\n- tier3: single Family loop"
 
     if specific_ask is None:
         specific_ask = (
@@ -388,12 +392,12 @@ def notify_body_for_tier(
             "Touch diagnosis_done.flag after dispatch — DO NOT touch gave_up.flag.\n"
         )
     if tier == "tier3":
-        loop = family_loop_for_tier3(retry_count)
         return base + (
-            f"\n"
-            f"ACTION: Tier 3 Loop {loop} of 2 — fan out to all 5 Family platforms via taeys-hands.\n"
-            f"Remind taeys-hands to prepend FAMILY_KERNEL.md + per-platform IDENTITY_<codename>.md.\n"
-            f"Touch diagnosis_done.flag after dispatch — DO NOT touch gave_up.flag.\n"
+            "\n"
+            "ACTION: Tier 3 — fan out to all 5 Family platforms via taeys-hands.\n"
+            "Remind taeys-hands to prepend FAMILY_KERNEL.md + per-platform IDENTITY_<codename>.md.\n"
+            "Touch diagnosis_done.flag after dispatch — DO NOT touch gave_up.flag.\n"
+            "If this fails, the next escalation auto-triggers terminal.\n"
         )
     # terminal
     return base + (
