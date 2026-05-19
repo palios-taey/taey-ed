@@ -813,7 +813,7 @@ def build_bt_from_tree(
         or None if Gemini can't build a valid BT.
     """
     from spark.tasks.prompt_codex import (
-        analyze_tree, SCREEN_PATTERNS,
+        analyze_tree,
         get_handler_docs, get_question_type_docs,
         SECTION_5_HANDLERS_ORIGINAL, SECTION_6_QUESTION_TYPES_ORIGINAL,
         SECTION_7_STRATEGIES,
@@ -837,14 +837,15 @@ def build_bt_from_tree(
         f"has_guidance={'yes' if user_guidance else 'no'}"
     )
 
-    # Build screen-specific guidance from detected tree signals (UNCHANGED)
-    screen_guidance_parts = []
-    for tag in tags:
-        if tag in SCREEN_PATTERNS:
-            screen_guidance_parts.append(SCREEN_PATTERNS[tag])
-
-    screen_specific_guidance = "\n\n".join(screen_guidance_parts) if screen_guidance_parts else \
-        "No specific assessment signals detected in the tree. Use the screenshot and tree to determine the right approach."
+    # Screen-specific BT patterns now live in knowledge.json operational_notes
+    # (migrated 2026-05-19 from prompt_codex.SCREEN_PATTERNS). The matched
+    # subtype's bt_template_hint is injected below via
+    # get_operational_notes_for_screen. Tree-tag-driven hardcoded patterns
+    # have been deleted — knowledge.json is the single source of truth.
+    screen_specific_guidance = (
+        "Screen-specific guidance is injected via operational_notes below. "
+        "Look for the matched subtype's bt_template_hint."
+    )
 
     # Assemble the prompt
     prompt_parts = [

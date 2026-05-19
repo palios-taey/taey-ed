@@ -252,8 +252,18 @@ def _render_operational_notes(notes: list) -> list:
 
 
 def _match_subtype_for_variant(screen_type: str, master_type: str, subtypes: list) -> dict | None:
-    """Pick the subtype whose name matches the variant suffix.
-    EXERCISE_DROPDOWN -> "DROPDOWN" -> match subtype name "dropdown".
+    """Pick the subtype whose name (or alias) matches the variant suffix.
+
+    Examples:
+      EXERCISE_DROPDOWN              -> subtype name "dropdown"      (direct)
+      KA_EXERCISE_CHOICE_CHECKBOX    -> subtype "multiple_select" via alias "checkbox"
+      EXERCISE_RADIO_WRONG_ANSWER    -> subtype "multiple_choice" via alias "radio"
+
+    Subtypes may declare `aliases: [str, ...]` in knowledge.json — each alias is
+    checked alongside the canonical `name`. Aliases let the canonical subtype
+    name stay descriptive (multiple_choice) while still matching whatever the
+    classifier returns (RADIO, CHOICE_RADIO, etc.).
+
     Returns None when no clean match found (caller decides whether to fall back).
     """
     if screen_type == master_type:
@@ -264,10 +274,21 @@ def _match_subtype_for_variant(screen_type: str, master_type: str, subtypes: lis
     suffix_norm = re.sub(r"[^a-z0-9]+", "", suffix.lower()) if suffix else ""
     if not suffix_norm:
         return None
+
+    def _check(candidate: str) -> bool:
+        c_norm = re.sub(r"[^a-z0-9]+", "", candidate.lower())
+        return bool(c_norm) and (
+            c_norm == suffix_norm
+            or suffix_norm in c_norm
+            or c_norm in suffix_norm
+        )
+
     for s in subtypes:
-        n_norm = re.sub(r"[^a-z0-9]+", "", str(s.get("name", "")).lower())
-        if n_norm and (n_norm == suffix_norm or suffix_norm in n_norm or n_norm in suffix_norm):
+        if _check(str(s.get("name", ""))):
             return s
+        for alias in s.get("aliases", []) or []:
+            if _check(str(alias)):
+                return s
     return None
 
 
@@ -277,8 +298,8 @@ def _resolve_master_via_subtypes(screen_types_map: dict, screen_type: str) -> st
     When get_master_category can't derive the master from the variant string
     (e.g. "KA_COURSE_OVERVIEW" doesn't carry "NAVIGATION_" prefix), scan all
     masters' subtypes in this platform's knowledge.json. If any subtype name
-    matches the variant via substring (same logic as _match_subtype_for_variant),
-    return that subtype's owning master. Returns None on no match.
+    or alias matches the variant via substring, return that subtype's owning
+    master. Returns None on no match.
 
     Per Jesse 2026-05-19: classifier returns platform-specific variants like
     "KA_COURSE_OVERVIEW" that resolve to NAVIGATION via the course_overview
@@ -290,13 +311,24 @@ def _resolve_master_via_subtypes(screen_types_map: dict, screen_type: str) -> st
     suffix_norm = re.sub(r"[^a-z0-9]+", "", screen_type.lower())
     if not suffix_norm:
         return None
+
+    def _check(candidate: str) -> bool:
+        c_norm = re.sub(r"[^a-z0-9]+", "", candidate.lower())
+        return bool(c_norm) and (
+            c_norm == suffix_norm
+            or suffix_norm in c_norm
+            or c_norm in suffix_norm
+        )
+
     for master_name, master_info in screen_types_map.items():
         if not isinstance(master_info, dict):
             continue
         for s in master_info.get("subtypes", []) or []:
-            n_norm = re.sub(r"[^a-z0-9]+", "", str(s.get("name", "")).lower())
-            if n_norm and (n_norm == suffix_norm or suffix_norm in n_norm or n_norm in suffix_norm):
+            if _check(str(s.get("name", ""))):
                 return master_name
+            for alias in s.get("aliases", []) or []:
+                if _check(str(alias)):
+                    return master_name
     return None
 
 
