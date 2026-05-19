@@ -1041,6 +1041,36 @@ def _next_action_impl(request: NextActionRequest):
                 skeleton_hash=lr.directive_skeleton_hash or "",
             )
 
+            # Pending-validation notify (Jesse 2026-05-19): if the
+            # just-executed directive came from an unvalidated screen map
+            # (variant_cache or signature), ping claude-primary with the
+            # outcome so the entry can be mark_validated / delete_screen'd.
+            try:
+                from spark.tasks.validation_tracker import (
+                    check_pending, notify_claude_for_validation,
+                    clear_pending, _summarize_tree,
+                )
+                pending = check_pending(platform, lr.directive_skeleton_hash or "")
+                if pending:
+                    notify_claude_for_validation(
+                        record=pending,
+                        last_result={
+                            "success": lr.success,
+                            "screen": lr.screen,
+                            "tree_hash_before": lr.tree_hash_before,
+                            "tree_hash_after": lr.tree_hash_after,
+                            "bt_debug_tail": lr.bt_debug_tail or "",
+                        },
+                        after_tree_summary=_summarize_tree(tree),
+                    )
+                    # Clear so we don't re-notify on the next poll. claude-
+                    # primary's response (mark_validated or delete) is the
+                    # canonical resolution; the pending file is only the
+                    # one-shot notification trigger.
+                    clear_pending(platform, lr.directive_skeleton_hash or "")
+            except Exception:
+                logger.exception("Step 2 validation notify failed (non-fatal)")
+
         elif vr["wrong_answer"]:
             # ONE TRY ONLY: Wrong answer means the action was wrong. STOP.
             logger.error(
@@ -1352,6 +1382,26 @@ def _next_action_impl(request: NextActionRequest):
         variant = hash_result["variant"]
         logger.info(f"  Step 4: Hash hit → variant={variant}")
 
+        # Per Jesse 2026-05-19: every screen-map use of an UNVALIDATED entry
+        # must notify claude-primary for validation after Mac executes the BT.
+        # Record pending now; Step 2 on next /next_action picks it up.
+        if not hash_result.get("validated", False):
+            try:
+                from spark.tasks.validation_tracker import record_pending
+                record_pending(
+                    platform=platform,
+                    skel_hash=skel_hash,
+                    variant=variant,
+                    source="variant_cache",
+                    tree=tree,
+                )
+                logger.info(
+                    f"  Step 4: recorded pending validation for unvalidated "
+                    f"variant_cache entry {skel_hash[:12]} → {variant}"
+                )
+            except Exception:
+                logger.exception("Step 4 record_pending failed (non-fatal)")
+
         # For deterministic variants, try to reuse stored BT
         if not is_non_deterministic(platform, variant):
             bt_entry = lookup_variant_bt(platform, variant)
@@ -1421,6 +1471,27 @@ def _next_action_impl(request: NextActionRequest):
         # Populate the fast-path skeleton_hash cache so future encounters with
         # the same structural hash hit Step 4 directly (no Jaccard pass).
         register_hash(platform, skel_hash, variant)
+
+        # Pending-validation notify hook (Jesse 2026-05-19): if the matched
+        # signature is unvalidated, record so Step 2 pings claude-primary
+        # after Mac's BT execution.
+        if not sig_result.get("validated", False):
+            try:
+                from spark.tasks.validation_tracker import record_pending
+                record_pending(
+                    platform=platform,
+                    skel_hash=skel_hash,
+                    variant=variant,
+                    source="signature",
+                    tree=tree,
+                    sig_hash=sig_hash,
+                )
+                logger.info(
+                    f"  Step 4.5: recorded pending validation for unvalidated "
+                    f"signature {sig_hash[:12]} → {variant}"
+                )
+            except Exception:
+                logger.exception("Step 4.5 record_pending failed (non-fatal)")
 
         if sig_result.get("tree"):
             stored_bt = sig_result["tree"]
