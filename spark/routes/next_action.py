@@ -1373,14 +1373,24 @@ def _next_action_impl(request: NextActionRequest):
 
         # Non-deterministic variant (EXERCISE) or no stored BT — need Pro
         logger.info(f"  Step 4B: Hash known as {variant} but needs fresh BT")
-        screen_type = variant.split("_")[0] if "_" in variant else variant
+        validated = hash_result.get("validated", False)
+        if not validated:
+            logger.warning(
+                f"  Step 4B: variant_cache entry for hash={skel_hash[:12]} is UNVALIDATED "
+                f"(variant={variant}). claude-primary should mark_validated or "
+                f"delete after observed-success on this screen."
+            )
         if not request.screenshot_b64:
             return {
                 "directive": "need_screenshot",
                 "directive_id": _make_directive_id(),
                 "reason": f"bt_build_for_{variant}",
             }
-        return _build_screen_directive(request, platform, tree, screen_type, skel_hash,
+        # Pass the FULL variant string (e.g. "NAVIGATION_COURSE_OVERVIEW")
+        # downstream, not just the master prefix. Was: variant.split("_")[0]
+        # which dropped the subtype info needed by knowledge.json's subtype
+        # matcher / operational_notes loader. Bug fix 2026-05-19.
+        return _build_screen_directive(request, platform, tree, variant, skel_hash,
                                        course_id=cs.course_id)
 
     # ── Step 4.5: Signature-based fuzzy match (V19/V20 era — resurrected 2026-05-19) ──
