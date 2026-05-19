@@ -271,6 +271,35 @@ def _match_subtype_for_variant(screen_type: str, master_type: str, subtypes: lis
     return None
 
 
+def _resolve_master_via_subtypes(screen_types_map: dict, screen_type: str) -> str | None:
+    """Data-driven master resolution for platform-prefixed variants.
+
+    When get_master_category can't derive the master from the variant string
+    (e.g. "KA_COURSE_OVERVIEW" doesn't carry "NAVIGATION_" prefix), scan all
+    masters' subtypes in this platform's knowledge.json. If any subtype name
+    matches the variant via substring (same logic as _match_subtype_for_variant),
+    return that subtype's owning master. Returns None on no match.
+
+    Per Jesse 2026-05-19: classifier returns platform-specific variants like
+    "KA_COURSE_OVERVIEW" that resolve to NAVIGATION via the course_overview
+    subtype defined under NAVIGATION.subtypes. The relationship lives in
+    knowledge.json, not in a hardcoded mapping table.
+    """
+    if not screen_type:
+        return None
+    suffix_norm = re.sub(r"[^a-z0-9]+", "", screen_type.lower())
+    if not suffix_norm:
+        return None
+    for master_name, master_info in screen_types_map.items():
+        if not isinstance(master_info, dict):
+            continue
+        for s in master_info.get("subtypes", []) or []:
+            n_norm = re.sub(r"[^a-z0-9]+", "", str(s.get("name", "")).lower())
+            if n_norm and (n_norm == suffix_norm or suffix_norm in n_norm or n_norm in suffix_norm):
+                return master_name
+    return None
+
+
 def get_operational_notes_for_screen(knowledge: dict, screen_type: str) -> str:
     """Return markdown-formatted operational notes following Jesse's 3-tier tree:
 
@@ -280,13 +309,25 @@ def get_operational_notes_for_screen(knowledge: dict, screen_type: str) -> str:
 
     Sibling subtypes are NOT included. Push rules to the lowest applicable level
     to avoid noise. Returns empty string if nothing relevant exists.
+
+    Master resolution: first tries get_master_category (handles MASTER_VARIANT
+    and KA_ prefix-strip), then falls back to data-driven subtype lookup in
+    this platform's knowledge.json for variants like "KA_COURSE_OVERVIEW" that
+    don't carry the master in their name.
     """
     screen_types_map = knowledge.get("screen_types", {})
 
-    # Resolve master category (EXERCISE_DROPDOWN -> EXERCISE)
+    # Resolve master category. Try the string-pattern route first, then fall
+    # back to data-driven lookup against subtypes defined in knowledge.json.
     try:
-        master = get_master_category(screen_type) or screen_type
+        master = get_master_category(screen_type) or "UNKNOWN"
     except Exception:
+        master = "UNKNOWN"
+    if master == "UNKNOWN":
+        resolved = _resolve_master_via_subtypes(screen_types_map, screen_type)
+        if resolved:
+            master = resolved
+    if master == "UNKNOWN":
         master = screen_type
 
     sections = []
