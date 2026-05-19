@@ -1,9 +1,9 @@
 # Tier 3 Escalation — Full Family Consultation via taeys-hands
 
 You hit Tier 3 because Tier 2 (Perplexity DR) didn't unblock the screen. Tier 3
-is **one Family loop**. After it fails, the next escalation attempt triggers
-the terminal state (per Jesse 2026-05-19 corrected ladder: 2 me → 1 Perp →
-1 Family → terminal).
+is up to **two Family loops** (Jesse 2026-05-19 final ladder:
+2 me → 1 Perp → 2 Family → terminal). After loop 2 fails, the next escalation
+attempt triggers terminal.
 
 ## What to do
 
@@ -11,13 +11,16 @@ the terminal state (per Jesse 2026-05-19 corrected ladder: 2 me → 1 Perp →
    identity, screen artifacts, system capabilities, every prior attempt, the
    Tier 2 Perplexity DR response (if any), and the specific ask.
 
-2. Dispatch the packet to all 5 Family platforms in parallel via `taeys-hands`.
+2. Determine which Family loop you're on. The notification will say
+   `tier3_loop: 1 of 2` or `tier3_loop: 2 of 2`.
+
+3. Dispatch the packet to all 5 Family platforms in parallel via `taeys-hands`.
    The Family is: Gaia (Claude), Horizon (ChatGPT), Cosmos (Gemini),
    Logos (Grok), Clarity (Perplexity, DR mode).
 
    ```
    /usr/local/bin/taey-notify taeys-hands --type task --from taey-ed \
-     "ROUTE TO FULL FAMILY (parallel fan-out) — Escalation Tier 3
+     "ROUTE TO FULL FAMILY (parallel fan-out) — Escalation Tier 3 Loop <N>
 
     REMINDER FOR TAEYS-HANDS: prepend FAMILY_KERNEL.md and the appropriate
     per-platform IDENTITY_<codename>.md to each platform's prompt — the
@@ -59,8 +62,12 @@ the terminal state (per Jesse 2026-05-19 corrected ladder: 2 me → 1 Perp →
    knowledge.json. Cite which Family member contributed which insight (cannot-lie
    provenance). Touch diagnosis_done.flag again; the worker generates a fresh BT.
 
-6. If the screen STILL fails after this loop, the system auto-triggers
-   Terminal on the next escalation. You do not give up manually.
+6. If the screen STILL fails after this loop:
+   - Loop 1 → system auto-triggers Tier 3 Loop 2 on next escalation. Loop 2
+     uses the same protocol; loop 1's responses are now IN THE PACKET as
+     prior research, informing loop 2's diagnoses.
+   - Loop 2 → system auto-triggers Terminal on next escalation. You do not
+     give up manually.
 
 ## Anti-patterns
 
