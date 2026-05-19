@@ -870,16 +870,53 @@ def register_all_handlers(ctx: ExecutionContext):
                 return str(val)
             return ""
 
+        def _menu_item_alive():
+            """Probe the menu_item AX element. Returns False when the menu
+            has closed (element invalidated, role attribute unreadable).
+
+            Used as the primary verify signal: when a strategy clicks the
+            menu_item and the menu CLOSES in response, the element ref
+            becomes invalid. That close is the canonical commit signal —
+            independent of whether the trigger's AXValue reflects the
+            selected option text.
+            """
+            try:
+                err, _ = AXUIElementCopyAttributeValue(
+                    menu_item, kAXRoleAttribute, None,
+                )
+                return err == kAXErrorSuccess
+            except Exception:
+                return False
+
         def verify_selected():
-            # Verify the trigger's AXValue exactly matches the chosen option
-            # after a strategy attempt. Substring matching false-positives on
-            # combobox placeholders that contain the option text — e.g.
-            # placeholder '+/-' substring-contains wanted '+' even though
-            # nothing was actually selected. Exact match against AXValue is
-            # the correct check: before commit value is the placeholder
-            # (different from wanted); after commit value is the chosen
-            # option text (equal to wanted after norm).
+            # PRIMARY signal: did the menu close? Khan's Wonder Blocks
+            # SingleSelect (used by EXERCISE_DROPDOWN_MATCHING and other
+            # match-row widgets) puts the row PROMPT text in AXComboBox.value,
+            # never the selected option. AXValue-comparison will FAIL even
+            # when selection commits successfully (taey-ed defect
+            # 2026-05-19 23:36 — option='less' chosen, menu closed, but
+            # value='the ball moved down and to the right...' so all 5
+            # strategies "failed" verification while the form was actually
+            # in the correct state). Menu-closed is the platform-agnostic
+            # commit signal — it works on both traditional AXPopUpButton
+            # widgets and React-based combobox+listbox patterns.
             time.sleep(verify_wait)
+            if not _menu_item_alive():
+                btlog(
+                    "select_dropdown_option: verify menu_closed=True "
+                    f"(commit signal; wanted={wanted!r})"
+                )
+                return True
+
+            # SECONDARY signal: trigger's AXValue matches the wanted option.
+            # Useful for traditional widgets where the value field reflects
+            # the selected option after commit. Substring rather than equality
+            # to handle placeholders, but with the false-positive risk on
+            # comboboxes whose placeholder substring-contains the option
+            # (e.g. placeholder '+/-' contains '+'). Two-pass exact-first
+            # match-finding upstream mitigates that for the menu_item picker;
+            # here we just accept any of the three text attrs containing
+            # `wanted`.
             value = norm(attr(trigger, kAXValueAttribute))
             title = norm(attr(trigger, kAXTitleAttribute))
             desc = norm(attr(trigger, kAXDescriptionAttribute))
