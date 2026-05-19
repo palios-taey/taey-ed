@@ -1361,6 +1361,67 @@ def _next_action_impl(request: NextActionRequest):
         return _build_screen_directive(request, platform, tree, screen_type, skel_hash,
                                        course_id=cs.course_id)
 
+    # ── Step 4.5: Signature-based fuzzy match (V19/V20 era — resurrected 2026-05-19) ──
+    # When Step 4's exact skeleton_hash misses, try signature matching BEFORE
+    # invoking the LLM classifier in Step 5. Signatures are stored per-platform
+    # in /home/user/taey-ed-data/signatures/{platform}.json. Cold-start (< 2
+    # signatures) falls back to exact-hash within the signature matcher. Once
+    # 2+ signatures are learned, Jaccard similarity on discriminative markers
+    # (signature - platform_common_chrome) at threshold 0.70 catches screens
+    # with the same structural identity but mutated tree (different question
+    # text, different timer values, different option strings).
+    #
+    # Empty signatures dir = always matched:False = pure passthrough, current
+    # Step 5 behavior unchanged. Behavior becomes deterministic + zero-LLM-cost
+    # only once learn_screen has populated entries (next commit seeds known
+    # Khan screen types).
+    from spark.tasks.screen_signatures import match_signature
+    sig_result = match_signature(platform, tree)
+    if sig_result.get("matched"):
+        variant = sig_result["screen_type"]
+        score = sig_result["match_score"]
+        sig_hash = sig_result["sig_hash"]
+        logger.info(
+            f"  Step 4.5: SIGNATURE MATCH → variant={variant} "
+            f"score={score:.2f} sig_hash={sig_hash} "
+            f"validated={sig_result.get('validated', False)}"
+        )
+        # Populate the fast-path skeleton_hash cache so future encounters with
+        # the same structural hash hit Step 4 directly (no Jaccard pass).
+        register_hash(platform, skel_hash, variant)
+
+        if sig_result.get("tree"):
+            stored_bt = sig_result["tree"]
+            bt_json = json.dumps(stored_bt, indent=2)
+            logger.info(f"  Step 4.5: REUSING signature-matched BT for {variant}")
+            logger.info(f"  Stored BT:\n{bt_json}")
+            return _with_chat({
+                "directive": "execute_tree",
+                "directive_id": _make_directive_id(),
+                "tree": stored_bt,
+                "screen": variant,
+                "skeleton_hash": skel_hash,
+                "sig_hash": sig_hash,
+                "extract": sig_result.get("extract"),
+                "course_id": cs.course_id,
+            }, platform, [build_status(f"Executing {variant} (signature match)")])
+
+        # Signature matched but no stored BT — route to BT-build with the
+        # known screen_type. Avoids the LLM classifier call in Step 5.
+        logger.info(f"  Step 4.5: Signature matched as {variant} but no stored BT — building fresh")
+        if not request.screenshot_b64:
+            return {
+                "directive": "need_screenshot",
+                "directive_id": _make_directive_id(),
+                "reason": f"bt_build_for_{variant}_via_signature",
+            }
+        return _build_screen_directive(
+            request, platform, tree, variant, skel_hash,
+            course_id=cs.course_id,
+        )
+    else:
+        logger.info(f"  Step 4.5: no signature match — falling through to Step 5")
+
     # ── Step 5: No hash match — knowledge gate, then Flash classify ──
     logger.info(f"  Step 5: No hash match — checking knowledge gate")
 
@@ -1414,48 +1475,48 @@ def _next_action_impl(request: NextActionRequest):
         gate_flag.unlink()
         logger.info(f"  Step 5: Knowledge gate cleared for {platform}")
 
-    # Claude-primary platforms: classify the screen first, then route to
-    # consultation with the variant. Previously this hardcoded
-    # screen_type="UNKNOWN", which caused the worker's prompt builder to load
-    # ZERO operational_notes from knowledge.json (no master, no subtype match).
-    # That's why every Khan BT was generated without screen-specific guidance —
-    # the loader was being called with UNKNOWN. Classification needs to happen
-    # BEFORE the consultation is created so the variant flows into
-    # metadata.screen_type_hint and downstream into compile_prompt.
+    # Claude-primary platforms with no signature match: escalate to
+    # claude-primary (me) to DEFINE this screen — write the signature entry
+    # via learn_screen() so the next encounter is deterministic.
+    #
+    # Per Jesse 2026-05-19: UNKNOWN should go to claude-primary, not LLM
+    # classifier. The discovery loop:
+    #   1. New screen pattern → no Step 4 hash, no Step 4.5 signature
+    #   2. Escalation packet routes to me with raw tree + screenshot
+    #   3. I read it, decide screen_type from existing knowledge.json
+    #      subtypes (or add a new subtype if novel), call learn_screen()
+    #      with the platform's canonical bt_template for that subtype
+    #      (or None for non-deterministic variants — Step 4.5 falls to
+    #      build path with the known variant)
+    #   4. Mac retries → Step 4.5 hits signature → executes deterministically
+    # The system is "properly mapped once" per Jesse's AI-Native vision —
+    # zero recurring LLM classification cost per known platform.
     if platform in CLAUDE_PRIMARY_PLATFORMS:
         if not request.screenshot_b64:
-            logger.info("  Step 5: Claude-primary needs screenshot for classification")
+            logger.info("  Step 5: Claude-primary needs screenshot for escalation")
             return {
                 "directive": "need_screenshot",
                 "directive_id": _make_directive_id(),
-                "reason": "classification_needed",
+                "reason": "claude_define_screen",
             }
-        from spark.tasks.classify_screen import classify_screen as _classify_for_routing
-        logger.info("  Step 5: Classifying for Claude-primary routing...")
-        _classification = _classify_for_routing(
-            tree=tree,
-            screenshot_b64=request.screenshot_b64,
-            platform=platform,
-        )
-        _master = _classification.get("screen_type", "UNKNOWN")
-        _variant = _classification.get("platform_variant") or _master
         logger.info(
-            f"  Step 5: Claude-primary classified as type={_master} variant={_variant}"
+            "  Step 5: Claude-primary no-signature-match → "
+            "escalating to claude-primary to define this screen"
         )
-
-        # Register the hash → variant mapping for future Step 4 lookups
-        if _variant != "UNKNOWN":
-            register_hash(platform, skel_hash, _variant)
-
-        _claude_directive = _maybe_claude_consult(
-            request, platform, tree, screen_type=_variant,
+        return _escalate_to_claude_diagnosing(
+            platform=platform,
+            tree=tree,
+            consultation_id="",
+            reason=(
+                "no_signature_match — UNKNOWN screen needs definition. "
+                "Read consult tree + screenshot, determine screen_type, "
+                "call learn_screen(platform, tree, screen_type, "
+                "behavior_tree=<canonical pattern or None>) to persist."
+            ),
+            screen_type_hint="UNKNOWN_NEEDS_DEFINITION",
+            bt_debug_tail="",
+            failed_bt=None,
         )
-        if _claude_directive:
-            logger.info(
-                f"  Step 5: Claude-primary platform — routing to consultation "
-                f"(variant={_variant})"
-            )
-            return _claude_directive
 
     # Step 5A: Need screenshot for Flash classification
     if not request.screenshot_b64:
