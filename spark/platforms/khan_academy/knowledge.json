@@ -213,25 +213,110 @@
           "name": "multiple_choice",
           "description": "Radio button selection from 4-5 answer choices. Most common exercise type (~74% of exercises produce number or MC response). Each choice is a clickable radio button with text/math label.",
           "tree_signal": "HAS_RADIO",
-          "interaction_pattern": "click radio button for desired answer -> click 'Check'"
+          "interaction_pattern": "click radio button for desired answer -> click 'Check'",
+          "aliases": [
+            "radio",
+            "choice_radio",
+            "multiple_choice"
+          ],
+          "operational_notes": [
+            {
+              "discovered_at": "2026-05-19T01:10:00Z",
+              "by": "claude-primary",
+              "screen_variant": "EXERCISE_RADIO / EXERCISE_CHOICE_RADIO / multiple_choice",
+              "rule": "CANONICAL RADIO BT \u2014 extract_question \u2192 send_to_llm solve_choice \u2192 find_and_click radio (focus_space) \u2192 Check",
+              "note": "Multiple-choice exercise (AXRadioButton). extract_question scopes to AXWebArea, uses params to find question text and radio options. send_to_llm with solve_choice maps options to A/B/C, asks LLM, maps back to exact option text. find_and_click uses strategy=focus_space (required for browser radio buttons \u2014 mouse_click does not reliably toggle radio state). Submit with Check, store Q&A pair. WRONG ANSWER DETECTION: if Mac reports same skeleton hash after BT execution, same question was re-presented = wrong answer. Reconsult with failure_reason=wrong_answer_same_question.",
+              "bt_template_hint": "```json\n{\n  \"type\": \"sequence\",\n  \"children\": [\n    {\"action\": \"extract_question\", \"params\": {\"question\": {\"role\": \"AXStaticText\", \"parent_contains\": \"LOOK_AT_TREE\"}, \"options\": {\"role\": \"AXRadioButton\"}}, \"store\": \"q\"},\n    {\"action\": \"send_to_llm\", \"params\": {\"question\": \"$q.question_text\", \"question_type\": \"solve_choice\", \"options\": \"$q.options\", \"context\": \"$q.reference_texts\"}, \"store\": \"llm\"},\n    {\"action\": \"find_and_click\", \"params\": {\"target\": \"$llm.answer\", \"role\": \"AXRadioButton\", \"strategy\": \"focus_space\", \"match_mode\": \"exact\"}},\n    {\"action\": \"find_and_click\", \"params\": {\"target\": \"Check\", \"role\": \"AXButton\", \"strategy\": \"mouse_click\", \"post_delay\": 2.0, \"match_mode\": \"exact\"}},\n    {\"action\": \"store_qa\", \"params\": {\"question\": \"$q.question_text\", \"answer\": \"$llm.answer\", \"question_type\": \"solve_choice\"}}\n  ]\n}\n```",
+              "variants": [
+                "Radio + text combo (AXTextArea also present): use question_type=solve_choice with has_text_field=True; LLM returns {answer, text_response}; add find_and_type for text field AFTER radio click.",
+                "Question has images/diagrams visible in screenshot: use question_type=solve_complex instead (multimodal vision)."
+              ],
+              "anti_patterns": [
+                "mouse_click strategy on radio \u2014 Chrome ignores; radios stay unselected",
+                "match_mode=contains \u2014 Jesse banned; exact only"
+              ],
+              "verified_count": 0
+            }
+          ]
         },
         {
           "name": "multiple_select",
           "description": "Checkbox selection where multiple answers may be correct. Instructions say 'Select all that apply' or 'Choose all answers that apply'.",
           "tree_signal": "HAS_CHECKBOX",
-          "interaction_pattern": "click one or more checkboxes -> click 'Check'"
+          "interaction_pattern": "click one or more checkboxes -> click 'Check'",
+          "aliases": [
+            "checkbox",
+            "choice_checkbox",
+            "multi_select",
+            "multiple_select"
+          ],
+          "operational_notes": [
+            {
+              "discovered_at": "2026-05-19T01:10:00Z",
+              "by": "claude-primary",
+              "screen_variant": "EXERCISE_CHECKBOX / EXERCISE_CHOICE_CHECKBOX / multiple_select",
+              "rule": "CANONICAL CHECKBOX BT \u2014 extract_question \u2192 send_to_llm solve_checkbox \u2192 for_each over $llm.selected, click each (focus_space) \u2192 Check",
+              "note": "Multi-select exercise (AXCheckBox). send_to_llm with solve_checkbox returns {selected: [\"text1\", \"text2\"]} \u2014 comma-separated letter parse server-side. for_each iterates $llm.selected, clicking each checkbox via focus_space. CRITICAL: for_each params (items, variable, do) go at TOP LEVEL of the node, NOT in params:. Submit with Check.",
+              "bt_template_hint": "```json\n{\n  \"type\": \"sequence\",\n  \"children\": [\n    {\"action\": \"extract_question\", \"params\": {\"question\": {\"role\": \"AXStaticText\", \"parent_contains\": \"LOOK_AT_TREE\"}, \"options\": {\"role\": \"AXCheckBox\"}}, \"store\": \"q\"},\n    {\"action\": \"send_to_llm\", \"params\": {\"question\": \"$q.question_text\", \"question_type\": \"solve_checkbox\", \"options\": \"$q.options\", \"context\": \"$q.reference_texts\"}, \"store\": \"llm\"},\n    {\"action\": \"for_each\", \"items\": \"$llm.selected\", \"variable\": \"sel\", \"do\": {\"action\": \"find_and_click\", \"params\": {\"target\": \"$sel\", \"role\": \"AXCheckBox\", \"strategy\": \"focus_space\", \"match_mode\": \"exact\"}}},\n    {\"action\": \"find_and_click\", \"params\": {\"target\": \"Check\", \"role\": \"AXButton\", \"strategy\": \"mouse_click\", \"post_delay\": 2.0}},\n    {\"action\": \"store_qa\", \"params\": {\"question\": \"$q.question_text\", \"answer\": \"$llm.selected\", \"question_type\": \"solve_checkbox\"}}\n  ]\n}\n```",
+              "anti_patterns": [
+                "for_each params under params: \u2014 silently reads None, no clicks fire",
+                "mouse_click on checkbox \u2014 same issue as radio, focus_space required",
+                "30-char truncation in fallback parse \u2014 use full option text not truncated"
+              ],
+              "verified_count": 0
+            }
+          ]
         },
         {
           "name": "numeric_input",
           "description": "Text field expecting a numeric answer. May have math keypad overlay. Field accepts typed numbers. Perseus widgets: input-number, numeric-input.",
           "tree_signal": "HAS_TEXT_FIELD",
-          "interaction_pattern": "click text field -> type numeric answer -> click 'Check'"
+          "interaction_pattern": "click text field -> type numeric answer -> click 'Check'",
+          "aliases": [
+            "numeric",
+            "text_input",
+            "numeric_input"
+          ],
+          "operational_notes": [
+            {
+              "discovered_at": "2026-05-19T01:10:00Z",
+              "by": "claude-primary",
+              "screen_variant": "EXERCISE_TEXT_INPUT / numeric_input / expression_input / free_response (single-field)",
+              "rule": "CANONICAL TEXT-INPUT BT \u2014 extract_question \u2192 send_to_llm solve (text answer) \u2192 find_and_type \u2192 Check",
+              "note": "Text input exercise (AXTextArea / AXTextField). send_to_llm with solve generates a text answer. find_and_type with empty target matches first field; specify target by field label if multiple fields exist (use table_input subtype for those).",
+              "bt_template_hint": "```json\n{\n  \"type\": \"sequence\",\n  \"children\": [\n    {\"action\": \"extract_question\", \"params\": {\"question\": {\"role\": \"AXStaticText\", \"parent_contains\": \"LOOK_AT_TREE\", \"min_length\": 20}, \"text\": [{\"role\": \"AXStaticText\", \"parent_contains\": \"LOOK_AT_TREE\", \"min_length\": 10}]}, \"store\": \"q\"},\n    {\"action\": \"send_to_llm\", \"params\": {\"question\": \"$q.question_text\", \"question_type\": \"solve\", \"context\": \"$q.reference_texts\"}, \"store\": \"llm\"},\n    {\"action\": \"find_and_type\", \"params\": {\"target\": \"\", \"text\": \"$llm.answer\", \"role\": \"AXTextArea\"}},\n    {\"action\": \"find_and_click\", \"params\": {\"target\": \"Check\", \"role\": \"AXButton\", \"strategy\": \"mouse_click\", \"post_delay\": 2.0}},\n    {\"action\": \"store_qa\", \"params\": {\"question\": \"$q.question_text\", \"answer\": \"$llm.answer\", \"question_type\": \"solve\"}}\n  ]\n}\n```",
+              "variants": [
+                "Radio + text combo: defer to multiple_choice subtype with has_text_field=True; add find_and_type AFTER radio click.",
+                "Multiple text fields with distinguishable labels: use table_input subtype."
+              ],
+              "verified_count": 0
+            }
+          ]
         },
         {
           "name": "expression_input",
           "description": "Math expression field accepting algebraic expressions, fractions, exponents. Uses specialized math input with LaTeX rendering. Requires precise formatting (parentheses matter, PEMDAS enforced). Perseus widget: expression.",
           "tree_signal": "HAS_TEXT_FIELD",
-          "interaction_pattern": "click expression field -> type math expression (use parentheses carefully) -> click 'Check'"
+          "interaction_pattern": "click expression field -> type math expression (use parentheses carefully) -> click 'Check'",
+          "aliases": [
+            "expression",
+            "expression_input"
+          ],
+          "operational_notes": [
+            {
+              "discovered_at": "2026-05-19T01:10:00Z",
+              "by": "claude-primary",
+              "screen_variant": "EXERCISE_TEXT_INPUT / numeric_input / expression_input / free_response (single-field)",
+              "rule": "CANONICAL TEXT-INPUT BT \u2014 extract_question \u2192 send_to_llm solve (text answer) \u2192 find_and_type \u2192 Check",
+              "note": "Text input exercise (AXTextArea / AXTextField). send_to_llm with solve generates a text answer. find_and_type with empty target matches first field; specify target by field label if multiple fields exist (use table_input subtype for those).",
+              "bt_template_hint": "```json\n{\n  \"type\": \"sequence\",\n  \"children\": [\n    {\"action\": \"extract_question\", \"params\": {\"question\": {\"role\": \"AXStaticText\", \"parent_contains\": \"LOOK_AT_TREE\", \"min_length\": 20}, \"text\": [{\"role\": \"AXStaticText\", \"parent_contains\": \"LOOK_AT_TREE\", \"min_length\": 10}]}, \"store\": \"q\"},\n    {\"action\": \"send_to_llm\", \"params\": {\"question\": \"$q.question_text\", \"question_type\": \"solve\", \"context\": \"$q.reference_texts\"}, \"store\": \"llm\"},\n    {\"action\": \"find_and_type\", \"params\": {\"target\": \"\", \"text\": \"$llm.answer\", \"role\": \"AXTextArea\"}},\n    {\"action\": \"find_and_click\", \"params\": {\"target\": \"Check\", \"role\": \"AXButton\", \"strategy\": \"mouse_click\", \"post_delay\": 2.0}},\n    {\"action\": \"store_qa\", \"params\": {\"question\": \"$q.question_text\", \"answer\": \"$llm.answer\", \"question_type\": \"solve\"}}\n  ]\n}\n```",
+              "variants": [
+                "Radio + text combo: defer to multiple_choice subtype with has_text_field=True; add find_and_type AFTER radio click.",
+                "Multiple text fields with distinguishable labels: use table_input subtype."
+              ],
+              "verified_count": 0
+            }
+          ]
         },
         {
           "name": "dropdown",
@@ -422,7 +507,28 @@
                 "17:25_fix": "Server-side workaround in _solve_matching_with_gemini: strip dangling ' not' suffix from options before passing to LLM (undoes Mac's overzealous strip). Real fix would be Mac-side: _extract_menu_items should strip ' not selected' (13 chars) before falling back to ' selected' (9 chars). Mac is frozen, so server workaround is the pragmatic path."
               },
               "last_verified_at": "2026-05-18T20:50:49Z"
+            },
+            {
+              "discovered_at": "2026-05-19T01:10:00Z",
+              "by": "claude-primary",
+              "screen_variant": "EXERCISE_DROPDOWN / EXERCISE_COMBOBOX / dropdown (any combobox/popup widget)",
+              "rule": "CANONICAL DROPDOWN BT \u2014 find_all comboboxes \u2192 for_each ENUMERATE OPTIONS first (click + discover_menu + escape) \u2192 send_to_llm solve_matching \u2192 unrolled lookup_match + select_dropdown_option per popup \u2192 Check",
+              "note": "AXComboBox / AXPopUpButton widgets (Khan matching, Wonder Blocks SingleSelect). Options are NOT in the AX tree until popup opens, so enumerate first. DO NOT compose raw clicks + arrow keys \u2014 Wonder Blocks portals options outside the wrapper via ReactDOM.createPortal and the keyboard handler stays on the wrapper. Synthetic clicks on AXMenuItem and synthetic Down/Enter do NOT propagate to React state. Use select_dropdown_option which activates Chrome, opens the trigger, walks the FULL app tree (not scoped to AXWebArea), normalizes \"not selected\"/\"selected\" suffixes, tries strategies (focus_press, focus_space, focus_enter, mouse_click, ax_press) and verifies trigger AXValue contains the chosen option before returning success.\n\nparse_matching_response keys matches by stringified zero-based index (\"0\", \"1\", \"2\", ...) \u2014 collision-free 1:1 with $popups order. for_each over $popups with $_index does NOT work because the BT engine does not convert int $_index to a string key. UNROLL: emit one lookup_match + select_dropdown_option pair per popup using literal \"0\", \"1\", \"2\".",
+              "bt_template_hint": "```json\n{\n  \"type\": \"sequence\",\n  \"children\": [\n    {\"action\": \"find_all\", \"params\": {\"role\": \"AXComboBox\"}, \"store\": \"popups\"},\n    {\n      \"action\": \"for_each\",\n      \"items\": \"$popups\",\n      \"variable\": \"popup\",\n      \"do\": {\n        \"type\": \"sequence\",\n        \"children\": [\n          {\"action\": \"click\", \"params\": {\"element\": \"$popup.element\", \"strategy\": \"mouse_click\", \"post_delay\": 1.2}},\n          {\"action\": \"wait_for_element\", \"params\": {\"role\": \"AXMenuItem\", \"max_wait\": 2.0}},\n          {\"action\": \"discover_menu\", \"params\": {\"role\": \"AXMenuItem\"}, \"store_to_current\": \"options\"},\n          {\"action\": \"press_escape\"},\n          {\"action\": \"wait\", \"params\": {\"seconds\": 0.3}}\n        ]\n      }\n    },\n    {\"action\": \"send_to_llm\", \"params\": {\"question_type\": \"solve_matching\", \"question\": \"Fill in each dropdown with the correct option based on the screenshot and surrounding question context. Each item's `label` describes its position in the sentence; each item's `options` lists the actual menu choices available for THAT dropdown. Return the EXACT option string from options[] for each item.\", \"items\": \"$popups\"}, \"store\": \"matches\"},\n    {\"action\": \"lookup_match\", \"params\": {\"matches\": \"$matches.matches\", \"key\": \"0\"}, \"store\": \"chosen_0\"},\n    {\"action\": \"select_dropdown_option\", \"params\": {\"trigger_element\": \"$popups.0.element\", \"option\": \"$chosen_0\", \"trigger_role\": \"AXComboBox\", \"open_strategy\": \"mouse_click\", \"open_wait\": 0.7, \"verify_wait\": 0.4}},\n    {\"action\": \"lookup_match\", \"params\": {\"matches\": \"$matches.matches\", \"key\": \"1\"}, \"store\": \"chosen_1\"},\n    {\"action\": \"select_dropdown_option\", \"params\": {\"trigger_element\": \"$popups.1.element\", \"option\": \"$chosen_1\", \"trigger_role\": \"AXComboBox\", \"open_strategy\": \"mouse_click\", \"open_wait\": 0.7, \"verify_wait\": 0.4}},\n    {\"action\": \"wait_for_element\", \"params\": {\"role\": \"AXButton\", \"target\": \"Check\", \"max_wait\": 3.0}},\n    {\"action\": \"find_and_click\", \"params\": {\"target\": \"Check\", \"role\": \"AXButton\", \"strategy\": \"mouse_click\", \"match_mode\": \"exact\", \"post_delay\": 2.5}}\n  ]\n}\n```",
+              "anti_patterns": [
+                "Hardcoding answer strings without enumeration \u2014 breaks when content varies",
+                "AXMenuItem click + arrow keys for Wonder Blocks \u2014 does not propagate to React state",
+                "for_each + $_index for selection phase \u2014 int index not converted to string key",
+                "Scoping option search to AXWebArea \u2014 Wonder Blocks portals options outside it"
+              ],
+              "verified_count": 0
             }
+          ],
+          "aliases": [
+            "combobox",
+            "popup",
+            "matching",
+            "dropdown"
           ]
         },
         {
@@ -521,29 +627,29 @@
               "by": "claude-primary",
               "research_source": "Perplexity Deep Research (live Perseus repo source). Saved verbatim: /home/user/taey-ed/consultations/REVIEWS/perseus_sorter_widget_dr_20260518.md. Confidence on central claim: HIGH.",
               "screen_variant": "EXERCISE_RANKING_DRAG (Khan Perseus sorter widget, vertical single-column ranking)",
-              "PROTOCOL_one_shot": "You are the BT compiler. You have BOTH the screenshot AND tree.json. Synthesize the drag plan AT GENERATION TIME and bake concrete drag actions into the BT. DO NOT defer to runtime. DO NOT punt to UNKNOWN. The handler set is sufficient — drag + find_and_click is all you need.",
+              "PROTOCOL_one_shot": "You are the BT compiler. You have BOTH the screenshot AND tree.json. Synthesize the drag plan AT GENERATION TIME and bake concrete drag actions into the BT. DO NOT defer to runtime. DO NOT punt to UNKNOWN. The handler set is sufficient \u2014 drag + find_and_click is all you need.",
               "perseus_internals_OBSERVED": "Check button is gated by a single React state boolean: userInput.changed. validateSorter() returns {type: invalid} while !userInput.changed. The flag is set ONLY by Sorter.handleChange, which is wired to Sortable's onChange prop. onChange fires from: (a) onMouseUp(key) after drag-release, (b) moveOptionToIndex programmatic API. NOT from onMouseMove, NOT from HTML5 dragstart/dragover/drop (widget uses jQuery+React mouse events, no HTML5 drag API at all).",
-              "tickle_drag_VERIFIED": "A zero-displacement drag (mousedown → mouseup at same coords) DOES set changed:true. Mechanism: onChange fires from onMouseUp regardless of whether items[] reordered. Sortable.onMouseMove only reorders items[] when newIndex != currentIndex, but that does NOT gate onChange. Confirmed by Perplexity Deep Research direct from Perseus source.",
-              "macos_cgevent_sequence_REQUIRED": "kCGEventLeftMouseDown @ item center → (delay ≥1 rAF ~16ms) → kCGEventLeftMouseDragged @ same-or-displaced position → kCGEventLeftMouseUp @ target position. Our Mac drag handler (mousedown → 80ms hold → 18 dragged moves @ 20ms → 50ms hold → mouseup) satisfies this regardless of start==end since it always emits intermediate dragged events. Use the existing `drag` handler as-is.",
+              "tickle_drag_VERIFIED": "A zero-displacement drag (mousedown \u2192 mouseup at same coords) DOES set changed:true. Mechanism: onChange fires from onMouseUp regardless of whether items[] reordered. Sortable.onMouseMove only reorders items[] when newIndex != currentIndex, but that does NOT gate onChange. Confirmed by Perplexity Deep Research direct from Perseus source.",
+              "macos_cgevent_sequence_REQUIRED": "kCGEventLeftMouseDown @ item center \u2192 (delay \u22651 rAF ~16ms) \u2192 kCGEventLeftMouseDragged @ same-or-displaced position \u2192 kCGEventLeftMouseUp @ target position. Our Mac drag handler (mousedown \u2192 80ms hold \u2192 18 dragged moves @ 20ms \u2192 50ms hold \u2192 mouseup) satisfies this regardless of start==end since it always emits intermediate dragged events. Use the existing `drag` handler as-is.",
               "BT_GENERATION_RULES": [
-                "Step 1: Find the AXList containing the sortable items in tree.json (look for AXList with ~3-5 AXGroup children at consistent x-coord, small width ~30-40px — grip column).",
+                "Step 1: Find the AXList containing the sortable items in tree.json (look for AXList with ~3-5 AXGroup children at consistent x-coord, small width ~30-40px \u2014 grip column).",
                 "Step 2: For each AXGroup child of that AXList, compute center = (x + w/2, y + h/2) from its visible_bbox. Call these POSITIONS p[0]=top, p[1]=mid, p[2]=bottom, ... by y-order.",
                 "Step 3: Read the screenshot. Identify the visible label at each position (e.g., p[0]='G', p[1]='B', p[2]='R'). Call this CURRENT.",
                 "Step 4: Read the question. Determine CORRECT order top-to-bottom by the question's criterion (e.g., greatest-to-least mass).",
-                "Step 5a: If CURRENT == CORRECT: emit ONE tickle drag at p[1] (mid item) — start and end at same coords. This engages the widget (changed:true) without reordering.",
+                "Step 5a: If CURRENT == CORRECT: emit ONE tickle drag at p[1] (mid item) \u2014 start and end at same coords. This engages the widget (changed:true) without reordering.",
                 "Step 5b: If CURRENT != CORRECT: emit sequential bubble-sort drags. For each position i in 0..N-1, if current[i] != correct[i], find correct[i] in current at index j, emit drag {start: p[j], end: p[i]}, then mentally swap current[i] and current[j]. Repeat until current == correct.",
                 "Step 6: Append wait_for_element Check max_wait=3.0, then find_and_click Check role=AXButton strategy=mouse_click match_mode=exact post_delay=2.5.",
-                "All drag coords MUST come from tree.json bboxes — NEVER hardcode from prior consults; the viewport may have shifted."
+                "All drag coords MUST come from tree.json bboxes \u2014 NEVER hardcode from prior consults; the viewport may have shifted."
               ],
               "drag_handler_schema_REMINDER": "drag.params MUST be nested dicts: {start: {x: <int>, y: <int>}, end: {x: <int>, y: <int>}, post_delay: <float>}. NOT flat source_x/source_y/start_x/start_y/target_x/target_y. Handler rejects flat schema and BT fails.",
-              "bt_template_hint": "Two concrete examples. First when current == correct (tickle), second when current != correct (bubble-sort drags). Coords shown are for THIS consult's tree.json (grip centers at y=450, 502, 553, x=687). REPLACE with current tree.json bboxes on each consultation.\n\n```json\n{\n  \"type\": \"sequence\",\n  \"_comment\": \"CASE A: current top-to-bottom order MATCHES correct order — single tickle drag at mid item engages widget without reorder, then click Check.\",\n  \"children\": [\n    {\n      \"type\": \"action\",\n      \"action\": \"drag\",\n      \"params\": {\n        \"start\": {\"x\": 687, \"y\": 502},\n        \"end\":   {\"x\": 687, \"y\": 502},\n        \"post_delay\": 0.6\n      }\n    },\n    {\n      \"type\": \"action\",\n      \"action\": \"wait_for_element\",\n      \"params\": {\"role\": \"AXButton\", \"target\": \"Check\", \"max_wait\": 3.0}\n    },\n    {\n      \"type\": \"action\",\n      \"action\": \"find_and_click\",\n      \"params\": {\"target\": \"Check\", \"role\": \"AXButton\", \"strategy\": \"mouse_click\", \"match_mode\": \"exact\", \"post_delay\": 2.5}\n    },\n    {\n      \"type\": \"action\",\n      \"action\": \"store_qa\",\n      \"params\": {\"question\": \"Rank by question criterion (greatest first)\", \"answer\": \"G,B,R\", \"question_type\": \"solve_complex\"}\n    }\n  ]\n}\n```\n\n```json\n{\n  \"type\": \"sequence\",\n  \"_comment\": \"CASE B: current order is R,B,G but correct is G,B,R. Bubble-sort: swap pos 0 and pos 2 (drag y=553 → y=450, then drag y=502 → y=553 to push displaced item down). Final order achieved: G,B,R.\",\n  \"children\": [\n    {\n      \"type\": \"action\",\n      \"action\": \"drag\",\n      \"params\": {\"start\": {\"x\": 687, \"y\": 553}, \"end\": {\"x\": 687, \"y\": 450}, \"post_delay\": 0.6}\n    },\n    {\n      \"type\": \"action\",\n      \"action\": \"drag\",\n      \"params\": {\"start\": {\"x\": 687, \"y\": 502}, \"end\": {\"x\": 687, \"y\": 553}, \"post_delay\": 0.6}\n    },\n    {\n      \"type\": \"action\",\n      \"action\": \"wait_for_element\",\n      \"params\": {\"role\": \"AXButton\", \"target\": \"Check\", \"max_wait\": 3.0}\n    },\n    {\n      \"type\": \"action\",\n      \"action\": \"find_and_click\",\n      \"params\": {\"target\": \"Check\", \"role\": \"AXButton\", \"strategy\": \"mouse_click\", \"match_mode\": \"exact\", \"post_delay\": 2.5}\n    },\n    {\n      \"type\": \"action\",\n      \"action\": \"store_qa\",\n      \"params\": {\"question\": \"Rank by question criterion (greatest first)\", \"answer\": \"G,B,R\", \"question_type\": \"solve_complex\"}\n    }\n  ]\n}\n```",
+              "bt_template_hint": "Two concrete examples. First when current == correct (tickle), second when current != correct (bubble-sort drags). Coords shown are for THIS consult's tree.json (grip centers at y=450, 502, 553, x=687). REPLACE with current tree.json bboxes on each consultation.\n\n```json\n{\n  \"type\": \"sequence\",\n  \"_comment\": \"CASE A: current top-to-bottom order MATCHES correct order \u2014 single tickle drag at mid item engages widget without reorder, then click Check.\",\n  \"children\": [\n    {\n      \"type\": \"action\",\n      \"action\": \"drag\",\n      \"params\": {\n        \"start\": {\"x\": 687, \"y\": 502},\n        \"end\":   {\"x\": 687, \"y\": 502},\n        \"post_delay\": 0.6\n      }\n    },\n    {\n      \"type\": \"action\",\n      \"action\": \"wait_for_element\",\n      \"params\": {\"role\": \"AXButton\", \"target\": \"Check\", \"max_wait\": 3.0}\n    },\n    {\n      \"type\": \"action\",\n      \"action\": \"find_and_click\",\n      \"params\": {\"target\": \"Check\", \"role\": \"AXButton\", \"strategy\": \"mouse_click\", \"match_mode\": \"exact\", \"post_delay\": 2.5}\n    },\n    {\n      \"type\": \"action\",\n      \"action\": \"store_qa\",\n      \"params\": {\"question\": \"Rank by question criterion (greatest first)\", \"answer\": \"G,B,R\", \"question_type\": \"solve_complex\"}\n    }\n  ]\n}\n```\n\n```json\n{\n  \"type\": \"sequence\",\n  \"_comment\": \"CASE B: current order is R,B,G but correct is G,B,R. Bubble-sort: swap pos 0 and pos 2 (drag y=553 \u2192 y=450, then drag y=502 \u2192 y=553 to push displaced item down). Final order achieved: G,B,R.\",\n  \"children\": [\n    {\n      \"type\": \"action\",\n      \"action\": \"drag\",\n      \"params\": {\"start\": {\"x\": 687, \"y\": 553}, \"end\": {\"x\": 687, \"y\": 450}, \"post_delay\": 0.6}\n    },\n    {\n      \"type\": \"action\",\n      \"action\": \"drag\",\n      \"params\": {\"start\": {\"x\": 687, \"y\": 502}, \"end\": {\"x\": 687, \"y\": 553}, \"post_delay\": 0.6}\n    },\n    {\n      \"type\": \"action\",\n      \"action\": \"wait_for_element\",\n      \"params\": {\"role\": \"AXButton\", \"target\": \"Check\", \"max_wait\": 3.0}\n    },\n    {\n      \"type\": \"action\",\n      \"action\": \"find_and_click\",\n      \"params\": {\"target\": \"Check\", \"role\": \"AXButton\", \"strategy\": \"mouse_click\", \"match_mode\": \"exact\", \"post_delay\": 2.5}\n    },\n    {\n      \"type\": \"action\",\n      \"action\": \"store_qa\",\n      \"params\": {\"question\": \"Rank by question criterion (greatest first)\", \"answer\": \"G,B,R\", \"question_type\": \"solve_complex\"}\n    }\n  ]\n}\n```",
               "anti_patterns": [
-                "Returning screen_type='UNKNOWN' with a wait BT — this is the punt-to-runtime failure mode. The handler set IS sufficient. YOU are the compiler. Synthesize the drags now.",
-                "Calling send_to_llm to ask Pro for an answer AT RUNTIME — unnecessary; you have the screenshot already at BT-generation time. Decide the order yourself, bake concrete drag coords into the BT, optionally include a store_qa with the answer for course-knowledge persistence.",
-                "Skipping ALL drags and clicking Check immediately — Check stays disabled because userInput.changed is false.",
-                "Drag with flat keys (source_x/source_y/start_x/start_y/target_x/target_y) — handler rejects.",
-                "Hardcoding coords from a prior consult — viewport shifts; always re-read tree.json bboxes.",
-                "Clicking 'Make image bigger' or 'Skip' — wrong targets."
+                "Returning screen_type='UNKNOWN' with a wait BT \u2014 this is the punt-to-runtime failure mode. The handler set IS sufficient. YOU are the compiler. Synthesize the drags now.",
+                "Calling send_to_llm to ask Pro for an answer AT RUNTIME \u2014 unnecessary; you have the screenshot already at BT-generation time. Decide the order yourself, bake concrete drag coords into the BT, optionally include a store_qa with the answer for course-knowledge persistence.",
+                "Skipping ALL drags and clicking Check immediately \u2014 Check stays disabled because userInput.changed is false.",
+                "Drag with flat keys (source_x/source_y/start_x/start_y/target_x/target_y) \u2014 handler rejects.",
+                "Hardcoding coords from a prior consult \u2014 viewport shifts; always re-read tree.json bboxes.",
+                "Clicking 'Make image bigger' or 'Skip' \u2014 wrong targets."
               ],
               "verified_count": 0
             }
@@ -575,7 +681,26 @@
           "name": "free_response",
           "description": "Open text field for free-form written answers. Perseus widget: free-response. Relatively rare.",
           "tree_signal": "HAS_TEXT_AREA",
-          "interaction_pattern": "click text area -> type response -> click 'Check'"
+          "interaction_pattern": "click text area -> type response -> click 'Check'",
+          "aliases": [
+            "text_area",
+            "free_response"
+          ],
+          "operational_notes": [
+            {
+              "discovered_at": "2026-05-19T01:10:00Z",
+              "by": "claude-primary",
+              "screen_variant": "EXERCISE_TEXT_INPUT / numeric_input / expression_input / free_response (single-field)",
+              "rule": "CANONICAL TEXT-INPUT BT \u2014 extract_question \u2192 send_to_llm solve (text answer) \u2192 find_and_type \u2192 Check",
+              "note": "Text input exercise (AXTextArea / AXTextField). send_to_llm with solve generates a text answer. find_and_type with empty target matches first field; specify target by field label if multiple fields exist (use table_input subtype for those).",
+              "bt_template_hint": "```json\n{\n  \"type\": \"sequence\",\n  \"children\": [\n    {\"action\": \"extract_question\", \"params\": {\"question\": {\"role\": \"AXStaticText\", \"parent_contains\": \"LOOK_AT_TREE\", \"min_length\": 20}, \"text\": [{\"role\": \"AXStaticText\", \"parent_contains\": \"LOOK_AT_TREE\", \"min_length\": 10}]}, \"store\": \"q\"},\n    {\"action\": \"send_to_llm\", \"params\": {\"question\": \"$q.question_text\", \"question_type\": \"solve\", \"context\": \"$q.reference_texts\"}, \"store\": \"llm\"},\n    {\"action\": \"find_and_type\", \"params\": {\"target\": \"\", \"text\": \"$llm.answer\", \"role\": \"AXTextArea\"}},\n    {\"action\": \"find_and_click\", \"params\": {\"target\": \"Check\", \"role\": \"AXButton\", \"strategy\": \"mouse_click\", \"post_delay\": 2.0}},\n    {\"action\": \"store_qa\", \"params\": {\"question\": \"$q.question_text\", \"answer\": \"$llm.answer\", \"question_type\": \"solve\"}}\n  ]\n}\n```",
+              "variants": [
+                "Radio + text combo: defer to multiple_choice subtype with has_text_field=True; add find_and_type AFTER radio click.",
+                "Multiple text fields with distinguishable labels: use table_input subtype."
+              ],
+              "verified_count": 0
+            }
+          ]
         },
         {
           "name": "table_input",
@@ -848,6 +973,20 @@
             "click 'Next in course' (advances LESSONS not VIDEOS \u2014 overshoots)"
           ],
           "verified_count": 0
+        },
+        {
+          "discovered_at": "2026-05-19T01:10:00Z",
+          "by": "claude-primary",
+          "screen_variant": "VIDEO master \u2014 three states (unstarted, playing, complete)",
+          "rule": "CANONICAL VIDEO BT \u2014 three distinct states, three distinct BTs",
+          "note": "Video screens have 3 states. Detect from tree + screenshot:\n\nSTATE 1 \u2014 UNSTARTED (Play button visible, no Pause):\n  screen_type: VIDEO_UNSTARTED\n  expected_next: [\"VIDEO_PLAYING\"]\n  BT: single find_and_click Play AXButton mouse_click\n\nSTATE 2 \u2014 PLAYING (Pause visible, progress active):\n  screen_type: VIDEO_PLAYING\n  expected_next: [\"VIDEO_COMPLETE\"]\n  BT: video_poll ONLY (must be the only child in its sequence \u2014 sleeps 30s, returns continue_loop=true, pipeline re-matches after each cycle)\n\nSTATE 3 \u2014 COMPLETE (sidebar checkmark, Up next visible, video ended):\n  screen_type: VIDEO_COMPLETE\n  expected_next: [\"NAVIGATION\", \"EXERCISE_RADIO\", \"ARTICLE\"]\n  BT: find_and_click \"Next\" AXButton (NOT \"Up next\") post_delay 3.0\n\nCardinal rules: never skip or seek (must watch to 100%); check sidebar completion indicator before marking complete; \"Up next\" is CONTEXTUAL \u2014 ALLOWED on TRANSITION/*_COMPLETE/*_CORRECT, FORBIDDEN on actively playing video screens.",
+          "bt_template_hint": "**State 1 (UNSTARTED):**\n```json\n{\"type\":\"sequence\",\"children\":[{\"action\":\"find_and_click\",\"params\":{\"target\":\"Play\",\"role\":\"AXButton\",\"strategy\":\"mouse_click\"}}]}\n```\n\n**State 2 (PLAYING):**\n```json\n{\"type\":\"sequence\",\"children\":[{\"action\":\"video_poll\"}]}\n```\n\n**State 3 (COMPLETE):**\n```json\n{\"type\":\"sequence\",\"children\":[{\"action\":\"find_and_click\",\"params\":{\"target\":\"Next\",\"role\":\"AXButton\",\"strategy\":\"mouse_click\",\"post_delay\":3.0}}]}\n```",
+          "anti_patterns": [
+            "video_poll with siblings in sequence \u2014 must be the only child",
+            "Clicking \"Up next\" while video is playing \u2014 skips remaining content",
+            "find_and_click \"Next\" on a video that is still buffering \u2014 Khan ignores until ready"
+          ],
+          "verified_count": 0
         }
       ]
     },
@@ -967,18 +1106,18 @@
               "by": "claude-primary",
               "screen_variant": "KA_COURSE_OVERVIEW",
               "rule": "ON COURSE OVERVIEW: identify the user's NEXT progress item explicitly, do NOT let the LLM pick blindly from all links.",
-              "note": "Khan's course/unit overview page shows every lesson/video/article/exercise on the unit. A bare `find_all(AXLink) -> navigate -> click` BT with no question text gives the LLM the entire link list with no hint about WHICH link to pick. Observed 2026-05-19 00:02: LLM was asked to navigate, saw the welcome/intro video link near the top of the list, and picked it — sending the user back to content they had already completed. The LLM has no progress context unless the BT TELLS IT what to look for.",
+              "note": "Khan's course/unit overview page shows every lesson/video/article/exercise on the unit. A bare `find_all(AXLink) -> navigate -> click` BT with no question text gives the LLM the entire link list with no hint about WHICH link to pick. Observed 2026-05-19 00:02: LLM was asked to navigate, saw the welcome/intro video link near the top of the list, and picked it \u2014 sending the user back to content they had already completed. The LLM has no progress context unless the BT TELLS IT what to look for.",
               "platform_signals": {
-                "next_marker": "'Up next for you!' text appended (no separator) to the current-progress activity's AXLink name. Example AX name: 'Apply: Connecting motion and forces: unfamiliarUp next for you!'. The marker is literally smashed into the link text without a space — the LLM must look for the substring 'Up next for you!' anywhere in the link description.",
+                "next_marker": "'Up next for you!' text appended (no separator) to the current-progress activity's AXLink name. Example AX name: 'Apply: Connecting motion and forces: unfamiliarUp next for you!'. The marker is literally smashed into the link text without a space \u2014 the LLM must look for the substring 'Up next for you!' anywhere in the link description.",
                 "status_suffix": "Activity progress status is concatenated into the link name: 'Not started' (no label, or implicit), 'unfamiliar', 'Familiar', 'Practiced', 'Proficient', 'Mastered'. The 'next' link is typically the first 'unfamiliar' item OR the one with 'Up next for you!'.",
-                "anti_targets": "Intro/welcome links like 'Learn more: Welcome to middle school physics!' OR any 'Course intro', 'Unit intro' — these are evergreen entry points the user has already completed. Never navigate to them as 'next'."
+                "anti_targets": "Intro/welcome links like 'Learn more: Welcome to middle school physics!' OR any 'Course intro', 'Unit intro' \u2014 these are evergreen entry points the user has already completed. Never navigate to them as 'next'."
               },
-              "bt_template_hint": "Pass an EXPLICIT QUESTION to send_to_llm telling the LLM what to look for. The question is platform-specific guidance. Then use the element ref returned by the server.\n\n```json\n{\n  \"type\": \"sequence\",\n  \"children\": [\n    {\"action\": \"find_all\", \"params\": {\"role\": \"AXLink\"}, \"store\": \"links\"},\n    {\n      \"action\": \"send_to_llm\",\n      \"params\": {\n        \"question_type\": \"navigate\",\n        \"question\": \"This is a Khan Academy course/unit overview page. Identify the user's NEXT activity link. Priority rules: (1) FIRST PREFERENCE: the link whose name/description contains the marker 'Up next for you!' — Khan smashes this text into the link name without a space, e.g. 'Apply: Foo: unfamiliarUp next for you!'. (2) IF no 'Up next for you!' marker: the FIRST link with status 'unfamiliar' (NOT proficient, NOT familiar, NOT mastered — those are already done). (3) NEVER pick: links containing 'Welcome', 'Course intro', 'Unit intro', 'Learn more', or any clearly-introductory content. Those are evergreen entry points the user has completed. (4) Output ONLY the exact description string of the chosen link, nothing else.\",\n        \"items\": \"$links\"\n      },\n      \"store\": \"nav\"\n    },\n    {\n      \"action\": \"store_qa\",\n      \"params\": {\n        \"question\": \"Course overview: pick next link\",\n        \"answer\": \"$nav.answer\",\n        \"question_type\": \"navigate\"\n      }\n    },\n    {\n      \"action\": \"click\",\n      \"params\": {\n        \"element\": \"$nav.answer_element\",\n        \"post_delay\": 3.0\n      }\n    }\n  ]\n}\n```",
+              "bt_template_hint": "Pass an EXPLICIT QUESTION to send_to_llm telling the LLM what to look for. The question is platform-specific guidance. Then use the element ref returned by the server.\n\n```json\n{\n  \"type\": \"sequence\",\n  \"children\": [\n    {\"action\": \"find_all\", \"params\": {\"role\": \"AXLink\"}, \"store\": \"links\"},\n    {\n      \"action\": \"send_to_llm\",\n      \"params\": {\n        \"question_type\": \"navigate\",\n        \"question\": \"This is a Khan Academy course/unit overview page. Identify the user's NEXT activity link. Priority rules: (1) FIRST PREFERENCE: the link whose name/description contains the marker 'Up next for you!' \u2014 Khan smashes this text into the link name without a space, e.g. 'Apply: Foo: unfamiliarUp next for you!'. (2) IF no 'Up next for you!' marker: the FIRST link with status 'unfamiliar' (NOT proficient, NOT familiar, NOT mastered \u2014 those are already done). (3) NEVER pick: links containing 'Welcome', 'Course intro', 'Unit intro', 'Learn more', or any clearly-introductory content. Those are evergreen entry points the user has completed. (4) Output ONLY the exact description string of the chosen link, nothing else.\",\n        \"items\": \"$links\"\n      },\n      \"store\": \"nav\"\n    },\n    {\n      \"action\": \"store_qa\",\n      \"params\": {\n        \"question\": \"Course overview: pick next link\",\n        \"answer\": \"$nav.answer\",\n        \"question_type\": \"navigate\"\n      }\n    },\n    {\n      \"action\": \"click\",\n      \"params\": {\n        \"element\": \"$nav.answer_element\",\n        \"post_delay\": 3.0\n      }\n    }\n  ]\n}\n```",
               "anti_patterns": [
-                "send_to_llm with question_type=navigate and NO question text — gives LLM the link list with no guidance. LLM picks the friendliest-looking link (usually welcome/intro). Observed regression 2026-05-19 00:02.",
-                "find_and_click with target=$nav.answer — fails when Khan smashes 'Up next for you!' into the link name. Use click element=$nav.answer_element instead (the server returns the matched element ref).",
-                "Picking links labeled 'Welcome', 'Learn more', 'Course intro' — these are evergreen entry points the user has already completed.",
-                "Following the FIRST link in find_all results — order is DOM order, not progress order."
+                "send_to_llm with question_type=navigate and NO question text \u2014 gives LLM the link list with no guidance. LLM picks the friendliest-looking link (usually welcome/intro). Observed regression 2026-05-19 00:02.",
+                "find_and_click with target=$nav.answer \u2014 fails when Khan smashes 'Up next for you!' into the link name. Use click element=$nav.answer_element instead (the server returns the matched element ref).",
+                "Picking links labeled 'Welcome', 'Learn more', 'Course intro' \u2014 these are evergreen entry points the user has already completed.",
+                "Following the FIRST link in find_all results \u2014 order is DOM order, not progress order."
               ],
               "verified_count": 0
             }
@@ -999,6 +1138,15 @@
             "match_mode=contains as workaround \u2014 banned per Jesse 2026-05-18 feedback memory",
             "for_each over $links with conditional description match + click \u2014 overcomplicated when server now returns the element directly"
           ],
+          "verified_count": 0
+        },
+        {
+          "discovered_at": "2026-05-19T01:10:00Z",
+          "by": "claude-primary",
+          "screen_variant": "Any navigation / content-list page with 15+ links",
+          "rule": "CANONICAL NAVIGATION BT \u2014 find_all AXLink \u2192 send_to_llm navigate \u2192 click element=$nav.answer_element",
+          "note": "find_all collects all AXLink elements with their descriptions. Each item has {element, description, popup_desc, label}. Labels include completion indicators from preceding text. send_to_llm with navigate analyzes completion indicators and picks the first incomplete item. Platform-agnostic \u2014 looks for \"Completed\", \"Not started\", checkmarks, \"Try again\", etc.\n\nCRITICAL: use click element=$nav.answer_element (the matched element ref returned by the server-side navigate handler) instead of find_and_click target=$nav.answer. Khan and similar platforms concatenate state suffixes (\"Up next for you!\", \" not started\") into AXLink names without separators; the LLM strips them when picking, so exact text re-match fails. Element ref bypasses all text matching.\n\nCARDINAL: never hardcode link text in target. Link text changes between units/courses/sessions.",
+          "bt_template_hint": "```json\n{\n  \"type\": \"sequence\",\n  \"children\": [\n    {\"action\": \"find_all\", \"params\": {\"role\": \"AXLink\"}, \"store\": \"links\"},\n    {\"action\": \"send_to_llm\", \"params\": {\"question_type\": \"navigate\", \"items\": \"$links\"}, \"store\": \"nav\"},\n    {\"action\": \"click\", \"params\": {\"element\": \"$nav.answer_element\", \"post_delay\": 3.0}}\n  ]\n}\n```",
           "verified_count": 0
         }
       ]
@@ -1051,6 +1199,19 @@
           "anti_patterns": [
             "find_and_click target='Up next: exercise' role=AXLink match_mode=exact \u2014 fragile because exact text varies by next-content-type",
             "Sidebar navigation when Up next is available \u2014 slower, more LLM call cost"
+          ],
+          "verified_count": 0
+        },
+        {
+          "discovered_at": "2026-05-19T01:10:00Z",
+          "by": "claude-primary",
+          "screen_variant": "TRANSITION master \u2014 score cards, quiz intros, continue buttons, article-end Next",
+          "rule": "CANONICAL TRANSITION BT \u2014 single find_and_click on the clear next-action button identified from the screenshot",
+          "note": "Transitional pages have buttons/links but no assessment signals (no radio, checkbox, text field, or quiz markers). Common examples: score card after exercise completion (Next), quiz intro (Start quiz), lesson continue, article end (Next), modal acknowledgment (Got it).\n\nHOW TO DETERMINE target:\n1. Look at the SCREENSHOT \u2014 what button is the clear next action?\n2. Common targets: \"Next\", \"Continue\", \"Start quiz\", \"Got it\"\n3. Check the tree for the exact button text\n4. NEVER use \"Skip\" or \"Up next\" as the primary target.\n\nexpected_next: the screen type after clicking. \"Next\" after score \u2192 NAVIGATION or next EXERCISE. \"Start quiz\" \u2192 EXERCISE_RADIO or EXERCISE_CHECKBOX.",
+          "bt_template_hint": "```json\n{\n  \"type\": \"sequence\",\n  \"children\": [\n    {\"action\": \"find_and_click\", \"params\": {\"target\": \"BUTTON_TEXT_FROM_SCREENSHOT\", \"role\": \"AXButton\", \"strategy\": \"mouse_click\", \"post_delay\": 3.0}}\n  ]\n}\n```",
+          "anti_patterns": [
+            "\"Skip\" as the target \u2014 banned mid-exercise",
+            "Hardcoded \"Continue\" without checking the actual button text on the screen"
           ],
           "verified_count": 0
         }
