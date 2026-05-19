@@ -1,12 +1,12 @@
 # Terminal Escalation — Mark Unsolvable
 
 You hit Terminal because the full ladder has been exhausted (per Jesse
-2026-05-19 corrected ladder):
+2026-05-19 FINAL ladder):
 - Tier 1: 2 attempts by claude-primary editing knowledge.json
 - Tier 2: 1 Perplexity DR consultation
-- Tier 3: 1 full Family loop
+- Tier 3: 2 full Family loops
 
-That's 4 attempts total. This screen is genuinely outside the system's current
+That's 5 attempts total. This screen is genuinely outside the system's current
 capability — likely a handler gap or a fundamentally novel widget pattern that
 can't be solved with the existing primitives.
 
