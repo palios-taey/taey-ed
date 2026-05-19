@@ -1538,6 +1538,7 @@ def _next_action_impl(request: NextActionRequest):
             screen_type_hint="UNKNOWN_NEEDS_DEFINITION",
             bt_debug_tail="",
             failed_bt=None,
+            screenshot_b64=request.screenshot_b64,
         )
 
     # Step 5A: Need screenshot for Flash classification
