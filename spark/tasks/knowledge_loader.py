@@ -332,6 +332,62 @@ def _resolve_master_via_subtypes(screen_types_map: dict, screen_type: str) -> st
     return None
 
 
+def get_prompt_block_for_screen(knowledge: dict, screen_type: str) -> str:
+    """Return VERBATIM prompt_block text(s) for the matched screen type.
+
+    The `prompt_block` field on a category/subtype carries the canonical BT
+    pattern as the worker should see it — same bytes the pre-migration
+    SCREEN_PATTERNS dict used to inject. No markdown wrapping, no bullet
+    rendering. The worker treats this as a directive section.
+
+    Resolution mirrors get_operational_notes_for_screen:
+      1. Master resolution via get_master_category, then data-driven subtype lookup
+      2. Category-level prompt_block (e.g. VIDEO, NAVIGATION, TRANSITION)
+      3. Matched subtype's prompt_block (e.g. EXERCISE.dropdown, EXERCISE.multiple_choice)
+      4. When screen_type == master (no variant), include ALL subtypes' prompt_blocks
+         since the worker doesn't yet know which variant applies.
+
+    Returns the concatenated prompt_block text, or empty string if none exist.
+    """
+    screen_types_map = knowledge.get("screen_types", {})
+
+    try:
+        master = get_master_category(screen_type) or "UNKNOWN"
+    except Exception:
+        master = "UNKNOWN"
+    if master == "UNKNOWN":
+        resolved = _resolve_master_via_subtypes(screen_types_map, screen_type)
+        if resolved:
+            master = resolved
+    if master == "UNKNOWN":
+        master = screen_type
+
+    blocks: list[str] = []
+
+    master_info = screen_types_map.get(master, {})
+
+    # Category-level prompt_block (e.g. VIDEO has 3-state block, TRANSITION single)
+    cat_block = master_info.get("prompt_block")
+    if cat_block:
+        blocks.append(cat_block)
+
+    # Subtype prompt_block
+    subtypes = master_info.get("subtypes", []) or []
+    matched_subtype = _match_subtype_for_variant(screen_type, master, subtypes)
+    if matched_subtype:
+        sub_block = matched_subtype.get("prompt_block")
+        if sub_block:
+            blocks.append(sub_block)
+    elif screen_type == master:
+        # Master-only consult — include all subtype prompt_blocks
+        for s in subtypes:
+            b = s.get("prompt_block")
+            if b:
+                blocks.append(b)
+
+    return "\n\n".join(blocks)
+
+
 def get_operational_notes_for_screen(knowledge: dict, screen_type: str) -> str:
     """Return markdown-formatted operational notes following Jesse's 3-tier tree:
 
@@ -341,6 +397,13 @@ def get_operational_notes_for_screen(knowledge: dict, screen_type: str) -> str:
 
     Sibling subtypes are NOT included. Push rules to the lowest applicable level
     to avoid noise. Returns empty string if nothing relevant exists.
+
+    NOTE (2026-05-19): the canonical screen pattern (former SCREEN_PATTERNS
+    inline templates) now lives in the `prompt_block` field on each subtype/
+    master and is delivered via get_prompt_block_for_screen — that function
+    returns the verbatim directive text. This function only handles the
+    operational_notes array which carries supplementary diagnostic learnings
+    (discovered gotchas, anti-patterns specific to a screen variant, etc.).
 
     Master resolution: first tries get_master_category (handles MASTER_VARIANT
     and KA_ prefix-strip), then falls back to data-driven subtype lookup in
