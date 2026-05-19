@@ -85,7 +85,10 @@ def register_all_handlers(ctx: ExecutionContext):
             btlog(f"click: stale element (off-screen/overlay): {e}")
             return None
         btlog(f"click: clicked element with strategy={strategy}")
-        return {"success": True}
+        # Echo raw AX node so server has full visibility on what was clicked
+        # (Jesse 2026-05-19: no proactive filtering of interaction targets).
+        from app.tasks.serialize_node import serialize_ax_node
+        return {"success": True, "ax": serialize_ax_node(element)}
 
     # --- find_and_click: find by text/role with fallbacks, then click ---
     def handle_find_and_click(ctx, params):
@@ -130,7 +133,8 @@ def register_all_handlers(ctx: ExecutionContext):
             btlog(f"find_and_click: stale element (off-screen/overlay): {e}")
             return None
         logger.info(f"find_and_click: clicked '{target[:60]}'")
-        return {"success": True, "target": target}
+        from app.tasks.serialize_node import serialize_ax_node
+        return {"success": True, "target": target, "ax": serialize_ax_node(element)}
 
     # --- find_and_type: find text field + type ---
     def handle_find_and_type(ctx, params):
@@ -171,17 +175,14 @@ def register_all_handlers(ctx: ExecutionContext):
 
         type_text(element, text)
         time.sleep(0.5)
-        return {"success": True}
+        from app.tasks.serialize_node import serialize_ax_node
+        return {"success": True, "ax": serialize_ax_node(element)}
 
     # --- find_all: find all matching elements, return enriched list ---
     def handle_find_all(ctx, params):
         from app.tasks.find_element import find_all_elements
         from app.tasks.capture_tree import capture_tree
-        from ApplicationServices import (
-            AXUIElementCopyAttributeValue,
-            kAXValueAttribute,
-            kAXErrorSuccess,
-        )
+        from app.tasks.serialize_node import serialize_ax_node
 
         role = params.get("role", "")
         desc_contains = params.get("description_contains")
@@ -189,15 +190,14 @@ def register_all_handlers(ctx: ExecutionContext):
         results = find_all_elements(ctx.app_name, role=role,
                                      description_contains=desc_contains)
 
-        # Capture tree for label finding
+        # Capture tree for label finding (heuristic — preceding AXStaticText).
         tree = capture_tree(ctx.app_name)
 
         # Dedupe by element identity. find_all_elements walks AXWebArea and
         # can revisit the same element via multiple parent paths (Wonder
         # Blocks wraps elements in many React containers), producing
-        # duplicates. Iteration cost compounds in for_each loops. Identity
-        # of AXUIElement is via the underlying CFEqual, but we can dedupe
-        # by id() since same Python wrapper is returned for same element.
+        # duplicates. Identity of AXUIElement is via underlying CFEqual; we
+        # dedupe by id() since same Python wrapper is returned for same element.
         seen_ids = set()
         items = []
         for element, desc in results:
@@ -206,27 +206,27 @@ def register_all_handlers(ctx: ExecutionContext):
                 continue
             seen_ids.add(elem_id)
 
-            label = _find_preceding_label(tree, desc, target_role=role)
+            # RAW AX NODE — full attribute set (role, title, description,
+            # value, name, position, size, visible_bbox). Per Jesse 2026-05-19:
+            # Mac surfaces the unfiltered AX data; server picks what it needs.
+            ax = serialize_ax_node(element)
 
-            # Fetch the element's value attribute separately. find_all_elements
-            # collapses Description/Title/Value into a single `desc` field,
-            # which loses the actual value when description is non-empty
-            # (e.g. AXComboBox always has description='Select an answer'
-            # even when value='Kr'). Capture value separately so for_each
-            # loops can dispatch on it.
-            err, val = AXUIElementCopyAttributeValue(
-                element, kAXValueAttribute, None,
-            )
-            value_str = (
-                str(val) if (err == kAXErrorSuccess and val is not None) else ""
-            )
+            # CONVENIENCE FIELDS (heuristic, derived):
+            #   label       = preceding AXStaticText (Mac-side tree-walk heuristic)
+            #   popup_desc  = alias of description (kept for current spark callers)
+            #   description = AXDescription as captured by find_all_elements
+            #   value       = AXValue (sourced from `ax` for consistency)
+            # Server should prefer the `ax` dict for matching identity; the
+            # convenience fields are best-effort hints and may be empty.
+            label = _find_preceding_label(tree, desc, target_role=role)
 
             items.append({
                 "element": element,
+                "ax": ax,
                 "description": desc,
-                "popup_desc": desc,  # Alias for LLM compatibility
+                "popup_desc": desc,
                 "label": label,
-                "value": value_str,
+                "value": ax.get("value", ""),
             })
 
         logger.info(
@@ -281,6 +281,7 @@ def register_all_handlers(ctx: ExecutionContext):
     # --- discover_menu: capture tree, find menu items by role ---
     def handle_discover_menu(ctx, params):
         from app.tasks.capture_tree import capture_tree
+        from app.tasks.bt_helpers import _extract_menu_nodes
 
         role = params.get("role", "AXMenuItem")
         tree = capture_tree(ctx.app_name)
@@ -308,7 +309,13 @@ def register_all_handlers(ctx: ExecutionContext):
                 menu_subtree = web_area
                 logger.warning("discover_menu: no AXMenu found, using AXWebArea")
 
-        items = _extract_menu_items(menu_subtree, role)
+        # Return enriched menu items: each is {'text': <display>, 'ax': <raw>}.
+        # Per Jesse 2026-05-19 ("Mac is dumb capture, server is smart"): the
+        # raw AX node travels alongside the text so server can re-parse any
+        # attribute (role/value/bbox/etc.) without a Mac patch. Current
+        # callers (lookup_match, select_dropdown_option) read item.text for
+        # display-string matching; new server-side consumers can read item.ax.
+        items = _extract_menu_nodes(menu_subtree, role)
         logger.info(f"discover_menu: {len(items)} items found")
         return items
 

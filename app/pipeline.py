@@ -85,24 +85,10 @@ def _capture_screen_content(
         logger.warning(f"local_kb capture: add_document failed: {e}")
 
 
-def _strip_tree_for_validation(tree: dict) -> dict:
-    """
-    Strip position/size/bbox/element_id from tree for validation payload.
-
-    Spark only needs the structural skeleton (role, name, value, children)
-    to re-match and validate. Visual layout data bloats the HTTP payload
-    and is irrelevant for skeleton extraction.
-    """
-    STRIP_KEYS = {"position", "size", "visible_bbox", "element_id"}
-
-    def _strip(node: dict) -> dict:
-        stripped = {k: v for k, v in node.items() if k not in STRIP_KEYS and k != "children"}
-        children = node.get("children")
-        if children:
-            stripped["children"] = [_strip(c) for c in children]
-        return stripped
-
-    return _strip(tree)
+# REMOVED 2026-05-19: _strip_tree_for_validation (Jesse: "no proactive
+# filtering anywhere — full trees go to server"). Mac no longer strips
+# position/size/visible_bbox/element_id from after_tree before /next_action.
+# Server is responsible for any reduction it needs.
 
 
 # =============================================================================
@@ -430,10 +416,11 @@ def run_continuous(
                 if not bt_result.get("success", False):
                     last_result["failed_bt"] = tree_def
 
-                # Validation chain: ALWAYS send after_tree so Spark can analyze
-                # what screen we landed on — especially important when BT fails,
-                # so Spark can diagnose the failure and consult accurately.
-                last_result["after_tree"] = _strip_tree_for_validation(after_tree)
+                # Validation chain: ALWAYS send the FULL raw after_tree.
+                # Per Jesse 2026-05-19: no proactive filtering. Server gets
+                # position/size/visible_bbox/element_id intact and reduces
+                # only what it needs to.
+                last_result["after_tree"] = after_tree
                 # Send BT debug log tail for Spark-side diagnostics
                 try:
                     with open("/tmp/behavior_tree_debug.log") as _btf:

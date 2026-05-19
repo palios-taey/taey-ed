@@ -43,10 +43,34 @@ def _find_menu_subtree(tree: dict) -> Optional[dict]:
 
 def _extract_menu_items(tree: dict, role: str) -> list:
     """
-    Extract menu item text from tree, stripping ' selected' suffix.
-    Chrome appends ' selected' to the currently-selected option.
+    Extract menu item text from tree. Returns list of strings (text only).
+
+    Used as a string-membership probe (e.g. system-menu sanity check). For
+    full node data per item, use _extract_menu_nodes — that's what handlers
+    surface to the BT engine + server (Jesse 2026-05-19: send raw AX data).
     """
-    items = []
+    return [n["text"] for n in _extract_menu_nodes(tree, role)]
+
+
+def _extract_menu_nodes(tree: dict, role: str) -> list:
+    """
+    Walk a tree subtree and collect all nodes matching `role`, returning
+    one dict per match: { 'text': <stripped display string>, 'ax': <full
+    raw AX node dict from capture_tree> }.
+
+    Per Jesse 2026-05-19 architectural principle: Mac surfaces the raw AX
+    data; server decides what to use. The synthesized `text` field is kept
+    as a convenience for current callers (lookup_match/select_dropdown_option
+    operate on display text), but the raw `ax` node is available alongside
+    for any server-side parsing that needs role/bbox/value/etc.
+
+    The " selected" / " not selected" ARIA suffix is INTENTIONALLY preserved
+    on `text` (Jesse 2026-05-18: server-side norm in call_gemini.py owns
+    that normalization). Decorative unicode arrows are stripped — they
+    are display-only chars and never carry answer content.
+    """
+    nodes = []
+    seen_text = set()
 
     def walk(node: dict):
         if not isinstance(node, dict):
@@ -54,19 +78,15 @@ def _extract_menu_items(tree: dict, role: str) -> list:
         if node.get("role") == role:
             text = node.get("title") or node.get("value") or node.get("description") or ""
             text = str(text).strip()
-            # REMOVED: " selected" / " not selected" suffix strip — server handles ARIA
-            # suffix normalization in spark/tasks/call_gemini.py so Mac stays a dumb
-            # capture/execute layer (per Jesse 2026-05-18 architectural principle).
-            # The old 9-char strip mangled labels like "the same not selected" -> "the same not".
-            # Strip decorative unicode arrows (display-only chars, never answer text)
             text = text.replace("\u2192", "").replace("→", "").strip()
-            if text and text not in items:
-                items.append(text)
+            if text and text not in seen_text:
+                seen_text.add(text)
+                nodes.append({"text": text, "ax": node})
         for child in node.get("children", []):
             walk(child)
 
     walk(tree)
-    return items
+    return nodes
 
 
 def _find_preceding_label(tree: dict, target_desc: str, target_role: str = "AXPopUpButton") -> str:

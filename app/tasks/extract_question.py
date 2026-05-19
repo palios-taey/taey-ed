@@ -57,6 +57,9 @@ def extract_question(tree: dict, extract_config: dict) -> dict:
     """
     # Scope to web content area (excludes Chrome toolbar/tabs)
     scoped_tree = _find_web_area(tree)
+    # Default search_root to scoped_tree so the return statement below
+    # can reference it even when no question config is supplied.
+    search_root = scoped_tree
 
     question_text = ""
     options = []
@@ -69,7 +72,6 @@ def extract_question(tree: dict, extract_config: dict) -> dict:
         q_contains = q_config.get("contains", "")
         q_parent = q_config.get("parent_contains", "")
         # If parent_contains specified, scope search to that subtree first
-        search_root = scoped_tree
         if q_parent:
             parent_node = _find_parent_node(scoped_tree, q_parent)
             if parent_node:
@@ -112,6 +114,11 @@ def extract_question(tree: dict, extract_config: dict) -> dict:
         "question_type": question_type,
         "has_text_field": len(text_fields) > 0,
         "text_field_count": len(text_fields),
+        # RAW SUBTREE (Jesse 2026-05-19): the actual AX subtree the parser
+        # walked. Server can re-parse or pull additional fields the Mac
+        # parser drops. If parent_contains scoped the search, this is that
+        # parent's subtree; otherwise it's the AXWebArea subtree.
+        "raw_scoped_subtree": search_root,
     }
 
 
