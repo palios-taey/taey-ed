@@ -421,17 +421,30 @@ def run_continuous(
                 # position/size/visible_bbox/element_id intact and reduces
                 # only what it needs to.
                 last_result["after_tree"] = after_tree
-                # Send BT debug log tail for Spark-side diagnostics
+                # Send BT debug log tail for Spark-side diagnostics. UTF-8 +
+                # errors=replace because btlog emits non-ASCII chars (Unicode
+                # arrows, math italic letters, etc.) and the bundled py2app
+                # Python locale was eating the read with UnicodeDecodeError,
+                # silently dropping bt_debug_tail from the wire (Jesse defect
+                # 2026-05-19 18:42).
                 try:
-                    with open("/tmp/behavior_tree_debug.log") as _btf:
+                    with open(
+                        "/tmp/behavior_tree_debug.log",
+                        encoding="utf-8",
+                        errors="replace",
+                    ) as _btf:
                         _bt_lines = _btf.readlines()
-                        last_result["bt_debug_tail"] = "".join(_bt_lines[-20:])
-                except Exception:
-                    pass
+                    last_result["bt_debug_tail"] = "".join(_bt_lines[-20:])
+                except Exception as e:
+                    # Log on failure instead of swallowing — we need to know
+                    # if this path breaks again.
+                    logger.warning(f"bt_debug_tail read failed: {e!r}")
                 # Always send skeleton_hash so Spark can invalidate bad signatures on failure
                 last_result["directive_skeleton_hash"] = directive.get("skeleton_hash", "")
-                if bt_result.get("success") and not bt_result.get("continue_loop"):
-                    last_result["directive_expected_next"] = directive.get("expected_next", [])
+                # Always echo expected_next so server sees what it told us
+                # to anticipate (success or failure). Jesse 2026-05-19: no
+                # proactive filtering — surface the data unconditionally.
+                last_result["directive_expected_next"] = directive.get("expected_next", [])
 
                 # Screen completed: success AND not a polling action
                 if bt_result.get("success") and not bt_result.get("continue_loop"):
