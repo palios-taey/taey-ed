@@ -20,10 +20,13 @@ MASTER_CATEGORIES = {"VIDEO", "ARTICLE", "EXERCISE", "NAVIGATION", "TRANSITION",
 def get_master_category(screen_type: str) -> str:
     """Extract master category from screen_type string.
 
-    Supports both new (colon) and legacy (underscore) formats:
-        "VIDEO:playing" -> "VIDEO"
-        "ARTICLE_READING" -> "ARTICLE"
-        "EXERCISE" -> "EXERCISE"
+    Supports new (colon) and legacy (underscore) formats, plus
+    platform-prefixed variants:
+        "VIDEO:playing"              -> "VIDEO"
+        "ARTICLE_READING"            -> "ARTICLE"
+        "EXERCISE"                   -> "EXERCISE"
+        "KA_EXERCISE_DRAG_RANKING"   -> "EXERCISE"     (platform prefix)
+        "KA_COURSE_OVERVIEW"         -> "NAVIGATION"   (semantic platform variant)
     """
     if not screen_type:
         return "UNKNOWN"
@@ -40,6 +43,15 @@ def get_master_category(screen_type: str) -> str:
     for cat in sorted(MASTER_CATEGORIES, key=len, reverse=True):
         if upper == cat or upper.startswith(cat + "_"):
             return cat
+
+    # Strip platform prefix (e.g. "KA_") and try again. Classifier may return
+    # platform-specific variants like "KA_EXERCISE_DRAG_RANKING" where the
+    # master category sits AFTER the 2-letter platform prefix.
+    if "_" in upper:
+        without_prefix = upper.split("_", 1)[1]
+        for cat in sorted(MASTER_CATEGORIES, key=len, reverse=True):
+            if without_prefix == cat or without_prefix.startswith(cat + "_"):
+                return cat
 
     return "UNKNOWN"
 

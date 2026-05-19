@@ -955,6 +955,36 @@
         "TRANSITION",
         "NAVIGATION"
       ],
+      "subtypes": [
+        {
+          "name": "course_overview",
+          "description": "Khan Academy course/unit overview page (KA_COURSE_OVERVIEW). Shows a grid/list of all lessons, videos, articles, and exercises with progress indicators per item: 'Not started', 'unfamiliar', 'Familiar', 'Practiced', 'Proficient', 'Mastered'. The 'next' activity is marked with 'Up next for you!' indicator on the current-progress item. Course/unit overview is the navigation hub the user lands on between activities.",
+          "tree_signal": "HAS_LIST",
+          "interaction_pattern": "find_all(AXLink) -> send_to_llm(navigate) WITH explicit question text guiding the LLM to identify the 'Up next for you!' link OR the first 'unfamiliar' link (NOT intro/welcome content the user has completed) -> click element=$nav.answer_element (server returns matched element ref so we never re-search by text).",
+          "operational_notes": [
+            {
+              "discovered_at": "2026-05-19T00:10:00Z",
+              "by": "claude-primary",
+              "screen_variant": "KA_COURSE_OVERVIEW",
+              "rule": "ON COURSE OVERVIEW: identify the user's NEXT progress item explicitly, do NOT let the LLM pick blindly from all links.",
+              "note": "Khan's course/unit overview page shows every lesson/video/article/exercise on the unit. A bare `find_all(AXLink) -> navigate -> click` BT with no question text gives the LLM the entire link list with no hint about WHICH link to pick. Observed 2026-05-19 00:02: LLM was asked to navigate, saw the welcome/intro video link near the top of the list, and picked it — sending the user back to content they had already completed. The LLM has no progress context unless the BT TELLS IT what to look for.",
+              "platform_signals": {
+                "next_marker": "'Up next for you!' text appended (no separator) to the current-progress activity's AXLink name. Example AX name: 'Apply: Connecting motion and forces: unfamiliarUp next for you!'. The marker is literally smashed into the link text without a space — the LLM must look for the substring 'Up next for you!' anywhere in the link description.",
+                "status_suffix": "Activity progress status is concatenated into the link name: 'Not started' (no label, or implicit), 'unfamiliar', 'Familiar', 'Practiced', 'Proficient', 'Mastered'. The 'next' link is typically the first 'unfamiliar' item OR the one with 'Up next for you!'.",
+                "anti_targets": "Intro/welcome links like 'Learn more: Welcome to middle school physics!' OR any 'Course intro', 'Unit intro' — these are evergreen entry points the user has already completed. Never navigate to them as 'next'."
+              },
+              "bt_template_hint": "Pass an EXPLICIT QUESTION to send_to_llm telling the LLM what to look for. The question is platform-specific guidance. Then use the element ref returned by the server.\n\n```json\n{\n  \"type\": \"sequence\",\n  \"children\": [\n    {\"action\": \"find_all\", \"params\": {\"role\": \"AXLink\"}, \"store\": \"links\"},\n    {\n      \"action\": \"send_to_llm\",\n      \"params\": {\n        \"question_type\": \"navigate\",\n        \"question\": \"This is a Khan Academy course/unit overview page. Identify the user's NEXT activity link. Priority rules: (1) FIRST PREFERENCE: the link whose name/description contains the marker 'Up next for you!' — Khan smashes this text into the link name without a space, e.g. 'Apply: Foo: unfamiliarUp next for you!'. (2) IF no 'Up next for you!' marker: the FIRST link with status 'unfamiliar' (NOT proficient, NOT familiar, NOT mastered — those are already done). (3) NEVER pick: links containing 'Welcome', 'Course intro', 'Unit intro', 'Learn more', or any clearly-introductory content. Those are evergreen entry points the user has completed. (4) Output ONLY the exact description string of the chosen link, nothing else.\",\n        \"items\": \"$links\"\n      },\n      \"store\": \"nav\"\n    },\n    {\n      \"action\": \"store_qa\",\n      \"params\": {\n        \"question\": \"Course overview: pick next link\",\n        \"answer\": \"$nav.answer\",\n        \"question_type\": \"navigate\"\n      }\n    },\n    {\n      \"action\": \"click\",\n      \"params\": {\n        \"element\": \"$nav.answer_element\",\n        \"post_delay\": 3.0\n      }\n    }\n  ]\n}\n```",
+              "anti_patterns": [
+                "send_to_llm with question_type=navigate and NO question text — gives LLM the link list with no guidance. LLM picks the friendliest-looking link (usually welcome/intro). Observed regression 2026-05-19 00:02.",
+                "find_and_click with target=$nav.answer — fails when Khan smashes 'Up next for you!' into the link name. Use click element=$nav.answer_element instead (the server returns the matched element ref).",
+                "Picking links labeled 'Welcome', 'Learn more', 'Course intro' — these are evergreen entry points the user has already completed.",
+                "Following the FIRST link in find_all results — order is DOM order, not progress order."
+              ],
+              "verified_count": 0
+            }
+          ]
+        }
+      ],
       "operational_notes": [
         {
           "discovered_at": "2026-05-18T20:58:00Z",
@@ -962,7 +992,13 @@
           "screen_variant": "post-exercise / post-quiz / unit nav",
           "rule": "NAV CLICK BY ELEMENT REF: don't rely on find_and_click + exact text match for nav links",
           "note": "Khan sidebar nav AXLink names can include status suffixes (e.g., 'Apply: ... Not started') that don't concatenate cleanly into the AX name field \u2014 the suffix may be a separate child text node. find_and_click with match_mode=exact then fails because the LLM's chosen label doesn't match the AXLink's actual name attribute. Observed 20:55:17: LLM picked 'Apply: Connecting motion and forces Not started', find_and_click returned None. FIX: use the same pattern that worked for dropdowns \u2014 pass the raw element ref from find_all instead of name-matching. send_to_llm with navigate gets items=$links; the LLM returns answer=<chosen_description>; instead of find_and_click target=$nav.answer, do match_to_option server-side to find the matching item index, then click $links[index].element directly.",
-          "bt_template_hint": "Until server-side parse_navigate returns matched_index, the workaround is: for_each over $links, conditional check if $link.description == $nav.answer, click element=$link.element on match. OR use match_mode=contains as a soft fallback (but contains is BANNED per Jesse \u2014 exact-only). Better: enhance parse_navigate server-side to return both answer (text) and selected (element ref dict).",
+          "server_fix_landed": "2026-05-19T00:05:00Z \u2014 call_gemini.py::generate_answer navigate path now returns answer_element (the matched item's element ref) in addition to answer (the matched description string). The BT must use answer_element directly; no text re-search.",
+          "bt_template_hint": "Use the element ref returned by the server's navigate response. NO text re-search.\n\n```json\n{\n  \"type\": \"sequence\",\n  \"children\": [\n    {\"action\": \"find_all\", \"params\": {\"role\": \"AXLink\"}, \"store\": \"links\"},\n    {\"action\": \"send_to_llm\", \"params\": {\"question_type\": \"navigate\", \"items\": \"$links\"}, \"store\": \"nav\"},\n    {\"action\": \"store_qa\", \"params\": {\"question\": \"Navigate to next target\", \"answer\": \"$nav.answer\", \"question_type\": \"navigate\"}},\n    {\"action\": \"click\", \"params\": {\"element\": \"$nav.answer_element\", \"post_delay\": 3.0}}\n  ]\n}\n```\n\nKey points:\n- find_all role=AXLink (or whatever the navigable role is on this platform) -> $links\n- send_to_llm question_type=navigate items=$links -> $nav (now contains answer + answer_element)\n- click element=$nav.answer_element  \u2014 USE THIS, not find_and_click target=$nav.answer\n- Why: Khan concatenates state suffixes into link names (e.g. 'unfamiliarUp next for you!'). LLM strips them when picking. Exact text re-match then fails. Element ref bypasses all of this.",
+          "anti_patterns": [
+            "find_and_click target=$nav.answer role=AXLink match_mode=exact \u2014 fails when AX name has state-suffix noise the LLM stripped",
+            "match_mode=contains as workaround \u2014 banned per Jesse 2026-05-18 feedback memory",
+            "for_each over $links with conditional description match + click \u2014 overcomplicated when server now returns the element directly"
+          ],
           "verified_count": 0
         }
       ]

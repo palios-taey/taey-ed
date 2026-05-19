@@ -718,16 +718,39 @@ async def generate_answer(
         matches = {}
 
         if question_type == "navigate" and items:
-            # Match LLM response to one of the item descriptions
+            # Match LLM response to one of the item descriptions, then carry
+            # the matched item's element reference through the response so the
+            # BT can click by element (not by text re-search).
+            #
+            # Why: Khan and similar platforms concatenate state suffixes into
+            # link names (e.g. "Apply: Foo: unfamiliarUp next for you!"). The
+            # LLM strips those when picking, so an exact text match downstream
+            # fails. The element ref from find_all is stable; use it instead.
             descriptions = [
                 item.get("popup_desc", item.get("description", ""))
                 for item in items
             ]
             answer = match_to_option(raw_answer, descriptions) if descriptions else raw_answer
-            logger.info(f"Navigate: selected '{answer[:80]}'")
+
+            # Find the items[i] whose description == answer. match_to_option
+            # already returned a description-list entry, so this is exact.
+            matched_item = None
+            answer_element = None
+            for i, d in enumerate(descriptions):
+                if d == answer:
+                    matched_item = items[i]
+                    answer_element = items[i].get("element")
+                    break
+
+            logger.info(
+                f"Navigate: selected '{answer[:80]}' "
+                f"(element={'present' if answer_element else 'MISSING'})"
+            )
             return {
                 "success": True,
                 "answer": answer,
+                "answer_element": answer_element,  # BT: click element=$nav.answer_element
+                "matched_item": matched_item,
                 "question_type": question_type,
                 "model": model_used,
             }
