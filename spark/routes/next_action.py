@@ -153,61 +153,130 @@ def _escalate_to_claude_diagnosing(
             build_status("Claude diagnosis complete — retrying with updated knowledge"),
         ])
 
-    # Notify claude exactly once per stuck-screen cycle (until done/gave_up).
-    if not diagnosing.exists():
-        diagnosing.touch()
-        # Compose Mac execution log section if present — saves Claude a roundtrip
-        # to CCM by inlining the failure log directly into the notification.
-        bt_log_section = ""
-        if bt_debug_tail and bt_debug_tail.strip():
-            # Truncate to last ~80 lines / 4000 chars to keep notification readable
-            lines = bt_debug_tail.splitlines()[-80:]
-            tail = "\n".join(lines)[-4000:]
-            bt_log_section = f"\nMAC BT EXECUTION LOG (last lines):\n{tail}\n"
-        failed_bt_section = ""
-        if failed_bt:
-            try:
-                import json as _json
-                failed_bt_section = (
-                    "\nPRIOR FAILED BT:\n```json\n"
-                    + _json.dumps(failed_bt, indent=2)[:3000]
-                    + "\n```\n"
+    # Tier-aware escalation per Jesse 2026-05-19 ladder
+    # (2 me → 1 Perplexity → 1 Family → terminal). The notify body and packet
+    # both come from spark.tasks.escalation; this helper just figures out the
+    # tier from `retries`, builds the packet, and dispatches.
+    from spark.tasks.escalation import (
+        tier_for_attempt, build_packet, notify_body_for_tier, UNSOLVED_LOG,
+    )
+    tier = tier_for_attempt(retries)
+
+    # Persist Mac log in the diag state dir BEFORE building the packet so the
+    # packet's attempt-history section can pick it up.
+    if bt_debug_tail and bt_debug_tail.strip():
+        try:
+            (diag_dir / "last_bt_debug.log").write_text(bt_debug_tail)
+        except Exception:
+            pass
+
+    # Terminal tier: auto-mark unsolvable, log, return user_input_needed.
+    if tier == "terminal":
+        try:
+            gave_up.touch()
+            UNSOLVED_LOG.parent.mkdir(parents=True, exist_ok=True)
+            with UNSOLVED_LOG.open("a") as fh:
+                fh.write(
+                    f"\n## {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} "
+                    f"— {platform} {_screen_hash[:16]}\n"
+                    f"- escalation_path: live_bt_failure\n"
+                    f"- consultation_id: {consultation_id}\n"
+                    f"- attempts_exhausted: {retries}\n"
+                    f"- state_dir: {diag_dir}\n"
+                    f"- failure_reason: {reason}\n"
                 )
-            except Exception:
-                failed_bt_section = ""
+        except Exception:
+            logger.exception("UNSOLVED.md append failed")
         try:
             from spark.tasks.notify_tmux import notify_spark_claude as _notify
             _notify(
-                f"CLAUDE_DIAGNOSIS_REQUIRED — production loop\n"
-                f"Consult: /tmp/taey-ed-consult/{consultation_id}\n"
-                f"Platform: {platform}\n"
-                f"Screen type hint: {screen_type_hint}\n"
-                f"Screen hash: {_screen_hash[:16]}\n"
-                f"State dir: {diag_dir}\n"
-                f"Reason: {reason}\n"
-                f"Prior diagnosis cycles: {retries}\n"
-                f"{bt_log_section}"
-                f"{failed_bt_section}\n"
-                f"INSTRUCTIONS:\n"
-                f"1. The Mac execution log above (if present) shows exactly where the prior BT failed.\n"
-                f"2. Read consult artifacts at /tmp/taey-ed-consult/{consultation_id}/ for tree/screenshot.\n"
-                f"3. Edit /home/user/taey-ed/spark/platforms/{platform}/knowledge.json\n"
-                f"   under screen_types.{{master_type}}.subtypes.{{subtype}}.operational_notes[].\n"
-                f"   Rule must be generalizable.\n"
-                f"4. When done: touch {done}\n"
-                f"5. Only if truly unsolvable: touch {gave_up}\n"
+                f"TERMINAL ESCALATION — {platform} screen_hash {_screen_hash[:16]} "
+                f"marked unsolvable after 4-tier exhaustion. "
+                f"Logged to {UNSOLVED_LOG}.",
+                notify_type="defect",
             )
         except Exception:
+            logger.exception("notify_spark_claude failed on terminal")
+        from spark.tasks.classify_screen import _describe_screen
+        return _with_chat({
+            "directive": "user_input_needed",
+            "directive_id": _make_directive_id(),
+            "reason": f"Escalation ladder exhausted: {reason}",
+            "screen_type": screen_type_hint,
+            "screen_description": _describe_screen(tree) if tree else "",
+            "consultation_id": consultation_id,
+        }, platform, [
+            build_status(f"Escalation ladder exhausted on {screen_type_hint}"),
+            build_question(f"Cannot proceed: {reason}"),
+        ])
+
+    # Non-terminal: build rich-context packet + tier-aware notify (once per
+    # stuck-screen cycle until done/gave_up).
+    if not diagnosing.exists():
+        diagnosing.touch()
+        consult_path = Path("/tmp/taey-ed-consult") / consultation_id if consultation_id else diag_dir
+        # Compose Mac BT execution log + failed BT into an attempts.jsonl-like
+        # entry inside the state dir so build_packet's attempt-history section
+        # surfaces them in the packet.
+        try:
+            attempts_path = diag_dir / "attempts.jsonl"
+            attempt_record = {
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "classification": screen_type_hint,
+                "failure_mode": reason,
+                "analysis": "",
+                "bt": failed_bt or {},
+                "mac_log_tail": (bt_debug_tail or "")[-4000:],
+            }
+            with attempts_path.open("a") as fh:
+                fh.write(json.dumps(attempt_record) + "\n")
+        except Exception:
+            logger.exception("attempts.jsonl append failed (non-fatal)")
+
+        # Resolve operational_notes for the packet's known-notes section
+        try:
+            from spark.tasks.knowledge_loader import (
+                load_knowledge, get_operational_notes_for_screen,
+            )
+            knowledge = load_knowledge(platform)
+            notes_md = get_operational_notes_for_screen(knowledge, screen_type_hint)
+        except Exception:
+            knowledge = {}
+            notes_md = ""
+
+        try:
+            packet_path = build_packet(
+                platform=platform,
+                screen_hash=_screen_hash,
+                consult_path=consult_path,
+                diag_state_dir=diag_dir,
+                retry_count=retries,
+                knowledge=knowledge,
+                operational_notes_rendered=notes_md,
+                screen_type_hint=screen_type_hint,
+            )
+        except Exception:
+            logger.exception("build_packet failed; falling back to diag_dir path")
+            packet_path = diag_dir / "(packet_build_failed)"
+
+        body = notify_body_for_tier(
+            tier=tier,
+            packet_path=packet_path,
+            platform=platform,
+            screen_hash=_screen_hash,
+            retry_count=retries,
+            consult_path=consult_path,
+            diag_state_dir=diag_dir,
+        )
+        try:
+            from spark.tasks.notify_tmux import notify_spark_claude as _notify
+            _notify(body, notify_type="escalation")
+        except Exception:
             logger.exception("notify_spark_claude failed in escalate helper")
-        # Persist Mac log in the diag state dir for future cycles to read
-        if bt_debug_tail and bt_debug_tail.strip():
-            try:
-                (diag_dir / "last_bt_debug.log").write_text(bt_debug_tail)
-            except Exception:
-                pass
         logger.warning(
-            f"Claude diagnosis triggered for {consultation_id} "
-            f"({platform}, {screen_type_hint}, hash={_screen_hash[:16]}, reason={reason!r})"
+            f"Escalation triggered for {consultation_id} "
+            f"({platform}, {screen_type_hint}, hash={_screen_hash[:16]}, "
+            f"tier={tier}, retry_count={retries}, reason={reason!r})"
         )
 
     return _with_chat({

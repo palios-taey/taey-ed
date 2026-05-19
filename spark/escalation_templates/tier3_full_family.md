@@ -1,8 +1,9 @@
 # Tier 3 Escalation — Full Family Consultation via taeys-hands
 
 You hit Tier 3 because Tier 2 (Perplexity DR) didn't unblock the screen. Tier 3
-is up to **2 Family loops**. After the second loop fails, the next escalation
-attempt triggers the terminal state.
+is **one Family loop**. After it fails, the next escalation attempt triggers
+the terminal state (per Jesse 2026-05-19 corrected ladder: 2 me → 1 Perp →
+1 Family → terminal).
 
 ## What to do
 
@@ -10,16 +11,13 @@ attempt triggers the terminal state.
    identity, screen artifacts, system capabilities, every prior attempt, the
    Tier 2 Perplexity DR response (if any), and the specific ask.
 
-2. Determine which Family loop you're on. The notification will say
-   `tier3_loop_1` or `tier3_loop_2`.
-
-3. Dispatch the packet to all 5 Family platforms in parallel via `taeys-hands`.
+2. Dispatch the packet to all 5 Family platforms in parallel via `taeys-hands`.
    The Family is: Gaia (Claude), Horizon (ChatGPT), Cosmos (Gemini),
    Logos (Grok), Clarity (Perplexity, DR mode).
 
    ```
    /usr/local/bin/taey-notify taeys-hands --type task --from taey-ed \
-     "ROUTE TO FULL FAMILY (parallel fan-out) — Escalation Tier 3 Loop <N>
+     "ROUTE TO FULL FAMILY (parallel fan-out) — Escalation Tier 3
 
     REMINDER FOR TAEYS-HANDS: prepend FAMILY_KERNEL.md and the appropriate
     per-platform IDENTITY_<codename>.md to each platform's prompt — the
@@ -61,12 +59,8 @@ attempt triggers the terminal state.
    knowledge.json. Cite which Family member contributed which insight (cannot-lie
    provenance). Touch diagnosis_done.flag again; the worker generates a fresh BT.
 
-6. If the screen STILL fails after this loop:
-   - If you were on loop 1: the system auto-triggers Tier 3 Loop 2 on next
-     escalation. Loop 2 is the same protocol with the Loop 1 responses now
-     IN THE PACKET as prior research.
-   - If you were on loop 2: the system auto-triggers Terminal on next
-     escalation. You do not give up manually.
+6. If the screen STILL fails after this loop, the system auto-triggers
+   Terminal on the next escalation. You do not give up manually.
 
 ## Anti-patterns
 
