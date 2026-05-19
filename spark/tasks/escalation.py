@@ -240,15 +240,25 @@ def build_packet(
     esc_dir = ESCALATIONS_DIR / esc_id
     esc_dir.mkdir(parents=True, exist_ok=True)
 
-    # Copy artifacts alongside the packet so it's a single-folder unit
-    tree_src = consult_path / "tree.json"
-    shot_src = consult_path / "screenshot.png"
+    # Copy artifacts alongside the packet so it's a single-folder unit.
+    # Primary source: the consult_path (worker-mode escalations have full
+    # consult dir with tree.json + screenshot.png + metadata.json).
+    # Fallback source: the diag_state_dir (Step 4.5 → claude-primary
+    # escalations have no consult_id; tree+screenshot are persisted to the
+    # diag dir at escalation time — see next_action.py::_escalate_to_
+    # claude_diagnosing 2026-05-19 bug fix).
     tree_dst = esc_dir / "tree.json"
     shot_dst = esc_dir / "screenshot.png"
-    if tree_src.exists():
-        shutil.copy2(tree_src, tree_dst)
-    if shot_src.exists():
-        shutil.copy2(shot_src, shot_dst)
+
+    def _try_copy(src_dir: Path):
+        if (src_dir / "tree.json").exists() and not tree_dst.exists():
+            shutil.copy2(src_dir / "tree.json", tree_dst)
+        if (src_dir / "screenshot.png").exists() and not shot_dst.exists():
+            shutil.copy2(src_dir / "screenshot.png", shot_dst)
+
+    _try_copy(consult_path)
+    if not tree_dst.exists() or not shot_dst.exists():
+        _try_copy(diag_state_dir)
 
     # Load tree for AX summary
     tree = {}

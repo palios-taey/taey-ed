@@ -62,6 +62,7 @@ def _escalate_to_claude_diagnosing(
     screen_type_hint: str = "UNKNOWN",
     bt_debug_tail: str = "",
     failed_bt: dict | None = None,
+    screenshot_b64: str | None = None,
 ) -> dict:
     """Route any failure through the Mira-side claude diagnosis loop.
 
@@ -72,6 +73,12 @@ def _escalate_to_claude_diagnosing(
     cycle; returns a wait directive so Mac keeps polling without surfacing a
     dialog. Only escalates to user_input_needed when claude EXPLICITLY touches
     the gave_up.flag in the state dir — Mac/Spark never make that decision.
+
+    Persistence (2026-05-19 bug fix): tree and screenshot_b64 are written to
+    the diag_dir as tree.json / screenshot.png so the escalation packet
+    builder can read them. Required for the new Step 4.5 → claude-primary
+    escalation path which has no consult_id (and therefore no consult dir
+    with these artifacts).
     """
     try:
         from spark.tasks.skeleton import (
@@ -87,6 +94,21 @@ def _escalate_to_claude_diagnosing(
     done = diag_dir / "diagnosis_done.flag"
     gave_up = diag_dir / "gave_up.flag"
     retry_p = diag_dir / "retries.txt"
+
+    # Persist tree + screenshot to diag_dir so the escalation packet builder
+    # has the AX data. Write only on first entry (idempotent — don't overwrite
+    # if Mac's tree mutated between escalations on the same hash).
+    if tree and not (diag_dir / "tree.json").exists():
+        try:
+            (diag_dir / "tree.json").write_text(json.dumps(tree, indent=2))
+        except Exception:
+            logger.exception("escalate: failed to write tree.json")
+    if screenshot_b64 and not (diag_dir / "screenshot.png").exists():
+        try:
+            import base64
+            (diag_dir / "screenshot.png").write_bytes(base64.b64decode(screenshot_b64))
+        except Exception:
+            logger.exception("escalate: failed to write screenshot.png")
 
     # Only path to user: claude explicitly gave up by touching gave_up.flag.
     # Mac/Spark cannot create this flag — only the Mira-side claude session can.
