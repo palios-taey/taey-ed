@@ -10,6 +10,7 @@ A residual X-API-Key fallback is kept ONLY for transitional non-user endpoints
 """
 
 import logging
+import time
 import httpx
 
 from app.config import get_spark_url, get_api_key
@@ -20,6 +21,21 @@ logger = logging.getLogger("taey-ed")
 # Connect timeout: 30s (fail fast if Spark unreachable)
 # Read timeout: None (consultations/reviews take as long as Claude needs)
 TIMEOUT = httpx.Timeout(connect=30.0, read=None, write=30.0, pool=30.0)
+
+# Retry on transient TLS / network errors. send_to_llm POSTs a screenshot
+# (~500KB) which intermittently fails mid-TLS-handshake against the
+# Cloudflare-Tunnel-fronted backend with _ssl.c:2580 ReadError. A small
+# bounded retry with backoff masks these flakes without papering over
+# real server failures (HTTPStatusError still raises immediately).
+# Jesse defect 2026-05-19 23:19 — two consecutive send_to_llm hits.
+_TRANSIENT_ERRORS = (
+    httpx.ReadError,
+    httpx.ConnectError,
+    httpx.RemoteProtocolError,
+    httpx.WriteError,
+)
+_MAX_TRANSIENT_RETRIES = 3
+_BACKOFF_BASE_SECONDS = 0.5
 
 
 def _auth_headers() -> dict:
@@ -59,15 +75,36 @@ def call_spark(endpoint: str, payload: dict = None, method: str = "POST") -> dic
             return httpx.get(url, headers=headers, timeout=TIMEOUT)
         return httpx.post(url, json=payload, headers=headers, timeout=TIMEOUT)
 
-    response = _do()
-    if response.status_code == 401 and bearer_header():
-        # Try one refresh + retry; only meaningful if we were using Bearer.
-        logger.info(f"call_spark {endpoint}: 401 — refreshing access token")
-        if refresh_access_token():
-            response = _do()
+    def _attempt_with_401_refresh() -> httpx.Response:
+        r = _do()
+        if r.status_code == 401 and bearer_header():
+            logger.info(f"call_spark {endpoint}: 401 — refreshing access token")
+            if refresh_access_token():
+                r = _do()
+        return r
 
-    response.raise_for_status()
-    return response.json()
+    last_exc = None
+    for attempt in range(_MAX_TRANSIENT_RETRIES):
+        try:
+            response = _attempt_with_401_refresh()
+            response.raise_for_status()
+            return response.json()
+        except _TRANSIENT_ERRORS as e:
+            last_exc = e
+            if attempt == _MAX_TRANSIENT_RETRIES - 1:
+                logger.error(
+                    f"call_spark {endpoint}: transient {type(e).__name__} "
+                    f"after {_MAX_TRANSIENT_RETRIES} attempts: {e!r}"
+                )
+                raise
+            backoff = _BACKOFF_BASE_SECONDS * (2 ** attempt)
+            logger.warning(
+                f"call_spark {endpoint}: transient {type(e).__name__}: {e!r} — "
+                f"retry {attempt + 1}/{_MAX_TRANSIENT_RETRIES} in {backoff:.1f}s"
+            )
+            time.sleep(backoff)
+    # Unreachable — loop either returns or raises.
+    raise last_exc if last_exc else RuntimeError("call_spark: retry loop fell through")
 
 
 if __name__ == "__main__":
