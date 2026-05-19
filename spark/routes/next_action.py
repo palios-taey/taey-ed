@@ -1414,14 +1414,48 @@ def _next_action_impl(request: NextActionRequest):
         gate_flag.unlink()
         logger.info(f"  Step 5: Knowledge gate cleared for {platform}")
 
-    # Claude-primary platforms: skip Flash + Pro entirely, route to consultation.
-    # Step 4 (exact hash → reuse stored BT) still applies and stays free.
-    _claude_directive = _maybe_claude_consult(
-        request, platform, tree, screen_type="UNKNOWN",
-    )
-    if _claude_directive:
-        logger.info(f"  Step 5: Claude-primary platform — routing to consultation")
-        return _claude_directive
+    # Claude-primary platforms: classify the screen first, then route to
+    # consultation with the variant. Previously this hardcoded
+    # screen_type="UNKNOWN", which caused the worker's prompt builder to load
+    # ZERO operational_notes from knowledge.json (no master, no subtype match).
+    # That's why every Khan BT was generated without screen-specific guidance —
+    # the loader was being called with UNKNOWN. Classification needs to happen
+    # BEFORE the consultation is created so the variant flows into
+    # metadata.screen_type_hint and downstream into compile_prompt.
+    if platform in CLAUDE_PRIMARY_PLATFORMS:
+        if not request.screenshot_b64:
+            logger.info("  Step 5: Claude-primary needs screenshot for classification")
+            return {
+                "directive": "need_screenshot",
+                "directive_id": _make_directive_id(),
+                "reason": "classification_needed",
+            }
+        from spark.tasks.classify_screen import classify_screen as _classify_for_routing
+        logger.info("  Step 5: Classifying for Claude-primary routing...")
+        _classification = _classify_for_routing(
+            tree=tree,
+            screenshot_b64=request.screenshot_b64,
+            platform=platform,
+        )
+        _master = _classification.get("screen_type", "UNKNOWN")
+        _variant = _classification.get("platform_variant") or _master
+        logger.info(
+            f"  Step 5: Claude-primary classified as type={_master} variant={_variant}"
+        )
+
+        # Register the hash → variant mapping for future Step 4 lookups
+        if _variant != "UNKNOWN":
+            register_hash(platform, skel_hash, _variant)
+
+        _claude_directive = _maybe_claude_consult(
+            request, platform, tree, screen_type=_variant,
+        )
+        if _claude_directive:
+            logger.info(
+                f"  Step 5: Claude-primary platform — routing to consultation "
+                f"(variant={_variant})"
+            )
+            return _claude_directive
 
     # Step 5A: Need screenshot for Flash classification
     if not request.screenshot_b64:
