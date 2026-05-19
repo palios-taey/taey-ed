@@ -823,6 +823,7 @@ def build_bt_from_tree(
         get_handlers_for_screen, get_quirks_for_screen,
         get_question_types_for_screen,
         get_operational_notes_for_screen,
+        get_prompt_block_for_screen,
     )
 
     tags = analyze_tree(tree)
@@ -837,15 +838,23 @@ def build_bt_from_tree(
         f"has_guidance={'yes' if user_guidance else 'no'}"
     )
 
-    # Screen-specific BT patterns now live in knowledge.json operational_notes
-    # (migrated 2026-05-19 from prompt_codex.SCREEN_PATTERNS). The matched
-    # subtype's bt_template_hint is injected below via
-    # get_operational_notes_for_screen. Tree-tag-driven hardcoded patterns
-    # have been deleted — knowledge.json is the single source of truth.
-    screen_specific_guidance = (
-        "Screen-specific guidance is injected via operational_notes below. "
-        "Look for the matched subtype's bt_template_hint."
-    )
+    # Screen-specific canonical BT pattern is pulled VERBATIM from knowledge.json's
+    # prompt_block fields (the former SCREEN_PATTERNS strings, migrated 2026-05-19
+    # WITH FORMAT PRESERVATION — Jesse's directive). This is the directive section
+    # the worker treats as canonical. Supplementary operational_notes (anti-patterns,
+    # discovered gotchas) are appended separately as bullets.
+    if use_knowledge:
+        screen_specific_guidance = get_prompt_block_for_screen(knowledge, screen_type)
+        if not screen_specific_guidance:
+            screen_specific_guidance = (
+                "No specific assessment signals detected in the tree. Use the "
+                "screenshot and tree to determine the right approach."
+            )
+    else:
+        screen_specific_guidance = (
+            "No specific assessment signals detected in the tree. Use the "
+            "screenshot and tree to determine the right approach."
+        )
 
     # Assemble the prompt
     prompt_parts = [

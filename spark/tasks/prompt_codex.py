@@ -1147,13 +1147,13 @@ def compile_prompt(
         get_handlers_for_screen, get_quirks_for_screen,
         get_question_types_for_screen,
         get_operational_notes_for_screen,
+        get_prompt_block_for_screen,
     )
     knowledge = load_knowledge(platform)
     raw_screen_type = context.get("screen_type", "UNKNOWN")
-    # Normalize to master category for knowledge.json lookups (EXERCISE_DROPDOWN
-    # → EXERCISE). knowledge.json is keyed by master categories; consults arrive
-    # variant-typed. Without normalization, NO subtype-aware sections (handlers,
-    # question_types, operational_notes) match for variant screens.
+    # Master category for functions that need it (handlers, quirks). Pass the
+    # raw variant to operational_notes/prompt_block functions — they do their
+    # own master resolution + subtype matching internally.
     try:
         from spark.tasks.screen_type_util import get_master_category
         screen_type = get_master_category(raw_screen_type) or raw_screen_type
@@ -1169,10 +1169,18 @@ def compile_prompt(
         if knowledge_ctx:
             sections.append(knowledge_ctx)
 
-        # JIT: Operational notes — concrete lessons from prior consultations
-        # (exact roles, casing quirks, depth gotchas, BT templates that worked).
-        # Empty string returned when no notes exist for this screen_type.
-        op_notes = get_operational_notes_for_screen(knowledge, screen_type)
+        # Canonical screen pattern (former SCREEN_PATTERNS inline templates,
+        # now stored verbatim as prompt_block in knowledge.json per subtype/
+        # master). Inject FIRST, before operational_notes bullets, so the
+        # worker sees the directive section the way it did pre-migration.
+        prompt_block = get_prompt_block_for_screen(knowledge, raw_screen_type)
+        if prompt_block:
+            sections.append(prompt_block)
+
+        # JIT: Operational notes — supplementary diagnostic learnings.
+        # Anti-patterns, gotchas, special-case BTs discovered live. Rendered
+        # as markdown bullets, layered on top of the canonical pattern.
+        op_notes = get_operational_notes_for_screen(knowledge, raw_screen_type)
         if op_notes:
             sections.append(op_notes)
 
