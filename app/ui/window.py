@@ -689,6 +689,23 @@ class TaeyEdWindow:
         self._update_status("Finishing current screen...")
         self._update_menu_bar_title("T: finishing...")
 
+        # Per taey-ed 2026-05-20 Option A: stop-after-screen and hard Stop
+        # produce identical server-side end states. Same daemon-thread
+        # best-effort reset pattern. Server endpoint is idempotent under
+        # the race with the in-flight BT finishing — pending_validations
+        # and abandoned consults from the current screen get cleared
+        # alongside everything else.
+        try:
+            platform, _ = self._get_selected_platform()
+        except Exception:
+            platform = None
+        if platform:
+            threading.Thread(
+                target=self._session_reset_async,
+                args=(platform,),
+                daemon=True,
+            ).start()
+
     def _on_run_continuous(self):
         """Handle Run Continuous button click."""
         self.run_button.config(state=tk.DISABLED)
