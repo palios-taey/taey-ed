@@ -724,6 +724,41 @@ class TaeyEdWindow:
         self.status_var.set("Stopping...")
         self._update_menu_bar_title("T: stopping")
 
+        # Clear server-side session state for this platform so the next
+        # Run Continuous starts fresh (no stale diagnosing flags, abandoned
+        # consults, or pending validations). Best-effort + off-UI-thread so
+        # a slow/failed reset never hangs the Stop action.
+        # Server contract (Jesse 2026-05-20): POST /session/reset?platform=X
+        # clears diag_dirs/consults/pending_validations; preserves hash_index/
+        # variant_cache/knowledge.json/signatures.
+        try:
+            platform, _ = self._get_selected_platform()
+        except Exception:
+            platform = None
+        if platform:
+            threading.Thread(
+                target=self._session_reset_async,
+                args=(platform,),
+                daemon=True,
+            ).start()
+
+    def _session_reset_async(self, platform: str) -> None:
+        """Best-effort POST /session/reset?platform=<platform>. Runs off the
+        UI thread. Logs outcome and never raises."""
+        try:
+            from app.tasks.call_spark import call_spark
+            result = call_spark(
+                f"/session/reset?platform={platform}", payload={}, method="POST",
+            )
+            cleared = result.get("cleared", {}) if isinstance(result, dict) else {}
+            self.logger.info(
+                f"session.reset ok platform={platform} cleared={cleared}"
+            )
+        except Exception as e:
+            self.logger.warning(
+                f"session.reset failed (continuing with stop) platform={platform}: {e!r}"
+            )
+
     def _screen_callback(self, screens_completed, max_screens):
         """Called by pipeline after each screen completes. Updates UI progress."""
         self._screens_completed = screens_completed
