@@ -16,6 +16,8 @@ from ApplicationServices import (
     kAXValueAttribute,
     kAXPositionAttribute,
     kAXSizeAttribute,
+    kAXMainAttribute,
+    kAXFocusedAttribute,
 )
 from CoreFoundation import CFArrayGetCount, CFArrayGetValueAtIndex
 import re
@@ -96,6 +98,18 @@ def capture_tree(app_name: str) -> dict:
         # visible_bbox: [x, y, width, height] for Spark Claude visual reference
         if pos_x is not None and width is not None:
             node["visible_bbox"] = [pos_x, pos_y, width, height]
+
+        # Window/element focus state (Jesse 2026-06-01: capture both so the
+        # server can disambiguate the active AXWebArea when a browser process
+        # has multiple windows open — e.g. Khan + a sign-in tab in a
+        # background window). Captured on EVERY element where the AX call
+        # succeeds — no proactive filtering. Server picks what it wants.
+        err, val = AXUIElementCopyAttributeValue(element, kAXMainAttribute, None)
+        if err == kAXErrorSuccess and val is not None:
+            node["main"] = bool(val)
+        err, val = AXUIElementCopyAttributeValue(element, kAXFocusedAttribute, None)
+        if err == kAXErrorSuccess and val is not None:
+            node["focused"] = bool(val)
 
         # Generate stable element_id from path + role + name (for Spark Claude visual reference ONLY)
         # NOTE: This ID is for visual mapping only - Mac executes by name+role, NOT element_id

@@ -19,6 +19,8 @@ from ApplicationServices import (
     kAXValueAttribute,
     kAXPositionAttribute,
     kAXSizeAttribute,
+    kAXMainAttribute,
+    kAXFocusedAttribute,
 )
 
 
@@ -70,5 +72,14 @@ def serialize_ax_node(element) -> dict:
 
     if pos_x is not None and width is not None:
         node["visible_bbox"] = [pos_x, pos_y, width, height]
+
+    # Window/element focus state (Jesse 2026-06-01: mirror what capture_tree
+    # captures so handler-echo AX dicts carry the same disambiguation signal).
+    err, val = AXUIElementCopyAttributeValue(element, kAXMainAttribute, None)
+    if err == kAXErrorSuccess and val is not None:
+        node["main"] = bool(val)
+    err, val = AXUIElementCopyAttributeValue(element, kAXFocusedAttribute, None)
+    if err == kAXErrorSuccess and val is not None:
+        node["focused"] = bool(val)
 
     return node
