@@ -718,6 +718,68 @@ def _validate_last_action(platform: str, config: dict, lr, current_tree: dict) -
     }
 
 
+@router.post("/session/reset")
+def session_reset(platform: str = "khan_academy"):
+    """Mac calls this when the user hits Stop on Run Continuous.
+    Clears stale spark-side state so the next session starts fresh.
+    Per Jesse 2026-05-20: 'we can't be out of sync. When user hits stop,
+    it has to clear everything for that user.'
+
+    Cleared:
+      - /tmp/taey-ed-claude-diagnosing/<platform>_*  (diagnosing flags, retry counters)
+      - /tmp/taey-ed-consult/consult_*  (open consults — abandoned)
+      - pending_validations for this platform
+
+    Preserved:
+      - hash_index (learned screen → variant mappings)
+      - variant_cache (canonical BTs)
+      - knowledge.json operational_notes
+      - signatures (learned screen signatures)
+    """
+    from pathlib import Path
+    import shutil
+    cleared = {"diag_dirs": 0, "consults": 0, "pending_validations": 0}
+
+    # 1. Diagnosing state dirs for this platform
+    diag_root = Path("/tmp/taey-ed-claude-diagnosing")
+    if diag_root.exists():
+        for d in diag_root.glob(f"{platform}_*"):
+            try:
+                shutil.rmtree(d)
+                cleared["diag_dirs"] += 1
+            except Exception:
+                logger.exception(f"failed to clear diag dir {d}")
+
+    # 2. Open consults
+    consult_root = Path("/tmp/taey-ed-consult")
+    if consult_root.exists():
+        for d in consult_root.glob("consult_*"):
+            try:
+                shutil.rmtree(d)
+                cleared["consults"] += 1
+            except Exception:
+                logger.exception(f"failed to clear consult {d}")
+
+    # 3. Pending validations for this platform
+    pv_root = Path("/home/user/taey-ed-data/pending_validations") / platform
+    if pv_root.exists():
+        for f in pv_root.glob("*.json"):
+            try:
+                f.unlink()
+                cleared["pending_validations"] += 1
+            except Exception:
+                logger.exception(f"failed to clear pending validation {f}")
+
+    logger.warning(
+        f"SESSION RESET for {platform}: cleared "
+        f"{cleared['diag_dirs']} diag dirs, "
+        f"{cleared['consults']} consults, "
+        f"{cleared['pending_validations']} pending validations. "
+        f"hash_index + variant_cache + knowledge.json PRESERVED."
+    )
+    return {"ok": True, "platform": platform, "cleared": cleared}
+
+
 @router.post("/next_action")
 def next_action(request: NextActionRequest):
     """Production wrapper: intercept any user_input_needed at the endpoint
