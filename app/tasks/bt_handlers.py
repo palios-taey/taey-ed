@@ -324,11 +324,11 @@ def register_all_handlers(ctx: ExecutionContext):
         from Quartz import (
             CGEventCreateKeyboardEvent, CGEventPost, kCGHIDEventTap
         )
-        from app.tasks.event_routing import ensure_target_frontmost
+        from app.tasks.event_routing import assert_target_frontmost
         _activate_ctx_app()
         # Keyboard event must land in ctx.app. Fail loudly if it's not
         # frontmost (Jesse 2026-06-01 Option A).
-        ensure_target_frontmost(ctx.app_name)
+        assert_target_frontmost(ctx.app_name)
         event_down = CGEventCreateKeyboardEvent(None, 53, True)
         CGEventPost(kCGHIDEventTap, event_down)
         time.sleep(0.05)
@@ -635,11 +635,11 @@ def register_all_handlers(ctx: ExecutionContext):
             flag = MODIFIER_FLAGS.get(mod.lower().strip(), 0)
             flags |= flag
 
-        from app.tasks.event_routing import ensure_target_frontmost
+        from app.tasks.event_routing import assert_target_frontmost
         _activate_ctx_app()
         # Keyboard event — must land in ctx.app. Fail loudly if it can't
         # (Jesse 2026-06-01 Option A).
-        ensure_target_frontmost(ctx.app_name)
+        assert_target_frontmost(ctx.app_name)
         event_down = CGEventCreateKeyboardEvent(None, code, True)
         if flags:
             CGEventSetFlags(event_down, flags)
@@ -749,14 +749,14 @@ def register_all_handlers(ctx: ExecutionContext):
             CGEventCreateKeyboardEvent, CGEventKeyboardSetUnicodeString,
             CGEventPost, kCGHIDEventTap,
         )
-        from app.tasks.event_routing import ensure_target_frontmost
+        from app.tasks.event_routing import assert_target_frontmost
         text = params.get("text", "")
         if not text:
             return {"success": True}
         per_char_delay = float(params.get("per_char_delay", 0.010))
         _activate_ctx_app()
         # Keyboard events — must land in ctx.app (Jesse 2026-06-01 Option A).
-        ensure_target_frontmost(ctx.app_name)
+        assert_target_frontmost(ctx.app_name)
         for ch in text:
             e_down = CGEventCreateKeyboardEvent(None, 0, True)
             CGEventKeyboardSetUnicodeString(e_down, 1, ch)

@@ -33,8 +33,6 @@ to the HID tap (B) or raise a clear error (A). Never silently no-op.
 """
 
 import logging
-import subprocess
-import time
 from typing import Optional
 
 from AppKit import NSWorkspace
@@ -52,14 +50,6 @@ class TargetNotFrontmostError(RuntimeError):
     not macOS-frontmost. Posting would route the event to the wrong app
     and produce phantom success. Raised by assert_target_frontmost so
     callers surface a clean BT failure."""
-
-
-class NeedsAutomationGrantError(RuntimeError):
-    """AppleScript activation of the target app failed with macOS error
-    -1743 (errAEEventNotPermitted). The user must grant the Automation
-    permission for Taey-Ed → <target app> in System Settings →
-    Privacy & Security → Automation. Surfaces a clean self-service
-    message in the error string."""
 
 
 def _norm(name: Optional[str]) -> str:
@@ -106,96 +96,6 @@ def find_app_pid(app_name: str) -> Optional[int]:
         if target in _norm(app.localizedName()):
             return int(app.processIdentifier())
     return None
-
-
-def activate_via_applescript(app_name: str, timeout: float = 1.5) -> bool:
-    """Bring app_name to macOS-frontmost via osascript Apple Event.
-
-    Per Jesse 2026-06-01 (Path 2): macOS 14+/15+/26.4+ cooperative
-    activation rule blocks NSWorkspace.activateWithOptions_ from working
-    in background contexts. AppleScript 'tell application X to activate'
-    works because Apple Events go through the TCC Automation grant path,
-    which is a user-authorized override of the cooperative-activation
-    rule. Requires:
-      - NSAppleEventsUsageDescription in Info.plist (yes, set in setup.py)
-      - User-granted Automation permission for Taey-Ed → <app_name>
-        under System Settings → Privacy & Security → Automation
-
-    Returns True if osascript reported success and the app is now
-    frontmost. Returns False if osascript reported success but
-    frontmost still isn't the target (transient race).
-
-    Raises NeedsAutomationGrantError if osascript failed with -1743
-    (errAEEventNotPermitted) — the actionable case where the user
-    must grant Automation in System Settings.
-
-    Constitutional note: this is ONLY for window foregrounding. All
-    synthetic input continues to go through AX + CGEvent, never
-    through AppleScript / Apple Events. The page (or any anti-bot
-    fingerprinting) cannot observe HOW the OS window was activated —
-    AppleScript-activate is indistinguishable from a Dock click.
-    """
-    if not app_name:
-        return False
-    if is_target_frontmost(app_name):
-        return True
-
-    # Escape double-quotes in the app name for the osascript literal.
-    safe = app_name.replace('\\', '\\\\').replace('"', '\\"')
-    script = f'tell application "{safe}" to activate'
-    try:
-        r = subprocess.run(
-            ["osascript", "-e", script],
-            capture_output=True, text=True, timeout=timeout,
-        )
-    except subprocess.TimeoutExpired:
-        logger.warning(
-            f"activate_via_applescript({app_name!r}): osascript timed out"
-        )
-        return False
-    if r.returncode == 0:
-        # Give the window-server a moment to honor the activation.
-        time.sleep(0.15)
-        return is_target_frontmost(app_name)
-
-    stderr = (r.stderr or "").strip()
-    if "-1743" in stderr or "not allowed" in stderr.lower():
-        raise NeedsAutomationGrantError(
-            f"Automation permission missing for Taey-Ed → {app_name!r}. "
-            f"Grant under System Settings > Privacy & Security > "
-            f"Automation > Taey-Ed > {app_name}. "
-            f"(osascript stderr: {stderr})"
-        )
-    logger.warning(
-        f"activate_via_applescript({app_name!r}): osascript failed "
-        f"rc={r.returncode} stderr={stderr!r}"
-    )
-    return False
-
-
-def ensure_target_frontmost(app_name: str) -> None:
-    """Bring app_name to frontmost (via AppleScript Apple Event) if it
-    isn't already, then assert. Raise on failure.
-
-    Combined helper called by KEYBOARD handlers before they post synthetic
-    events. The two-step:
-      1. If already frontmost, return.
-      2. Try activate_via_applescript; on success, return.
-      3. Fall back to assert_target_frontmost (which raises with the
-         standard 'not frontmost' message naming the actual frontmost).
-
-    If the Automation grant is missing, activate_via_applescript raises
-    NeedsAutomationGrantError, which propagates with a self-service
-    System-Settings-path message.
-    """
-    if is_target_frontmost(app_name):
-        return
-    # May raise NeedsAutomationGrantError on -1743; let it propagate.
-    if activate_via_applescript(app_name):
-        return
-    # Activation didn't take (transient or non-Automation error). Defer
-    # to the standard assert which raises with the named frontmost.
-    assert_target_frontmost(app_name)
 
 
 def post_coord_event_to_app(event, app_name: str) -> bool:

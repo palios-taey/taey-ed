@@ -26,7 +26,7 @@ OPTIONS = {
         "CFBundleShortVersionString": "1.0.0",
         "CFBundleIdentifier": "com.paliostaey.taey-ed",
         "NSHighResolutionCapable": True,
-        "NSAppleEventsUsageDescription": "Taey-Ed sends Apple Events to bring the target browser (e.g. Google Chrome) to the foreground so synthetic keyboard input lands in the correct window. Input itself is delivered via Accessibility / synthetic HID events, not Apple Events. Grant per target app under System Settings > Privacy & Security > Automation.",
+        "NSAppleEventsUsageDescription": "Taey-Ed needs to control your Mac to automate educational platforms.",
         "NSAccessibilityUsageDescription": "Taey-Ed needs accessibility access to interact with educational platforms.",
         # API key and server URL now read from ~/.taey-ed/config.json
         # No secrets in the binary. See app/config.py.
