@@ -916,67 +916,27 @@ def _next_action_impl(request: NextActionRequest):
         store_message(platform, build_user_message(request.chat_message))
         logger.info(f"  Chat: stored user message: {request.chat_message[:80]}")
 
-        # ── URGENT: User message = priority override ──
-        # User messages are treated like error reports — full context, immediate action.
-        # If user is telling us something, there's something wrong that needs addressing.
-        if request.screenshot_b64:
-            logger.info("  URGENT: User sent proactive message — overriding normal flow")
-            # Build context from previous state
-            guidance_parts = [f"USER MESSAGE (URGENT — address immediately): {request.chat_message}"]
-            if lr:
-                guidance_parts.append(f"Previous screen: {lr.screen or 'unknown'}")
-                guidance_parts.append(f"Previous action: {lr.action or 'unknown'}")
-                guidance_parts.append(f"Action succeeded: {lr.success}")
-                if lr.bt_debug_tail:
-                    guidance_parts.append(f"Last BT debug:\n{lr.bt_debug_tail}")
-            user_guidance = "\n".join(guidance_parts)
-
-            # Claude-primary platforms: bypass Gemini, route to consultation.
-            _claude_directive = _maybe_claude_consult(
-                request, platform, tree,
-                screen_type=(lr.screen if lr else "UNKNOWN") or "UNKNOWN",
-                user_guidance=user_guidance,
-            )
-            if _claude_directive:
-                return _claude_directive
-
-            # Classify current screen to give Gemini context
-            from spark.tasks.classify_screen import classify_screen, build_bt_from_tree
-            classification = classify_screen(
-                tree=tree,
-                screenshot_b64=request.screenshot_b64,
-                platform=platform,
-            )
-            screen_type = classification.get("screen_type", "UNKNOWN")
-            logger.info(f"  URGENT: Current screen classified as {screen_type}")
-
-            result = build_bt_from_tree(
-                tree=tree,
-                screenshot_b64=request.screenshot_b64,
-                platform=platform,
-                screen_type=screen_type,
-                user_guidance=user_guidance,
-            )
-            if result:
-                from spark.tasks.skeleton import extract_skeleton, skeleton_hash as _urgent_hash
-                sig_hash = _urgent_hash(extract_skeleton(tree))
-                return _store_and_return_bt(result, platform, tree, sig_hash, course_id=cs.course_id)
-
-            # Gemini couldn't build BT — ask user for more specific guidance
-            logger.warning("  URGENT: Gemini couldn't build BT from user message")
-            from spark.tasks.classify_screen import _describe_screen
-            _reason = (f"I received your message but couldn't build an automation from it. "
-                       f"Can you tell me more specifically what to do on this screen?")
-            return _with_chat({
-                "directive": "user_input_needed",
-                "directive_id": _make_directive_id(),
-                "reason": _reason,
-                "screen_type": screen_type,
-                "screen_description": _describe_screen(tree),
-            }, platform, [
-                build_status(f"Received your message — need more specific guidance"),
-                build_question(_reason),
-            ])
+        # ── URGENT: User message = STOP EVERYTHING + submit to claude-primary NOW ──
+        # Jesse 2026-06-01: "If a user says something, that usually means you did
+        # something wrong and whatever is going on needs to stop immediately and
+        # be submitted to you." So a user message routes STRAIGHT to the
+        # escalate-to-claude-primary path — regardless of whether a screenshot is
+        # attached, and NEVER queued to the worker. (Old behavior gated the
+        # override on request.screenshot_b64 and routed to the worker consult,
+        # so a no-screenshot message just fell through to normal flow = "queued".)
+        _ug = [f"USER MESSAGE (URGENT — stop everything and address immediately): {request.chat_message}"]
+        if lr:
+            _ug.append(f"Previous screen: {lr.screen or 'unknown'} | action: {lr.action or 'unknown'} | success: {lr.success}")
+            if lr.bt_debug_tail:
+                _ug.append(f"Last BT debug:\n{lr.bt_debug_tail}")
+        return _escalate_to_claude_diagnosing(
+            platform=platform,
+            tree=tree,
+            consultation_id="",
+            reason="\n".join(_ug),
+            screen_type_hint=((lr.screen if lr else None) or "USER_MESSAGE"),
+            screenshot_b64=request.screenshot_b64,
+        )
 
     logger.info(
         f">>> /next_action: platform={platform} "
@@ -1364,17 +1324,34 @@ def _next_action_impl(request: NextActionRequest):
         # retry), the hash mapping was likely wrong. Delete it.
         # BUT: check failure count BEFORE falling through to reclassify.
         if lr.directive_skeleton_hash:
-            logger.info(
-                f"Step 3: BT failed for hash-matched screen {lr.screen} "
-                f"— deleting hash {lr.directive_skeleton_hash[:12]}"
-            )
             try:
-                from spark.tasks.variant_cache import delete_hash as _del_hash3, invalidate_variant_bt as _inv_bt3
-                _del_hash3(platform=platform, skel_hash=lr.directive_skeleton_hash)
-                if lr.screen:
-                    _inv_bt3(platform=platform, variant=lr.screen)
+                from spark.tasks.variant_cache import (
+                    delete_hash as _del_hash3, invalidate_variant_bt as _inv_bt3,
+                    lookup_by_hash as _lookup_hash3,
+                )
+                _entry3 = _lookup_hash3(platform, lr.directive_skeleton_hash)
+                if _entry3 and _entry3.get("validated"):
+                    # Root-cause guard (Jesse 2026-06-01): a VALIDATED map represents
+                    # "map once, recognized forever". A single transient/cross-state BT
+                    # failure (e.g. an advance button momentarily absent from the tree,
+                    # or the screen having moved between match and execute) must NOT
+                    # destroy it — that turns recognition into one-shot-then-forgotten.
+                    # Keep the map; escalate for review instead of deleting.
+                    logger.info(
+                        f"Step 3: VALIDATED map {lr.screen} (hash "
+                        f"{lr.directive_skeleton_hash[:12]}) failed once — KEEPING map, "
+                        f"escalating for review (not deleting)"
+                    )
+                else:
+                    logger.info(
+                        f"Step 3: BT failed for hash-matched screen {lr.screen} "
+                        f"— deleting unvalidated hash {lr.directive_skeleton_hash[:12]}"
+                    )
+                    _del_hash3(platform=platform, skel_hash=lr.directive_skeleton_hash)
+                    if lr.screen:
+                        _inv_bt3(platform=platform, variant=lr.screen)
             except Exception as e:
-                logger.warning(f"Step 3: delete_hash failed: {e}")
+                logger.warning(f"Step 3: delete_hash guard failed: {e}")
 
             # Check if this variant has failed too many times — DON'T reclassify
             if lr.screen and _check_variant_failed(platform, lr.screen):
