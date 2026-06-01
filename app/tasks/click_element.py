@@ -245,18 +245,37 @@ def _mouse_click(element) -> bool:
 
     logger.info(f"Mouse click at ({cx:.0f}, {cy:.0f})")
 
+    # Resolve target PID from the element's owning app. Route mouse events
+    # via CGEventPostToPid so they land in that app regardless of who is
+    # macOS-frontmost (Jesse 2026-06-01 Option B: cooperative-activation
+    # silently dropped clicks when user was AFK).
+    from app.tasks.event_routing import post_coord_event_to_app
+    target_app_name = None
+    err_pid, pid = AXUIElementGetPid(element, None)
+    if err_pid == kAXErrorSuccess:
+        from AppKit import NSRunningApplication as _NSRA
+        owner = _NSRA.runningApplicationWithProcessIdentifier_(pid)
+        if owner:
+            target_app_name = owner.localizedName()
+
     # Mouse down
     mouse_down = CGEventCreateMouseEvent(
         None, kCGEventLeftMouseDown, center, kCGMouseButtonLeft
     )
-    CGEventPost(kCGHIDEventTap, mouse_down)
+    if target_app_name:
+        post_coord_event_to_app(mouse_down, target_app_name)
+    else:
+        CGEventPost(kCGHIDEventTap, mouse_down)
     time.sleep(0.1)
 
     # Mouse up
     mouse_up = CGEventCreateMouseEvent(
         None, kCGEventLeftMouseUp, center, kCGMouseButtonLeft
     )
-    CGEventPost(kCGHIDEventTap, mouse_up)
+    if target_app_name:
+        post_coord_event_to_app(mouse_up, target_app_name)
+    else:
+        CGEventPost(kCGHIDEventTap, mouse_up)
 
     return True
 
@@ -269,6 +288,7 @@ def _focus_and_key(element, keycode: int = 36) -> bool:
         element: AXUIElement to click
         keycode: macOS keycode. 36=Enter/Return, 49=Space.
     """
+    from app.tasks.event_routing import assert_target_frontmost
     _activate_element_app(element)
 
     # Focus the element
@@ -277,6 +297,18 @@ def _focus_and_key(element, keycode: int = 36) -> bool:
         raise RuntimeError(f"Setting focus failed with error code: {err}")
 
     time.sleep(0.3)
+
+    # Keyboard events MUST route through the frontmost app — Chrome's
+    # intra-window focus shim only delivers to its focused element when
+    # Chrome IS macOS-frontmost. Per Jesse 2026-06-01 Option A: fail
+    # loudly here so the BT engine surfaces a clean error instead of
+    # reporting phantom success on an event that landed in the wrong app.
+    err_pid, pid = AXUIElementGetPid(element, None)
+    if err_pid == kAXErrorSuccess:
+        from AppKit import NSRunningApplication as _NSRA
+        owner = _NSRA.runningApplicationWithProcessIdentifier_(pid)
+        if owner:
+            assert_target_frontmost(owner.localizedName())
 
     # Simulate keypress
     event_down = CGEventCreateKeyboardEvent(None, keycode, True)
