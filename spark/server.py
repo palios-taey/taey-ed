@@ -205,6 +205,59 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     return JSONResponse(status_code=422, content={"detail": exc.errors()})
 
 
+@app.middleware("http")
+async def _dump_raw_failure_bodies(request: Request, call_next):
+    """Mac-visibility middleware (Jesse 2026-05-19): capture the RAW request
+    body for any /next_action call that carries a last_result with success=False.
+    Dumps to /tmp/taey-ed-mac-raw-dumps/ so we can see EXACTLY what Mac sent
+    on the wire — including fields that Pydantic would drop (e.g. if Mac is
+    sending bt_debug_tail under a different name, or sending it on a sub-object,
+    or sending it but empty).
+    """
+    if request.url.path == "/next_action" and request.method == "POST":
+        try:
+            body = await request.body()
+            # Quick peek to see if last_result.success is False
+            import json as _json
+            try:
+                parsed = _json.loads(body) if body else {}
+                lr = parsed.get("last_result") or {}
+                # Dump on ANY last_result (success or failure) so we can verify
+                # bt_debug_tail flows on every BT execution post-fix.
+                if lr:
+                    from pathlib import Path
+                    import time
+                    dump_dir = Path("/tmp/taey-ed-mac-raw-dumps")
+                    dump_dir.mkdir(parents=True, exist_ok=True)
+                    ts = time.strftime("%Y%m%d_%H%M%S", time.gmtime())
+                    # Don't dump the screenshot_b64 — it's huge.
+                    sanitized = dict(parsed)
+                    if sanitized.get("screenshot_b64"):
+                        sanitized["screenshot_b64"] = f"<{len(parsed['screenshot_b64'])} bytes redacted>"
+                    if sanitized.get("tree"):
+                        sanitized["tree"] = "<tree redacted for brevity>"
+                    dump_path = dump_dir / f"raw_{ts}.json"
+                    dump_path.write_text(_json.dumps(sanitized, indent=2, default=str))
+                    # Log all field names on last_result so we can see what Mac sent
+                    logger.warning(
+                        f"MAC RAW FAILURE BODY → {dump_path}; "
+                        f"last_result keys: {sorted(lr.keys())}; "
+                        f"bt_debug_tail in body: {'bt_debug_tail' in lr}, "
+                        f"value type/len: {type(lr.get('bt_debug_tail')).__name__}/"
+                        f"{len(lr.get('bt_debug_tail') or '') if isinstance(lr.get('bt_debug_tail'), str) else 'N/A'}"
+                    )
+            except Exception:
+                pass
+
+            # Restore body so downstream can read it
+            async def receive():
+                return {"type": "http.request", "body": body}
+            request._receive = receive
+        except Exception:
+            logger.exception("raw-dump middleware failed (non-fatal)")
+    return await call_next(request)
+
+
 # ── DB Initialization ──
 
 from spark.db import init_db

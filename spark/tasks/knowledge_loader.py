@@ -63,6 +63,30 @@ def load_knowledge(platform: str) -> dict:
             )
             return {}
 
+        # Merge platform-agnostic universal operational_notes from
+        # spark/platforms/_universal.json (Jesse 2026-05-19: cross-platform
+        # rules like "WRONG-ANSWER RESET FIRST" live in one place and apply
+        # to every platform via this merge).
+        try:
+            universal_path = _platforms_dir() / "_universal.json"
+            if universal_path.exists():
+                universal = json.loads(universal_path.read_text())
+                universal_notes = universal.get("operational_notes") or []
+                if universal_notes:
+                    knowledge.setdefault("global", {}).setdefault("operational_notes", [])
+                    # Prepend so universal rules render BEFORE platform-specific
+                    # ones in get_operational_notes_for_screen output.
+                    knowledge["global"]["operational_notes"] = (
+                        list(universal_notes)
+                        + knowledge["global"]["operational_notes"]
+                    )
+                    logger.info(
+                        f"Merged {len(universal_notes)} universal operational_notes "
+                        f"into {platform}'s global notes"
+                    )
+        except Exception:
+            logger.exception("Failed to merge _universal.json (non-fatal)")
+
         _knowledge_cache[cache_key] = knowledge
         _knowledge_cache_mtime[cache_key] = current_mtime
         logger.info(f"Loaded knowledge.json for {platform} (v{knowledge.get('schema_version', '?')})")

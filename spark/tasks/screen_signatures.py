@@ -219,17 +219,34 @@ def _check_knowledge_invalidation(platform: str, screen: dict, sig_hash: str,
 def match_signature(platform: str, tree: dict) -> dict:
     """Match a screen against known signatures.
 
+    Per Jesse 2026-05-19: strict set-equality on discriminative markers (no Jaccard).
+    A screen either matches an existing signature exactly (after filtering platform
+    chrome) or it doesn't. Fuzzy matching let new variants get silently absorbed
+    into wrong existing ones.
+
     Returns:
-        On match: {
-            "matched": True,
-            "screen_type": <stored screen_type>,
-            "sig_hash": <stored hash>,
-            "match_score": float (1.0 for exact, 0.70-1.0 for fuzzy),
-            "validated": bool,
-            "tree": <stored BT if present>,
-            "extract": <stored extract config if present>,
-        }
-        On no match: {"matched": False, "signature": [<pairs>]}
+        Unique match (exactly 1 entry has identical discriminative markers):
+            {
+                "matched": True,
+                "screen_type": <stored screen_type>,
+                "sig_hash": <stored hash>,
+                "match_score": 1.0,
+                "validated": bool,
+                "tree": <stored BT if present>,
+                "extract": <stored extract config if present>,
+            }
+        Ambiguous match (2+ entries have identical discriminative markers):
+            {
+                "matched": False,
+                "ambiguous": True,
+                "candidates": [
+                    {"sig_hash": ..., "screen_type": ..., "validated": ...},
+                    ...
+                ],
+                "signature": [<pairs>],
+            }
+        No match:
+            {"matched": False, "signature": [<pairs>]}
     """
     query_sig = extract_signature(tree)
     data = _load_platform(platform)
@@ -240,8 +257,8 @@ def match_signature(platform: str, tree: dict) -> dict:
     common = frozenset(tuple(p) for p in data["common"])
 
     # Cold-start fallback: with fewer than 2 signatures, common is empty and
-    # every element looks discriminative. Fuzzy matching is meaningless.
-    # Only match on exact signature hash.
+    # discriminative-marker matching is meaningless. Fall back to exact
+    # signature-hash equality (still strict, just on the full signature).
     if not common:
         query_hash = _sig_hash(query_sig)
         if query_hash in data["screens"]:
@@ -263,39 +280,53 @@ def match_signature(platform: str, tree: dict) -> dict:
 
     query_markers = query_sig - common
 
-    best_score = 0.0
-    best_hash = None
-    best_screen = None
-
+    # Strict set-equality match: collect every entry whose discriminative
+    # markers exactly equal the query's. Then decide on 0 / 1 / 2+.
+    matches = []
     for sig_hash, screen in data["screens"].items():
         known_sig = frozenset(tuple(p) for p in screen["signature"])
         known_markers = known_sig - common
-        if not known_markers:
-            continue
-        # Jaccard similarity: intersection / union of discriminative markers
-        intersection = len(query_markers & known_markers)
-        union = len(query_markers | known_markers)
-        score = intersection / union if union > 0 else 0.0
+        if known_markers == query_markers:
+            matches.append((sig_hash, screen))
 
-        if score > best_score:
-            best_score = score
-            best_hash = sig_hash
-            best_screen = screen
-
-    if best_score >= 0.7 and best_screen:
-        _check_knowledge_invalidation(platform, best_screen, best_hash, data)
+    if len(matches) == 1:
+        sig_hash, screen = matches[0]
+        _check_knowledge_invalidation(platform, screen, sig_hash, data)
         result = {
             "matched": True,
-            "screen_type": best_screen["screen_type"],
-            "sig_hash": best_hash,
-            "match_score": best_score,
-            "validated": best_screen.get("validated", False),
+            "screen_type": screen["screen_type"],
+            "sig_hash": sig_hash,
+            "match_score": 1.0,
+            "validated": screen.get("validated", False),
         }
-        if best_screen.get("behavior_tree"):
-            result["tree"] = best_screen["behavior_tree"]
-        if best_screen.get("extract"):
-            result["extract"] = best_screen["extract"]
+        if screen.get("behavior_tree"):
+            result["tree"] = screen["behavior_tree"]
+        if screen.get("extract"):
+            result["extract"] = screen["extract"]
         return result
+
+    if len(matches) >= 2:
+        # Ambiguity: 2+ registered signatures share the same discriminative
+        # markers. Surface to claude-primary so a discriminator can be added.
+        logger.warning(
+            f"match_signature: AMBIGUOUS — {len(matches)} candidates share "
+            f"the same discriminative markers on {platform}: "
+            f"{[s['screen_type'] for _, s in matches]}"
+        )
+        return {
+            "matched": False,
+            "ambiguous": True,
+            "candidates": [
+                {
+                    "sig_hash": h,
+                    "screen_type": s["screen_type"],
+                    "validated": s.get("validated", False),
+                }
+                for h, s in matches
+            ],
+            "signature": [list(p) for p in sorted(query_sig)],
+            "shared_markers": [list(p) for p in sorted(query_markers)],
+        }
 
     return {"matched": False, "signature": [list(p) for p in sorted(query_sig)]}
 

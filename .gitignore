@@ -27,3 +27,9 @@ spark/platforms/*/learned/
 
 # Mirrored consult artifacts
 runtime/
+
+# Runtime escalation / consult dumps (large, regenerated each run)
+consultations/ESCALATIONS/
+logs/
+*.pre_migration_bak
+/tmp/taey-ed-mac-raw-dumps/
