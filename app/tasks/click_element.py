@@ -288,7 +288,7 @@ def _focus_and_key(element, keycode: int = 36) -> bool:
         element: AXUIElement to click
         keycode: macOS keycode. 36=Enter/Return, 49=Space.
     """
-    from app.tasks.event_routing import assert_target_frontmost
+    from app.tasks.event_routing import ensure_target_frontmost
     _activate_element_app(element)
 
     # Focus the element
@@ -308,7 +308,7 @@ def _focus_and_key(element, keycode: int = 36) -> bool:
         from AppKit import NSRunningApplication as _NSRA
         owner = _NSRA.runningApplicationWithProcessIdentifier_(pid)
         if owner:
-            assert_target_frontmost(owner.localizedName())
+            ensure_target_frontmost(owner.localizedName())
 
     # Simulate keypress
     event_down = CGEventCreateKeyboardEvent(None, keycode, True)
