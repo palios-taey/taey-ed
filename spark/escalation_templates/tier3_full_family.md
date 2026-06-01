@@ -52,15 +52,24 @@ attempt triggers terminal.
       /home/user/taey-ed/consultations/REVIEWS/family_loop<N>_<codename>_<date>.md"
    ```
 
-4. After dispatching, touch the diagnosis_done.flag for this state dir. The Mac
-   loop resumes polling. When responses land (you'll get notifications as each
-   platform replies), synthesize across all five. The Family's domain
-   specialization (Brain/Math vs Vision vs Cartography etc.) means responses
-   will differ — that's the value.
+4. After dispatching, touch `pending_external_research.flag` in the state dir.
+   This LOCKS Mac in wait state — server ignores any premature `diagnosis_done.flag`
+   touch while this lock is present. Mac stays suspended until you synthesize
+   the responses.
 
-5. Synthesize the responses into a unified operational_note update for
-   knowledge.json. Cite which Family member contributed which insight (cannot-lie
-   provenance). Touch diagnosis_done.flag again; the worker generates a fresh BT.
+   DO NOT touch `diagnosis_done.flag` yet.
+
+5. Wait for responses. Each platform replies via taeys-hands → `response_ready`
+   notification in your inbox; verbatim responses at
+   `/home/user/taey-ed/consultations/REVIEWS/family_loop<N>_<codename>_*.md`.
+   The Family's domain specialization (Brain/Math vs Vision vs Cartography etc.)
+   means responses will differ — that's the value.
+
+6. Synthesize the responses into a unified operational_note update for
+   `knowledge.json`. Cite which Family member contributed which insight
+   (cannot-lie provenance). Re-register the screen's hash if Step 3 deleted it.
+   THEN remove `pending_external_research.flag` AND touch `diagnosis_done.flag`.
+   The worker generates a fresh BT with the synthesized note.
 
 6. If the screen STILL fails after this loop:
    - Loop 1 → system auto-triggers Tier 3 Loop 2 on next escalation. Loop 2

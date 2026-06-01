@@ -40,10 +40,20 @@ at this tier — the rule must be informed by outside research first.
       /home/user/taey-ed/consultations/REVIEWS/<descriptive_name>_<date>.md"
    ```
 
-3. After dispatching, touch the diagnosis_done.flag for this state dir. The Mac
-   loop will resume polling. When Clarity's response lands (you'll get a
-   notification), incorporate the findings into the operational_note in
-   knowledge.json. Then the next worker BT will be informed.
+3. After dispatching, touch `pending_external_research.flag` in the state dir.
+   This LOCKS Mac in wait state — server ignores any premature `diagnosis_done.flag`
+   touch while this lock is present. Mac stays suspended until you synthesize
+   the external response.
+
+   DO NOT touch `diagnosis_done.flag` yet.
+
+4. Wait for Clarity's response (a `response_ready` notification arrives in
+   your inbox; the verbatim response is saved to `/home/user/taey-ed/consultations/REVIEWS/`).
+
+5. Incorporate the findings into the operational_note in `knowledge.json`.
+   Re-register the screen's hash if Step 3 deleted it. THEN remove
+   `pending_external_research.flag` AND touch `diagnosis_done.flag`. Server
+   will release Mac with the fresh knowledge.json in hand.
 
 4. If the screen still fails after this Tier 2 cycle, the system will trigger
    Tier 3 (full Family) on the next escalation attempt. Don't pre-escalate.

@@ -364,6 +364,113 @@ with it — packet content stays constant; template tells the dispatch protocol.
 
 # --- Notification body builders ---------------------------------------------
 
+def _inline_screen_summary(diag_state_dir: Path) -> str:
+    """Build an inline screen-state snapshot for the notification body.
+
+    Reads tree.json (if present) for WebArea + role counts + sample buttons.
+    Reads attempts.jsonl for last failure mode + BT shape + Mac log tail.
+    Per Jesse 2026-05-19: notifications must carry actionable detail inline
+    so claude doesn't have to open the packet to start working.
+    """
+    import json as _json
+    lines = []
+
+    # Tree.json — current screen state
+    tree_path = diag_state_dir / "tree.json"
+    if tree_path.exists():
+        try:
+            tree = _json.loads(tree_path.read_text())
+            # WebArea name
+            stack = [tree]; webarea = "?"
+            while stack:
+                n = stack.pop()
+                if isinstance(n, dict) and n.get("role") == "AXWebArea":
+                    webarea = (n.get("name") or "").strip() or "?"
+                    break
+                if isinstance(n, dict):
+                    for c in n.get("children") or []:
+                        stack.append(c)
+            # Role counts
+            counts = {}
+            interactive_btns = []
+            stack = [tree]
+            while stack:
+                n = stack.pop()
+                if isinstance(n, dict):
+                    r = n.get("role", "")
+                    if r:
+                        counts[r] = counts.get(r, 0) + 1
+                    if r == "AXButton":
+                        nm = (n.get("name") or "").strip()
+                        b = n.get("visible_bbox") or [0, 0, 0, 0]
+                        if nm and len(nm) < 80 and b[2] > 0 and b[1] > 200:
+                            if nm not in [x[0] for x in interactive_btns]:
+                                interactive_btns.append((nm, b[1]))
+                    for c in n.get("children") or []:
+                        stack.append(c)
+            top_roles = ", ".join(
+                f"{r}:{c}" for r, c in sorted(counts.items(), key=lambda kv: -kv[1])[:10]
+            )
+            # Pick a few content-area buttons (y > 200, exclude browser chrome)
+            content_btns = sorted(interactive_btns, key=lambda x: x[1])[:12]
+            lines.append("SCREEN STATE:")
+            lines.append(f"  WebArea: {webarea!r}")
+            lines.append(f"  Top roles: {top_roles}")
+            if content_btns:
+                lines.append("  Sample interactive buttons (content area):")
+                for nm, y in content_btns:
+                    lines.append(f"    - y={y:4d}  {nm[:75]!r}")
+        except Exception as e:
+            lines.append(f"SCREEN STATE: (tree read failed: {e})")
+
+    # attempts.jsonl — last failure
+    attempts_path = diag_state_dir / "attempts.jsonl"
+    if attempts_path.exists():
+        try:
+            last_attempt = None
+            for raw_line in attempts_path.read_text().splitlines():
+                raw_line = raw_line.strip()
+                if not raw_line:
+                    continue
+                try:
+                    last_attempt = _json.loads(raw_line)
+                except Exception:
+                    pass
+            if last_attempt:
+                lines.append("")
+                lines.append("LAST ATTEMPT:")
+                lines.append(f"  classification: {last_attempt.get('classification')!r}")
+                lines.append(f"  failure_mode: {last_attempt.get('failure_mode')!r}")
+                bt = last_attempt.get("bt") or {}
+                if bt:
+                    # Count actions instead of full BT (notification stays readable)
+                    actions = []
+                    def _count(n):
+                        if isinstance(n, dict):
+                            if n.get("type") == "action" and n.get("action"):
+                                actions.append(n["action"])
+                            for v in n.values():
+                                _count(v)
+                        elif isinstance(n, list):
+                            for item in n:
+                                _count(item)
+                    _count(bt)
+                    if actions:
+                        lines.append(f"  BT actions ({len(actions)}): {', '.join(actions[:15])}{' ...' if len(actions) > 15 else ''}")
+                mac_log = last_attempt.get("mac_log_tail") or ""
+                if mac_log.strip():
+                    tail = mac_log.strip().splitlines()[-12:]
+                    lines.append("  Mac BT log tail:")
+                    for ln in tail:
+                        lines.append(f"    {ln[:140]}")
+                else:
+                    lines.append("  Mac BT log: (NOT PROVIDED by Mac — wire-format issue)")
+        except Exception as e:
+            lines.append(f"LAST ATTEMPT: (attempts.jsonl read failed: {e})")
+
+    return "\n".join(lines)
+
+
 def notify_body_for_tier(
     *,
     tier: str,
@@ -377,10 +484,11 @@ def notify_body_for_tier(
     """Build the notification body for a tier escalation.
 
     The notification points at the packet (rich context) and the template
-    (what to do with it). The recipient — claude-primary in the taey-ed
-    session — reads the template and follows it.
+    (what to do with it) AND now carries inline screen-state + last-attempt
+    summary so claude-primary doesn't have to open files just to triage.
     """
     template = template_path_for_tier(tier)
+    inline = _inline_screen_summary(diag_state_dir)
     base = (
         f"ESCALATION TIER {tier.upper()} — production loop\n"
         f"Platform: {platform}\n"
@@ -388,6 +496,8 @@ def notify_body_for_tier(
         f"Attempts so far: {retry_count}\n"
         f"State dir: {diag_state_dir}\n"
         f"Consult: {consult_path}\n"
+        f"\n"
+        f"{inline}\n"
         f"\n"
         f"PACKET (full context, read first):\n"
         f"  {packet_path}\n"
