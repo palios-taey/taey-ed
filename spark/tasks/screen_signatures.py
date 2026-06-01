@@ -39,6 +39,8 @@ import logging
 from pathlib import Path
 from typing import Optional
 
+from spark.tasks.skeleton import _find_web_area
+
 logger = logging.getLogger(__name__)
 
 SIGNATURES_DIR = Path("/home/user/taey-ed-data/signatures")
@@ -70,9 +72,21 @@ def extract_signature(tree: dict) -> frozenset:
     type, regardless of how many instances exist on the screen.
     All other roles are skipped (variable text content, layout containers,
     chrome with non-stable labels).
+
+    SCOPED TO PAGE CONTENT (fix 2026-06-01): walk only the AXWebArea subtree,
+    not the whole browser process. The browser toolbar (Back/Forward/Reload/
+    Bookmark/Extensions/'New Chrome available') and the bookmark bar VARY every
+    capture, and since 2026-05-19 matching is strict set-equality — so any
+    chrome marker in the set made a screen impossible to re-recognize (OBSERVED:
+    course-overview signature was 33 markers, 18 of them volatile chrome →
+    never matched → escalated to claude-primary every visit). Scoping to the
+    AXWebArea drops chrome entirely (OBSERVED: same screen → 5 stable content
+    markers, 0 chrome). This matches the skeleton hash, which already scopes
+    web_content_only.
     """
+    root = _find_web_area(tree) or tree
     pairs = set()
-    stack = [tree]
+    stack = [root]
     while stack:
         node = stack.pop()
         role = node.get("role", "")
