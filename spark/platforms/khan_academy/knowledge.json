@@ -737,7 +737,22 @@
           "name": "matcher",
           "description": "Match items from two columns. Connect related items. Perseus widget: matcher.",
           "tree_signal": "HAS_LIST",
-          "interaction_pattern": "match items between columns (drag or select) -> click 'Check'. May need screenshot analysis."
+          "interaction_pattern": "match items between columns (drag or select) -> click 'Check'. May need screenshot analysis.",
+          "operational_notes": [
+            {
+              "discovered_at": "2026-06-01T21:20:00Z",
+              "by": "claude-primary via escalation -> taeys-hands (Family/Perplexity domain knowledge)",
+              "source": "escalation_taeys_hands",
+              "verified_count": 0,
+              "validated_step2": false,
+              "screen_variant": "Perseus matcher (EXERCISE_MATCHING) \u2014 event->energy-change, often animation/image-grounded",
+              "rule": "Perseus matcher is a DRAG widget, NOT comboboxes and NOT click-to-cycle. find_all(AXComboBox) FAILS here (it matches Chrome tab-strip AXRadioButtons / returns nothing useful) \u2014 that was the worker mis-pattern that failed on f05e03e1. Draggable cards are AXCell/AXGroup with EMPTY names: identify them by visible_bbox geometry/order from tree.json, never by name.",
+              "note": "Cards live BELOW THE FOLD frequently -> scroll first. If the question references an animation (\"Play Animation\" button / \"Click play and observe\"), PLAY it then solve with vision. Determine the matching with send_to_llm question_type=solve_complex (full screenshot, NOT solve_choice) since the answer is image/animation-grounded. Then actuate each match by synthesized mouse DRAG from the source card center to its target slot center; verify after each drop by re-reading the tree (cell order changed).",
+              "drag_handler_schema": "drag.params MUST be nested: {start:{x:<int>,y:<int>}, end:{x:<int>,y:<int>}}. Read source/target centers from each AXCell visible_bbox=[x,y,w,h] in tree.json (center = [x+w/2, y+h/2]). Same schema as the sorter/ranking note.",
+              "bt_template_hint": "1) scroll down (amount=5, x2-3 with short waits) until matcher cells are in-tree. 2) if a Play Animation button exists: find_and_click it, wait ~4s. 3) send_to_llm question_type=solve_complex with the full screenshot + the question + event list -> returns event->energy-change pairing. 4) read each event-card and target-slot visible_bbox from tree.json; emit one drag per pair {start:card_center,end:slot_center} (or reorder a single column into the correct sequence). 5) find_and_click Check post_delay=2.5. 6) wrong-answer state -> Cmd+R reset + full-stop RCA, no blind retry.",
+              "physics_note_zipliner_example": "Worked example (ball-Earth system): pulled up = grav PE increases (energy in); released/swing down = PE->KE; smash wall = KE->thermal+sound. (Per-question physics; the DRAG widget handling above is the generalizable lesson.)"
+            }
+          ]
         },
         {
           "name": "label_image",
