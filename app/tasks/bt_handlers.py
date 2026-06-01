@@ -324,11 +324,7 @@ def register_all_handlers(ctx: ExecutionContext):
         from Quartz import (
             CGEventCreateKeyboardEvent, CGEventPost, kCGHIDEventTap
         )
-        from app.tasks.event_routing import assert_target_frontmost
         _activate_ctx_app()
-        # Keyboard event must land in ctx.app. Fail loudly if it's not
-        # frontmost (Jesse 2026-06-01 Option A).
-        assert_target_frontmost(ctx.app_name)
         event_down = CGEventCreateKeyboardEvent(None, 53, True)
         CGEventPost(kCGHIDEventTap, event_down)
         time.sleep(0.05)
@@ -635,11 +631,7 @@ def register_all_handlers(ctx: ExecutionContext):
             flag = MODIFIER_FLAGS.get(mod.lower().strip(), 0)
             flags |= flag
 
-        from app.tasks.event_routing import assert_target_frontmost
         _activate_ctx_app()
-        # Keyboard event — must land in ctx.app. Fail loudly if it can't
-        # (Jesse 2026-06-01 Option A).
-        assert_target_frontmost(ctx.app_name)
         event_down = CGEventCreateKeyboardEvent(None, code, True)
         if flags:
             CGEventSetFlags(event_down, flags)
@@ -661,25 +653,22 @@ def register_all_handlers(ctx: ExecutionContext):
     # same space as visible_bbox — no Retina scale-factor math needed.
     def handle_click_at(ctx, params):
         from Quartz import (
-            CGEventCreateMouseEvent,
+            CGEventCreateMouseEvent, CGEventPost, kCGHIDEventTap,
             kCGEventLeftMouseDown, kCGEventLeftMouseUp, kCGMouseButtonLeft,
         )
-        from app.tasks.event_routing import post_coord_event_to_app
         try:
             x = float(params["x"])
             y = float(params["y"])
         except (KeyError, TypeError, ValueError) as e:
             btlog(f"click_at: missing/invalid coords: {e}")
             return None
-        # Mouse events route via CGEventPostToPid so they land in ctx.app
-        # regardless of who is macOS-frontmost (Jesse 2026-06-01 Option B).
         _activate_ctx_app()
         pos = (x, y)
         down = CGEventCreateMouseEvent(None, kCGEventLeftMouseDown, pos, kCGMouseButtonLeft)
-        post_coord_event_to_app(down, ctx.app_name)
+        CGEventPost(kCGHIDEventTap, down)
         time.sleep(0.05)
         up = CGEventCreateMouseEvent(None, kCGEventLeftMouseUp, pos, kCGMouseButtonLeft)
-        post_coord_event_to_app(up, ctx.app_name)
+        CGEventPost(kCGHIDEventTap, up)
         btlog(f"click_at: ({x:.0f},{y:.0f})")
         return {"success": True}
 
@@ -694,11 +683,10 @@ def register_all_handlers(ctx: ExecutionContext):
     # 50ms hold before release lets drop targets register hover.
     def handle_drag(ctx, params):
         from Quartz import (
-            CGEventCreateMouseEvent,
+            CGEventCreateMouseEvent, CGEventPost, kCGHIDEventTap,
             kCGEventLeftMouseDown, kCGEventLeftMouseUp,
             kCGEventLeftMouseDragged, kCGMouseButtonLeft,
         )
-        from app.tasks.event_routing import post_coord_event_to_app
         start = params.get("start") or {}
         end = params.get("end") or {}
         try:
@@ -715,13 +703,9 @@ def register_all_handlers(ctx: ExecutionContext):
         press_hold = float(params.get("press_hold", 0.080))
         release_hold = float(params.get("release_hold", 0.050))
 
-        # Mouse drag — all events routed via CGEventPostToPid so they land
-        # in ctx.app regardless of who is macOS-frontmost (Jesse 2026-06-01
-        # Option B).
-
         # 1. Mouse down at start, hold to let drag handlers activate
         down = CGEventCreateMouseEvent(None, kCGEventLeftMouseDown, (sx, sy), kCGMouseButtonLeft)
-        post_coord_event_to_app(down, ctx.app_name)
+        CGEventPost(kCGHIDEventTap, down)
         time.sleep(press_hold)
 
         # 2. Intermediate dragged moves
@@ -730,13 +714,13 @@ def register_all_handlers(ctx: ExecutionContext):
             x = sx + (ex - sx) * t
             y = sy + (ey - sy) * t
             move = CGEventCreateMouseEvent(None, kCGEventLeftMouseDragged, (x, y), kCGMouseButtonLeft)
-            post_coord_event_to_app(move, ctx.app_name)
+            CGEventPost(kCGHIDEventTap, move)
             time.sleep(step_delay)
 
         # 3. Hold at end so drop targets register hover, then release
         time.sleep(release_hold)
         up = CGEventCreateMouseEvent(None, kCGEventLeftMouseUp, (ex, ey), kCGMouseButtonLeft)
-        post_coord_event_to_app(up, ctx.app_name)
+        CGEventPost(kCGHIDEventTap, up)
         btlog(f"drag: ({sx:.0f},{sy:.0f}) -> ({ex:.0f},{ey:.0f}) steps={steps}")
         return {"success": True}
 
@@ -749,14 +733,11 @@ def register_all_handlers(ctx: ExecutionContext):
             CGEventCreateKeyboardEvent, CGEventKeyboardSetUnicodeString,
             CGEventPost, kCGHIDEventTap,
         )
-        from app.tasks.event_routing import assert_target_frontmost
         text = params.get("text", "")
         if not text:
             return {"success": True}
         per_char_delay = float(params.get("per_char_delay", 0.010))
         _activate_ctx_app()
-        # Keyboard events — must land in ctx.app (Jesse 2026-06-01 Option A).
-        assert_target_frontmost(ctx.app_name)
         for ch in text:
             e_down = CGEventCreateKeyboardEvent(None, 0, True)
             CGEventKeyboardSetUnicodeString(e_down, 1, ch)
@@ -792,11 +773,8 @@ def register_all_handlers(ctx: ExecutionContext):
             btlog(f"scroll: unknown direction '{direction}'")
             return None
 
-        # Scroll routes via CGEventPostToPid (coord-class event, Jesse
-        # 2026-06-01 Option B) so it lands in ctx.app even when not frontmost.
-        from app.tasks.event_routing import post_coord_event_to_app
         event = CGEventCreateScrollWheelEvent(None, kCGScrollEventUnitLine, 2, dy, dx)
-        post_coord_event_to_app(event, ctx.app_name)
+        CGEventPost(kCGHIDEventTap, event)
 
         btlog(f"scroll: {direction} amount={amount}")
         return {"success": True}
