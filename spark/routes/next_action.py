@@ -1690,13 +1690,32 @@ def _next_action_impl(request: NextActionRequest):
                     _active = _main_wins[0]
                 # else: ambiguous → _active stays None, don't scope
             if _active is not None:
-                _active_name = _webarea_name(_active)
-                if len(_wins) > 1:
-                    logger.info(
-                        f"ACTIVE-WINDOW scope: {len(_wins)} windows, picked "
-                        f"{_active_name!r} (focused-win or main-win rule)"
-                    )
-                tree = _active  # scope EVERYTHING downstream to the active window
+                # Scope to the PAGE CONTENT (AXWebArea), not the whole window.
+                # The AXWindow still contains the browser toolbar + bookmark bar
+                # (Back/Forward/Reload/Bookmark/Extensions/bookmarks), which is
+                # chrome that VARIES every capture and must never reach the
+                # skeleton / signature / classifier. Filtering it out HERE, once
+                # at ingestion, is the boundary filter — every downstream
+                # consumer then operates on clean Khan content automatically,
+                # instead of each one re-implementing (or forgetting) the scope.
+                def _webarea_node(node):
+                    stack = [node]
+                    while stack:
+                        n = stack.pop()
+                        if isinstance(n, dict):
+                            if n.get("role") == "AXWebArea":
+                                return n
+                            for c in n.get("children") or []:
+                                stack.append(c)
+                    return None
+                _wa = _webarea_node(_active)
+                _scoped = _wa if _wa is not None else _active
+                _active_name = _webarea_name(_scoped)
+                logger.info(
+                    f"INGEST scope → page content {_active_name!r} "
+                    f"({len(_wins)} window(s); chrome/toolbar/bookmarks filtered out)"
+                )
+                tree = _scoped  # chrome filtered at the boundary, ONCE
     except Exception:
         logger.exception("active-window scoping failed (non-fatal)")
 
