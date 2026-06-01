@@ -18,6 +18,7 @@ from ApplicationServices import (
     kAXSizeAttribute,
     kAXMainAttribute,
     kAXFocusedAttribute,
+    kAXFocusedWindowAttribute,
 )
 from CoreFoundation import CFArrayGetCount, CFArrayGetValueAtIndex
 import re
@@ -48,7 +49,30 @@ def capture_tree(app_name: str) -> dict:
     if not target_app:
         raise RuntimeError(f"Application '{app_name}' not found")
 
-    root = AXUIElementCreateApplication(target_app.processIdentifier())
+    app_elem = AXUIElementCreateApplication(target_app.processIdentifier())
+
+    # Scope to the FOCUSED WINDOW only (Jesse 2026-06-01 root-fix).
+    # Latent bug since the file was added 2026-02-20 (commit 0837e83):
+    # the capture used to root at the whole-app element and walk every
+    # window in the process. With one Chrome window open the resulting
+    # tree had a single AXWebArea so downstream queries appeared to
+    # work; with TWO windows (Khan + a Sign-in tab) there are two
+    # AXWebAreas and queries pick whichever was enumerated first —
+    # often the wrong one. kAXFocusedWindow returns the app's OWN
+    # frontmost window regardless of macOS-frontmost (so it works
+    # even when Chrome is backgrounded by Screen Sharing or another
+    # app), producing exactly one AXWebArea per capture.
+    err, focused_win = AXUIElementCopyAttributeValue(
+        app_elem, kAXFocusedWindowAttribute, None,
+    )
+    if err == kAXErrorSuccess and focused_win is not None:
+        root = focused_win
+    else:
+        # No focused window — degraded fallback. Capture the whole-app
+        # element so downstream consumers still get *something* rather
+        # than a hard failure. This is the pre-fix shape; happens when
+        # the target app has no windows open at all.
+        root = app_elem
 
     def get_node(element, path: str = "root") -> dict:
         """Extract info from one element with element_id for visual reference."""
