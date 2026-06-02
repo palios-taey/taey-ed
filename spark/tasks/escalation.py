@@ -390,36 +390,100 @@ def _inline_screen_summary(diag_state_dir: Path) -> str:
                 if isinstance(n, dict):
                     for c in n.get("children") or []:
                         stack.append(c)
-            # Role counts
-            counts = {}
-            interactive_btns = []
-            stack = [tree]
-            while stack:
-                n = stack.pop()
+            # FULL content dump (Jesse 2026-06-02): an escalated screen is UNKNOWN
+            # by definition — the disambiguating signal (completion markers, real
+            # question text, answer widgets) is NOT knowable in advance, it lives
+            # ONLY in the raw tree. So dump every signal-bearing element here, in
+            # the message itself, so the recipient cannot decide off a partial
+            # button-sample. Scope to the page AXWebArea subtree(s) so browser
+            # chrome (toolbar, bookmarks, the ~30 tab-strip AXRadioButtons) is
+            # excluded; chrome lives outside AXWebArea.
+            import re as _re
+            webareas = []
+            _st = [tree]
+            while _st:
+                n = _st.pop()
                 if isinstance(n, dict):
-                    r = n.get("role", "")
-                    if r:
-                        counts[r] = counts.get(r, 0) + 1
-                    if r == "AXButton":
-                        nm = (n.get("name") or "").strip()
-                        b = n.get("visible_bbox") or [0, 0, 0, 0]
-                        if nm and len(nm) < 80 and b[2] > 0 and b[1] > 200:
-                            if nm not in [x[0] for x in interactive_btns]:
-                                interactive_btns.append((nm, b[1]))
+                    if n.get("role") == "AXWebArea":
+                        webareas.append(n)
                     for c in n.get("children") or []:
-                        stack.append(c)
-            top_roles = ", ".join(
-                f"{r}:{c}" for r, c in sorted(counts.items(), key=lambda kv: -kv[1])[:10]
-            )
-            # Pick a few content-area buttons (y > 200, exclude browser chrome)
-            content_btns = sorted(interactive_btns, key=lambda x: x[1])[:12]
-            lines.append("SCREEN STATE:")
+                        _st.append(c)
+            SIGNAL = {"AXButton", "AXLink", "AXComboBox", "AXCheckBox",
+                      "AXRadioButton", "AXPopUpButton", "AXTextField",
+                      "AXTextArea", "AXImage", "AXProgressIndicator", "AXSlider"}
+            elems = []           # (role, name, bbox)
+            qtext = []           # content static text (the question)
+            seen = set()
+
+            def _collect(n):
+                if not isinstance(n, dict):
+                    return
+                r = n.get("role", "")
+                nm = (n.get("name") or n.get("title") or "").strip()
+                v = n.get("value")
+                if not nm and isinstance(v, str) and v.strip():
+                    nm = v.strip()
+                bb = n.get("visible_bbox") or n.get("bbox") or [0, 0, 0, 0]
+                if r in SIGNAL and nm:
+                    k = (r, nm[:90])
+                    if k not in seen:
+                        seen.add(k)
+                        elems.append((r, nm, bb))
+                elif r == "AXStaticText" and nm and len(nm) >= 25 and nm not in qtext:
+                    qtext.append(nm)
+                for c in n.get("children") or []:
+                    _collect(c)
+
+            roots = webareas if webareas else [tree]
+            for rt in roots:
+                for c in rt.get("children") or []:
+                    _collect(c)
+
+            def _y(b):
+                return b[1] if isinstance(b, list) and len(b) > 1 else 0
+
+            comp = [(r, nm, b) for (r, nm, b) in elems
+                    if r == "AXProgressIndicator"
+                    or _re.search(r"completed|\bcomplete\b|mastered|proficient|"
+                                  r"up next|crown|great work|correct|not quite|"
+                                  r"try again", nm, _re.I)]
+            widgets = [(r, nm, b) for (r, nm, b) in elems if r in
+                       ("AXComboBox", "AXPopUpButton", "AXCheckBox",
+                        "AXRadioButton", "AXTextField", "AXTextArea")]
+            buttons = [(r, nm, b) for (r, nm, b) in elems if r == "AXButton"]
+            links = [(r, nm, b) for (r, nm, b) in elems if r == "AXLink"]
+            images = [(r, nm, b) for (r, nm, b) in elems if r == "AXImage"]
+
+            lines.append("SCREEN STATE (full content dump from tree — the answer is "
+                         "in here; do NOT decide from a partial sample):")
             lines.append(f"  WebArea: {webarea!r}")
-            lines.append(f"  Top roles: {top_roles}")
-            if content_btns:
-                lines.append("  Sample interactive buttons (content area):")
-                for nm, y in content_btns:
-                    lines.append(f"    - y={y:4d}  {nm[:75]!r}")
+            if comp:
+                lines.append("  COMPLETION / RESULT MARKERS (read FIRST — a "
+                             "'completed <X>' / 'Mastered' / 'Great work' / 'Correct' "
+                             "here means that item is DONE → advance, never redo; "
+                             "'Try again'/'Not quite' = wrong-answer state):")
+                for r, nm, b in comp[:30]:
+                    lines.append(f"    - {r} y={_y(b):4d} {nm[:100]!r}")
+            if qtext:
+                lines.append("  QUESTION / CONTENT TEXT:")
+                for t in qtext[:14]:
+                    lines.append(f"    - {t[:180]!r}")
+            if widgets:
+                lines.append("  ANSWER WIDGETS:")
+                for r, nm, b in sorted(widgets, key=lambda e: _y(e[2]))[:50]:
+                    lines.append(f"    - {r} y={_y(b):4d} {nm[:80]!r}")
+            if buttons:
+                lines.append("  BUTTONS (content):")
+                for r, nm, b in sorted(buttons, key=lambda e: _y(e[2]))[:50]:
+                    lines.append(f"    - y={_y(b):4d} {nm[:80]!r}")
+            if links:
+                lines.append("  LINKS (content):")
+                for r, nm, b in sorted(links, key=lambda e: _y(e[2]))[:50]:
+                    lines.append(f"    - y={_y(b):4d} {nm[:80]!r}")
+            if images:
+                lines.append(f"  VISUAL CONTENT: {len(images)} content AXImage(s) "
+                             "present — for graphs/diagrams/animations the screenshot "
+                             "matters; Read screenshot.png before solving image-grounded items.")
         except Exception as e:
             lines.append(f"SCREEN STATE: (tree read failed: {e})")
 
