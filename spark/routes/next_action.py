@@ -1099,12 +1099,26 @@ def _next_action_impl(request: NextActionRequest):
                 f"Step 2: WRONG ANSWER for {lr.screen} — "
                 f"ONE TRY ONLY — stopping. Hash={lr.directive_skeleton_hash}"
             )
+            deleted_failed_map = False
             if lr.directive_skeleton_hash:
                 try:
-                    from spark.tasks.variant_cache import delete_hash, invalidate_variant_bt
-                    delete_hash(platform=platform, skel_hash=lr.directive_skeleton_hash)
-                    if lr.screen:
-                        invalidate_variant_bt(platform=platform, variant=lr.screen)
+                    from spark.tasks.variant_cache import (
+                        delete_hash,
+                        invalidate_variant_bt,
+                        lookup_by_hash,
+                    )
+                    hash_entry = lookup_by_hash(platform, lr.directive_skeleton_hash)
+                    if hash_entry and hash_entry.get("validated"):
+                        logger.info(
+                            f"Step 2: VALIDATED map {lr.screen} (hash "
+                            f"{lr.directive_skeleton_hash[:12]}) got a wrong answer once — "
+                            f"KEEPING map and escalating for review"
+                        )
+                    else:
+                        delete_hash(platform=platform, skel_hash=lr.directive_skeleton_hash)
+                        if lr.screen:
+                            invalidate_variant_bt(platform=platform, variant=lr.screen)
+                        deleted_failed_map = True
                 except Exception as e:
                     logger.warning(f"Step 2: delete_hash failed: {e}")
             from spark.tasks.classify_screen import _describe_screen
@@ -1117,7 +1131,10 @@ def _next_action_impl(request: NextActionRequest):
                 "screen_type": lr.screen or "UNKNOWN",
                 "screen_description": _describe_screen(tree),
             }, platform, [
-                build_status(f"Wrong answer detected on {lr.screen} — deleted old approach"),
+                build_status(
+                    f"Wrong answer detected on {lr.screen} — "
+                    f"{'deleted unvalidated approach' if deleted_failed_map else 'kept validated map and escalated'}"
+                ),
                 build_question(_reason),
             ])
 
@@ -1139,14 +1156,31 @@ def _next_action_impl(request: NextActionRequest):
                 f"STUCK: {lr.screen} unchanged after action. "
                 f"ONE TRY ONLY — stopping. Hash={lr.directive_skeleton_hash or 'none'}"
             )
+            deleted_failed_map = False
             # Delete the failed hash mapping so it doesn't re-match next time
             if lr.directive_skeleton_hash:
                 try:
-                    from spark.tasks.variant_cache import delete_hash as _del_hash, invalidate_variant_bt as _inv_bt
-                    _del_hash(platform=platform, skel_hash=lr.directive_skeleton_hash)
-                    if lr.screen:
-                        _inv_bt(platform=platform, variant=lr.screen)
-                    logger.info(f"Step 2.5: Deleted failed hash {lr.directive_skeleton_hash[:12]}")
+                    from spark.tasks.variant_cache import (
+                        delete_hash as _del_hash,
+                        invalidate_variant_bt as _inv_bt,
+                        lookup_by_hash as _lookup_hash,
+                    )
+                    _entry = _lookup_hash(platform, lr.directive_skeleton_hash)
+                    if _entry and _entry.get("validated"):
+                        logger.info(
+                            f"Step 2.5: VALIDATED map {lr.screen} (hash "
+                            f"{lr.directive_skeleton_hash[:12]}) got stuck once — "
+                            f"KEEPING map and escalating for review"
+                        )
+                    else:
+                        _del_hash(platform=platform, skel_hash=lr.directive_skeleton_hash)
+                        if lr.screen:
+                            _inv_bt(platform=platform, variant=lr.screen)
+                        deleted_failed_map = True
+                        logger.info(
+                            f"Step 2.5: Deleted unvalidated failed hash "
+                            f"{lr.directive_skeleton_hash[:12]}"
+                        )
                 except Exception as e:
                     logger.warning(f"Step 2.5: delete_hash failed: {e}")
             from spark.tasks.classify_screen import _describe_screen
@@ -1159,7 +1193,10 @@ def _next_action_impl(request: NextActionRequest):
                 "screen_type": lr.screen or "UNKNOWN",
                 "screen_description": _describe_screen(tree),
             }, platform, [
-                build_status(f"Screen unchanged after action on {lr.screen} — need your help"),
+                build_status(
+                    f"Screen unchanged after action on {lr.screen} — "
+                    f"{'deleted unvalidated approach' if deleted_failed_map else 'kept validated map and need your help'}"
+                ),
                 build_question(_reason),
             ])
 

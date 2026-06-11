@@ -1,8 +1,12 @@
-# Tier 2 Escalation — Perplexity Deep Research via taeys-hands
+# Tier 2 Escalation — Perplexity Deep Research Synthesis (dispatch is automatic)
 
 You hit Tier 2 because the same screen has failed twice under Tier 1 (your
 knowledge.json operational_note fix loop). You do NOT keep editing knowledge.json
-at this tier — the rule must be informed by outside research first.
+blind at this tier — the rule must be informed by outside research first.
+
+**The server has ALREADY dispatched the packet to taeys-hands** (Perplexity
+Deep Research, display :6). Do NOT re-dispatch. Your job at this tier is the
+synthesis.
 
 ## What to do
 
@@ -10,58 +14,28 @@ at this tier — the rule must be informed by outside research first.
    identity, screen artifacts (tree.json path + screenshot.png alongside),
    system capabilities, every prior attempt, and the specific ask.
 
-2. Dispatch the packet to Perplexity Deep Research via `taeys-hands`. Use:
+2. Wait for Clarity's response (a `response_ready` notification arrives in
+   your inbox; the verbatim response is saved under
+   `/home/user/taey-ed/consultations/REVIEWS/`).
 
-   ```
-   /usr/local/bin/taey-notify taeys-hands --type task --from taey-ed \
-     "ROUTE TO PERPLEXITY (Deep Research, display :6) — Escalation Tier 2
+   DO NOT touch `diagnosis_done.flag` while waiting. The Mac stays in wait
+   state until you touch it; touching it early makes the retry run WITHOUT
+   the research.
 
-    REMINDER FOR TAEYS-HANDS: prepend FAMILY_KERNEL.md and IDENTITY_CLARITY.md
-    to the consultation prompt — the automated prepend has been failing lately
-    and Clarity needs constitutional context to respond as Clarity.
+3. Incorporate the findings into a PROVISIONAL operational_note in
+   `knowledge.json` for this screen. Re-register the screen's hash if a
+   failure path deleted it.
 
-    PACKET (read in full, attached path):
-    <full path to ESC_<id>/packet.md>
+4. ONLY AFTER the fold: touch `diagnosis_done.flag`. The server releases the
+   Mac with the fresh knowledge.json in hand. The note stays provisional until
+   a real validated run proves it (then it graduates per the 3-success rule).
 
-    SCREENSHOT (attach to the Perplexity prompt):
-    <full path to ESC_<id>/screenshot.png>
-
-    DR MODE: confirm 'pressed' state on the Deep Research toggle before submit.
-
-    SUGGESTED RESPONSE STRUCTURE (not required JSON — prose is fine):
-    ## Diagnosis (what's going wrong, source-cited)
-    ## Proposed BT (one or more JSON blocks the worker can adopt)
-    ## Confidence (LOW/MED/HIGH and why)
-    ## Open Questions (anything that needs follow-up)
-
-    ROUTE THE RESPONSE BACK via:
-      taey-notify taey-ed --type response_ready --from taeys-hands
-    with the verbatim Clarity response saved to:
-      /home/user/taey-ed/consultations/REVIEWS/<descriptive_name>_<date>.md"
-   ```
-
-3. After dispatching, touch `pending_external_research.flag` in the state dir.
-   This LOCKS Mac in wait state — server ignores any premature `diagnosis_done.flag`
-   touch while this lock is present. Mac stays suspended until you synthesize
-   the external response.
-
-   DO NOT touch `diagnosis_done.flag` yet.
-
-4. Wait for Clarity's response (a `response_ready` notification arrives in
-   your inbox; the verbatim response is saved to `/home/user/taey-ed/consultations/REVIEWS/`).
-
-5. Incorporate the findings into the operational_note in `knowledge.json`.
-   Re-register the screen's hash if Step 3 deleted it. THEN remove
-   `pending_external_research.flag` AND touch `diagnosis_done.flag`. Server
-   will release Mac with the fresh knowledge.json in hand.
-
-4. If the screen still fails after this Tier 2 cycle, the system will trigger
-   Tier 3 (full Family) on the next escalation attempt. Don't pre-escalate.
+5. If the screen still fails after this Tier 2 cycle, the system will trigger
+   Tier 3 (full Family, one round) on the next escalation attempt — also
+   auto-dispatched. Don't pre-escalate.
 
 ## Anti-patterns
 
-- DO NOT skip the FAMILY_KERNEL.md / IDENTITY_<codename>.md prepend reminder —
-  it's currently the only way to ensure Clarity gets constitutional context.
-- DO NOT ask Clarity questions outside the screen's scope. Stay tight on the
-  failure mode in the packet.
+- DO NOT re-dispatch to taeys-hands — the server already did.
+- DO NOT touch diagnosis_done.flag before the knowledge.json fold is written.
 - DO NOT touch gave_up.flag at this tier. Tier 3 is automatic.

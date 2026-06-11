@@ -1,88 +1,48 @@
-# Tier 3 Escalation — Full Family Consultation via taeys-hands
+# Tier 3 Escalation — Full Family Synthesis (dispatch is automatic)
 
 You hit Tier 3 because Tier 2 (Perplexity DR) didn't unblock the screen. Tier 3
-is up to **two Family loops** (Jesse 2026-05-19 final ladder:
-2 me → 1 Perp → 2 Family → terminal). After loop 2 fails, the next escalation
-attempt triggers terminal.
+is **one Full Family round** (Jesse 2026-06-11 canonical ladder:
+2 primary → 1 Perplexity → 1 Family → terminal). If this round fails, the next
+escalation attempt triggers terminal.
+
+**The server has ALREADY dispatched the packet to taeys-hands** (all 5 Family
+platforms in parallel: Gaia/Claude :3, Horizon/ChatGPT :2, Cosmos/Gemini :4,
+Logos/Grok :5, Clarity/Perplexity-DR :6). Do NOT re-dispatch. Your job at this
+tier is the synthesis.
 
 ## What to do
 
 1. Open the escalation packet at the path the notification gave you. It contains
    identity, screen artifacts, system capabilities, every prior attempt, the
-   Tier 2 Perplexity DR response (if any), and the specific ask.
+   Tier 2 Perplexity DR response (if any), and the specific ask. The notification
+   says `tier3_round: 1 of 1`.
 
-2. Determine which Family loop you're on. The notification will say
-   `tier3_loop: 1 of 2` or `tier3_loop: 2 of 2`.
-
-3. Dispatch the packet to all 5 Family platforms in parallel via `taeys-hands`.
-   The Family is: Gaia (Claude), Horizon (ChatGPT), Cosmos (Gemini),
-   Logos (Grok), Clarity (Perplexity, DR mode).
-
-   ```
-   /usr/local/bin/taey-notify taeys-hands --type task --from taey-ed \
-     "ROUTE TO FULL FAMILY (parallel fan-out) — Escalation Tier 3 Loop <N>
-
-    REMINDER FOR TAEYS-HANDS: prepend FAMILY_KERNEL.md and the appropriate
-    per-platform IDENTITY_<codename>.md to each platform's prompt — the
-    automated prepend has been failing lately and each Family member needs
-    their own constitutional context.
-
-    PACKET (one document, send to all 5):
-    <full path to ESC_<id>/packet.md>
-
-    SCREENSHOT (attach to each platform's prompt):
-    <full path to ESC_<id>/screenshot.png>
-
-    FAN-OUT TARGETS (run in parallel, each on its own display):
-    - Gaia (Claude, :3, Adaptive Thinking ON)
-    - Horizon (ChatGPT, :2, Extended Thinking ON)
-    - Cosmos (Gemini, :4, Deep Think ON)
-    - Logos (Grok, :5, Heavy mode)
-    - Clarity (Perplexity, :6, Deep Research toggle CONFIRMED PRESSED)
-
-    SUGGESTED RESPONSE STRUCTURE (prose is fine, no JSON requirement):
-    ## Diagnosis (your domain take on what's going wrong)
-    ## Proposed BT (one or more JSON blocks, or 'no proposal')
-    ## Confidence (LOW/MED/HIGH and why)
-    ## Open Questions (anything for the next loop or follow-up)
-
-    ROUTE EACH RESPONSE BACK via:
-      taey-notify taey-ed --type response_ready --from taeys-hands
-    with the source platform clearly labeled and the verbatim response saved to:
-      /home/user/taey-ed/consultations/REVIEWS/family_loop<N>_<codename>_<date>.md"
-   ```
-
-4. After dispatching, touch `pending_external_research.flag` in the state dir.
-   This LOCKS Mac in wait state — server ignores any premature `diagnosis_done.flag`
-   touch while this lock is present. Mac stays suspended until you synthesize
-   the responses.
-
-   DO NOT touch `diagnosis_done.flag` yet.
-
-5. Wait for responses. Each platform replies via taeys-hands → `response_ready`
-   notification in your inbox; verbatim responses at
-   `/home/user/taey-ed/consultations/REVIEWS/family_loop<N>_<codename>_*.md`.
+2. Wait for responses. Each platform replies via taeys-hands → `response_ready`
+   notification in your inbox; verbatim responses land under
+   `/home/user/taey-ed/consultations/REVIEWS/`.
    The Family's domain specialization (Brain/Math vs Vision vs Cartography etc.)
    means responses will differ — that's the value.
 
-6. Synthesize the responses into a unified operational_note update for
-   `knowledge.json`. Cite which Family member contributed which insight
-   (cannot-lie provenance). Re-register the screen's hash if Step 3 deleted it.
-   THEN remove `pending_external_research.flag` AND touch `diagnosis_done.flag`.
-   The worker generates a fresh BT with the synthesized note.
+   DO NOT touch `diagnosis_done.flag` while waiting. The Mac stays in wait
+   state until you touch it; touching it early makes the retry run WITHOUT
+   the research.
 
-6. If the screen STILL fails after this loop:
-   - Loop 1 → system auto-triggers Tier 3 Loop 2 on next escalation. Loop 2
-     uses the same protocol; loop 1's responses are now IN THE PACKET as
-     prior research, informing loop 2's diagnoses.
-   - Loop 2 → system auto-triggers Terminal on next escalation. You do not
-     give up manually.
+3. Synthesize the responses into a unified PROVISIONAL operational_note update
+   for `knowledge.json`. Cite which Family member contributed which insight
+   (cannot-lie provenance). Re-register the screen's hash if a failure path
+   deleted it.
+
+4. ONLY AFTER the fold: touch `diagnosis_done.flag`. The worker generates a
+   fresh BT with the synthesized note. The note stays provisional until a real
+   validated run proves it (then it graduates per the 3-success rule).
+
+5. If the screen STILL fails after this round, the system auto-triggers
+   Terminal on the next escalation. You do not give up manually.
 
 ## Anti-patterns
 
-- DO NOT dispatch to only one Family member. The whole point of Tier 3 is the
-  multi-perspective synthesis. All five or none.
-- DO NOT skip the FAMILY_KERNEL / IDENTITY_<codename>.md prepend reminder.
-- DO NOT touch gave_up.flag at this tier. Tier Terminal is automatic.
+- DO NOT re-dispatch to taeys-hands — the server already did. One round only.
 - DO NOT collapse the responses to "majority vote" — synthesize, don't average.
   Cite which Family member contributed which insight in the operational_note.
+- DO NOT touch diagnosis_done.flag before the knowledge.json fold is written.
+- DO NOT touch gave_up.flag at this tier. Terminal is automatic.
