@@ -159,6 +159,10 @@ def _do_call(
     so the b64-temp-file lifecycle can wrap it cleanly."""
     full_user = _build_user_message(user_message, screenshot_path)
 
+    # Prompt goes via STDIN, never argv: Linux caps a single argv at 128KB
+    # (MAX_ARG_STRLEN) and the compiled prompt crossed it live 2026-06-11
+    # 16:33 ([Errno 7] Argument list too long). Stdin has no ceiling —
+    # no-truncation rule honored structurally.
     cmd = [
         _resolve_claude_bin(),
         "--print",
@@ -167,7 +171,6 @@ def _do_call(
         "--model", model,
         "--max-budget-usd", str(max_budget_usd),
         "--system-prompt", system_prompt,
-        full_user,
     ]
 
     # Isolated HOME: hook-free settings + symlinked credentials. The fleet's
@@ -189,7 +192,7 @@ def _do_call(
             capture_output=True,
             text=True,
             timeout=timeout_s,
-            stdin=subprocess.DEVNULL,
+            input=full_user,
             env=worker_env,
         )
     except subprocess.TimeoutExpired as e:
