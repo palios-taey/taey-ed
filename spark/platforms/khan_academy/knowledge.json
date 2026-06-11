@@ -704,6 +704,11 @@
               "note": "PHASE DETECTION \u2014 STOP SCROLL-LOOPING (observed 14:48-14:53: three consecutive scroll-only builds while the widget was already visible): BEFORE choosing the scroll phase, check the point buttons' visible_bbox in the CURRENT tree \u2014 if they carry on-screen coordinates (non-zero bbox, y within the viewport), the widget IS in view: build PHASE-2 NOW (solve_complex vision extraction -> click_at focus -> ctrl+shift arrow presses with pre-computed signed counts -> re-extract to verify -> Check). Scroll AT MOST once per question; a second scroll-only build in a row is always wrong.",
               "discovered_at": "2026-06-11",
               "verified_count": 1
+            },
+            {
+              "note": "HANDLES ARE ZERO-SIZE BY DESIGN (capture evidence 14:55: all four 'Point N' buttons at [x,y,0,0], stacked at one position \u2014 matches May DR: Mafs focusableHandle <g> has no geometry; it is a KEYBOARD target). Consequences: (1) NEVER use the point buttons' size/position for in-view detection \u2014 use the graph image/container bbox (real size) instead; (2) NEVER click_at a point handle (all four report the same stacked position); (3) FOCUS comes from Tab traversal per the widget's own instruction, and WHICH point has focus is verifiable via the focused=true field on the point button in a fresh capture (full-tree carries it); (4) the graph widget needs NO scrolling if the graph container bbox is on-screen. Do not scroll again for this widget.",
+              "discovered_at": "2026-06-11",
+              "verified_count": 1
             }
           ],
           "aliases": [
