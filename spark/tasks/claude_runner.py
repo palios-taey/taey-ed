@@ -25,6 +25,10 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 CLAUDE_BIN = "claude"
+# Isolated HOME for headless calls: hook-free settings.json ({}) plus
+# symlinked ~/.claude/.credentials.json and ~/.claude.json so OAuth refresh
+# propagates. Keeps the fleet's stop-engine/notify hooks out of worker calls.
+WORKER_HOME = "/home/user/.taey-worker-home"
 DEFAULT_MODEL = "claude-opus-4-7"
 DEFAULT_TIMEOUT_S = 180
 DEFAULT_MAX_BUDGET_USD = 2.50  # API-equivalent ceiling; Max subscription covers real spend
@@ -149,6 +153,15 @@ def _do_call(
         full_user,
     ]
 
+    # Isolated HOME: hook-free settings + symlinked credentials. The fleet's
+    # stop-engine hooks otherwise fire INSIDE headless calls — observed live
+    # 2026-06-11 12:16: the worker emitted its BT, the Stop hook hijacked the
+    # final turn, and --print returned orchestration chatter ("taey-stop-reason
+    # status reports can_stop: true...") instead of BT JSON. Also the likely
+    # cause of today's intermittent exit-1/empty responses. (--bare would skip
+    # hooks too but drops OAuth with it.)
+    worker_env = {**os.environ, "HOME": WORKER_HOME}
+
     t0 = time.time()
     try:
         result = subprocess.run(
@@ -157,6 +170,7 @@ def _do_call(
             text=True,
             timeout=timeout_s,
             stdin=subprocess.DEVNULL,
+            env=worker_env,
         )
     except subprocess.TimeoutExpired as e:
         raise ClaudeCallError(
