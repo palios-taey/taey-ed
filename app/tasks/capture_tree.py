@@ -8,6 +8,7 @@ from AppKit import NSWorkspace
 from ApplicationServices import (
     AXUIElementCreateApplication,
     AXUIElementCopyAttributeValue,
+    AXUIElementSetAttributeValue,
     kAXErrorSuccess,
     kAXChildrenAttribute,
     kAXRoleAttribute,
@@ -23,6 +24,10 @@ from ApplicationServices import (
 from CoreFoundation import CFArrayGetCount, CFArrayGetValueAtIndex
 import re
 import hashlib
+
+# Per-process cache of PIDs where AXManualAccessibility has been set, so the
+# capture_tree call doesn't redundantly set the attribute on every poll.
+_ax_complete_pids: set[int] = set()
 
 
 def capture_tree(app_name: str) -> dict:
@@ -49,7 +54,26 @@ def capture_tree(app_name: str) -> dict:
     if not target_app:
         raise RuntimeError(f"Application '{app_name}' not found")
 
-    app_elem = AXUIElementCreateApplication(target_app.processIdentifier())
+    pid = int(target_app.processIdentifier())
+    app_elem = AXUIElementCreateApplication(pid)
+
+    # Force Chrome (and other Chromium browsers) into complete-AX mode.
+    # Per taey-ed dispatch 2026-06-11 (Family-verified vs Perseus/Chromium):
+    # Chrome only builds the full accessibility tree when assistive tech is
+    # detected or accessibility is explicitly enabled. Without this, widget
+    # extents (w/h), value-bank items, and full nested cells in Perseus
+    # matchers come through as empty AXCells with zero geometry. Setting
+    # AXManualAccessibility=True on the Chrome app element switches it to
+    # complete mode. Surgical: no window-repositioning side effect (unlike
+    # AXEnhancedUserInterface=True). Idempotent — Chromium handles repeat
+    # sets fine. Cached per PID so we don't re-set on every poll tick.
+    if pid not in _ax_complete_pids:
+        name_lower = (target_app.localizedName() or "").lower()
+        if any(b in name_lower for b in ("chrome", "chromium", "edge", "brave")):
+            AXUIElementSetAttributeValue(
+                app_elem, "AXManualAccessibility", True,
+            )
+        _ax_complete_pids.add(pid)
 
     # Scope to the FOCUSED WINDOW only (Jesse 2026-06-01 root-fix).
     # Latent bug since the file was added 2026-02-20 (commit 0837e83):
