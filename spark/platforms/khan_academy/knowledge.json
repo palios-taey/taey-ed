@@ -337,6 +337,11 @@
               "verified_count": 3
             },
             {
+              "note": "SETTLE BEFORE FIRST OPEN (observed 18:24: menu_items_seen=[] when the first select_dropdown_option fired ~1s after a question transition): begin every dropdown BT with wait >= 2s, and put wait >= 1s between rows. Menus render lazily after transitions.",
+              "discovered_at": "2026-06-11",
+              "verified_count": 1
+            },
+            {
               "discovered_at": "2026-05-18T17:25:00Z",
               "by": "claude-primary",
               "screen_variant": "ANY inline dropdown(s)/combobox(es) on Khan Perseus exercises",
