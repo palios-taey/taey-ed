@@ -446,6 +446,7 @@ def request_consultation(
                     platform=platform,
                     screen_hash=screen_hash,
                     retry_count=retry_count,
+                    bt_debug_tail=bt_debug_log,
                 )
                 if dispatch_body:
                     notify_fleet("taeys-hands", dispatch_body, notify_type="task")

@@ -100,6 +100,31 @@ def notify_fleet(target: str, message: str, notify_type: str = "task") -> bool:
         return False
 
 
+def classify_failure_environment(bt_debug_tail) -> Optional[str]:
+    """Detect environmental failure classes from the Mac BT debug tail.
+
+    Per taeys-hands contract (2026-06-11): packets that look like real
+    new-info can be environmental artifacts invisible to the researcher —
+    a leftover Terminal holding macOS foreground ate a complete 60-step
+    keyboard BT and a DR nearly burned on it. The foreground_guard line in
+    the tail carries the signal; when the LAST guard line shows
+    frontmost != target, the failure is environmental: research must not
+    fire, and the retry needs the environment cleared, not new knowledge."""
+    import re as _re
+    if not bt_debug_tail:
+        return None
+    guards = _re.findall(
+        r"foreground_guard: frontmost='([^']+)' target='([^']+)'",
+        str(bt_debug_tail),
+    )
+    if guards:
+        frontmost, target = guards[-1]
+        if frontmost != target:
+            return (f"environmental/foreground — frontmost={frontmost!r} != "
+                    f"target={target!r}; events/screenshots likely misrouted")
+    return None
+
+
 def dispatch_body_for_tier(
     *,
     tier: str,
@@ -107,6 +132,7 @@ def dispatch_body_for_tier(
     platform: str,
     screen_hash: str,
     retry_count: int,
+    bt_debug_tail=None,
 ) -> Optional[str]:
     """Build the DIRECT taeys-hands dispatch message for tier2/tier3.
 
@@ -114,6 +140,15 @@ def dispatch_body_for_tier(
     Content mirrors what the tier templates previously told claude-primary
     to relay verbatim — the server now sends it itself.
     """
+    env_class = classify_failure_environment(bt_debug_tail)
+    if env_class:
+        logger.warning(
+            f"escalation: SKIPPING tier-{tier[-1]} fleet dispatch for "
+            f"{platform}/{screen_hash[:12]} — {env_class}. Research cannot "
+            f"fix an environment problem; retry after the environment clears."
+        )
+        return None
+
     screenshot_path = packet_path.parent / "screenshot.png"
     reviews_name = f"{platform}_{screen_hash[:12]}_tier{tier[-1]}"
     response_routing = (

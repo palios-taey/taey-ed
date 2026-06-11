@@ -317,6 +317,7 @@ def _escalate_to_claude_diagnosing(
                 platform=platform,
                 screen_hash=_screen_hash,
                 retry_count=retries,
+                bt_debug_tail=bt_debug_tail,
             )
             if dispatch_body:
                 notify_fleet("taeys-hands", dispatch_body, notify_type="task")
