@@ -709,6 +709,11 @@
               "note": "HANDLES ARE ZERO-SIZE BY DESIGN (capture evidence 14:55: all four 'Point N' buttons at [x,y,0,0], stacked at one position \u2014 matches May DR: Mafs focusableHandle <g> has no geometry; it is a KEYBOARD target). Consequences: (1) NEVER use the point buttons' size/position for in-view detection \u2014 use the graph image/container bbox (real size) instead; (2) NEVER click_at a point handle (all four report the same stacked position); (3) FOCUS comes from Tab traversal per the widget's own instruction, and WHICH point has focus is verifiable via the focused=true field on the point button in a fresh capture (full-tree carries it); (4) the graph widget needs NO scrolling if the graph container bbox is on-screen. Do not scroll again for this widget.",
               "discovered_at": "2026-06-11",
               "verified_count": 1
+            },
+            {
+              "note": "SELF-CALIBRATE THE SCALE (Jesse 2026-06-11: a previous run on this exact layout MOVED the dots successfully but misjudged the GRAPH SCALE and placed wrong values \u2014 actuation is proven, scale-reading is the failure mode): NEVER infer the per-press step from the screenshot axes alone. CALIBRATE EMPIRICALLY: with Point 1 focused, press ctrl+shift+Right ONCE, re-read 'Point 1 at X comma Y' \u2014 the X delta IS the per-press step in data units (same for Up/Y). Then compute remaining presses from the CALIBRATED step and the target values, verify each point's final name, and only then Check. The readback names are the scale oracle; pixels are not.",
+              "discovered_at": "2026-06-11",
+              "verified_count": 1
             }
           ],
           "aliases": [
