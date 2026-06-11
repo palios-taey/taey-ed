@@ -471,7 +471,8 @@
                 "17:25_observation": "Enumeration phase fully worked (all 3 popups, wait_for_element added). discover_menu returned options like ['the same not', 'different'] \u2014 the 'the same' option's AX name 'the same not selected' got 9 chars stripped by Mac's _extract_menu_items (which strips ' selected'), leaving 'the same not'. LLM picked 'the same not' (the only thing on offer). select_dropdown_option opened the popup and normalized menu items to ['the same', 'different'] \u2014 'the same not' was no match \u2192 click failed.",
                 "17:25_fix": "Server-side workaround in _solve_matching_with_gemini: strip dangling ' not' suffix from options before passing to LLM (undoes Mac's overzealous strip). Real fix would be Mac-side: _extract_menu_items should strip ' not selected' (13 chars) before falling back to ' selected' (9 chars). Mac is frozen, so server workaround is the pragmatic path."
               },
-              "last_verified_at": "2026-06-11T12:31:12Z"
+              "last_verified_at": "2026-06-11T12:39:21Z",
+              "last_demoted_at": "2026-06-11T12:39:29Z"
             },
             {
               "discovered_at": "2026-05-19T14:18:14Z",
@@ -1017,6 +1018,11 @@
           "status_note": "2026-05-25: keymap CONFIRMED present (claude-0: r=15 in Mac source+bundle since commit 2201426, May 17) \u2014 Cmd+R CAN be keyed. verified_count=0 because the reload itself is UNTESTED end-to-end (no observed real run yet; claude-0 flagged possible Chrome-focus / Automation-permission failure modes). Pending a controlled live test (claude-0) confirming the page actually reloads. Once confirmed, bump to 1.",
           "bt_template_hint": "STEP 1 (always on wrong-answer state): press_key key='r' modifiers=['cmd'] post_delay=3.0 \u2014 page reloads. End BT. STEP 2 is NOT in this BT \u2014 on the next /next_action poll, Mac sees the freshly-loaded page (hash will differ) and Step 4/5 routes through worker normally for a clean solve.",
           "anti_pattern": "Do NOT click 'Start over' \u2014 unreliable, leaves form in undefined state. Do NOT click 'Try again' as reset \u2014 dismisses modal only, state preserved. Do NOT compute delta-correction from a partially-wrong state. Cmd+R reload then fresh-solve is the only reliable path."
+        },
+        {
+          "note": "Unit test / quiz question pages share ONE skeleton hash across DIFFERENT question types (observed 2026-06-11: checkbox Q1 and ranking Q2 matched the same hash). Map such hashes as bare EXERCISE \u2014 the per-question subtype (checkbox/ranking/matcher/...) must be decided at BT-rebuild time from the QUESTION CONTENT, never assumed from the hash's previous visit.",
+          "discovered_at": "2026-06-11",
+          "verified_count": 1
         }
       ]
     },
