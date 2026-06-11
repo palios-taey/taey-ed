@@ -1439,12 +1439,37 @@ def _next_action_impl(request: NextActionRequest):
             # TODO(V20): Consider using get_master_category() here for robustness.
             # Currently works because all video screen types contain "VIDEO".
             if is_video:
+                # COMPLETION INDICATORS decide, not player presence: the
+                # YouTube player stays in the tree after completion, so
+                # HAS_VIDEO was true forever and a finished video polled
+                # endlessly (live 2026-06-11, Wave properties: seek at 100,
+                # 'Replay Video', sidebar 'completed Video' — still polling).
+                # Per Jesse's validated law, playing vs complete is NEVER
+                # identical — there is always an indicator.
+                def _video_complete(n) -> bool:
+                    if not isinstance(n, dict):
+                        return False
+                    name = str(n.get("name") or n.get("title") or "")
+                    role = n.get("role") or ""
+                    if role == "AXButton" and name == "Replay Video":
+                        return True
+                    if role == "AXLink" and name.startswith("completed Video"):
+                        return True
+                    if role == "AXSlider" and "seek" in name.lower():
+                        try:
+                            if float(n.get("value") or 0) >= 99.5:
+                                return True
+                        except (TypeError, ValueError):
+                            pass
+                    return any(_video_complete(c) for c in n.get("children") or [])
+
+                video_done = _video_complete(tree)
                 from spark.tasks.prompt_codex import analyze_tree as _analyze
                 current_tags = _analyze(tree)
-                if "HAS_VIDEO" in current_tags:
+                if "HAS_VIDEO" in current_tags and not video_done:
                     logger.info(
-                        f"Step 2.7: Video still playing (HAS_VIDEO in current tree). "
-                        f"Continuing poll — NOT advancing."
+                        f"Step 2.7: Video still playing (player present, no "
+                        f"completion indicator). Continuing poll — NOT advancing."
                     )
                     # Return video_poll again to keep watching
                     return {
