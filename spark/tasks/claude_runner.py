@@ -197,7 +197,8 @@ def _do_call(
 
     if result.returncode != 0:
         raise ClaudeCallError(
-            f"claude exit {result.returncode}: stderr={result.stderr[:500]}"
+            f"claude exit {result.returncode}: stderr={result.stderr[:500]} "
+            f"stdout={result.stdout[:500]}"
         )
 
     try:
