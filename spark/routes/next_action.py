@@ -95,15 +95,19 @@ def _escalate_to_claude_diagnosing(
     gave_up = diag_dir / "gave_up.flag"
     retry_p = diag_dir / "retries.txt"
 
-    # Persist tree + screenshot to diag_dir so the escalation packet builder
-    # has the AX data. Write only on first entry (idempotent — don't overwrite
-    # if Mac's tree mutated between escalations on the same hash).
-    if tree and not (diag_dir / "tree.json").exists():
+    # Persist tree + screenshot to diag_dir — ALWAYS OVERWRITE with the
+    # current capture. The old write-once "idempotency" served STALE state:
+    # on collision pages the question changes under the same hash, and on
+    # 2026-06-11 claude-primary spent an hour mis-diagnosing a dropdown
+    # question as a checkbox one because every escalation packet carried the
+    # first-capture tree from a question answered long before ("Why are you
+    # still not reviewing screenshots?"). The packet must show NOW.
+    if tree:
         try:
             (diag_dir / "tree.json").write_text(json.dumps(tree, indent=2))
         except Exception:
             logger.exception("escalate: failed to write tree.json")
-    if screenshot_b64 and not (diag_dir / "screenshot.png").exists():
+    if screenshot_b64:
         try:
             import base64
             (diag_dir / "screenshot.png").write_bytes(base64.b64decode(screenshot_b64))

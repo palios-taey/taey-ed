@@ -675,6 +675,8 @@ def notify_body_for_tier(
         f"Screen hash: {screen_hash}\n"
         f"Attempts so far: {retry_count}\n"
         f"State dir: {diag_state_dir}\n"
+        f"SCREENSHOT (READ THIS FIRST — ground truth; the tree dump below can lag the live screen):\n"
+        f"  {diag_state_dir}/screenshot.png\n"
         f"Consult: {consult_path}\n"
         f"\n"
         f"{inline}\n"
