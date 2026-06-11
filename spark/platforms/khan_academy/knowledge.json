@@ -332,6 +332,11 @@
           "interaction_pattern": "click dropdown -> select option from popup list -> repeat for all dropdowns -> click 'Check'",
           "operational_notes": [
             {
+              "note": "HARD BAN (2026-06-11, two improvised failures in one hour): dropdowns are solved by select_dropdown_option per row + Check \u2014 THE PROVEN TEMPLATE, NOTHING ELSE. Never click_at on dropdown triggers; never find_all(AXMenuItem) into send_to_llm params (element refs crash JSON serialization Mac-side). If you are designing ANY new structure for a dropdown question, you are wrong \u2014 adapt the template.",
+              "discovered_at": "2026-06-11",
+              "verified_count": 3
+            },
+            {
               "discovered_at": "2026-05-18T17:25:00Z",
               "by": "claude-primary",
               "screen_variant": "ANY inline dropdown(s)/combobox(es) on Khan Perseus exercises",
@@ -496,7 +501,7 @@
               "known_failure_modes": [
                 "Element staleness: if Wonder Blocks re-renders popups after one opens, $popup.element from outer find_all may go stale on iter 2+. If that happens (only first dropdown opens, rest fail with element-not-found), the workaround would be sequential unrolled blocks (find_all + index access) per popup \u2014 but try the canonical for_each version first."
               ],
-              "verified_count": 14,
+              "verified_count": 16,
               "bt_template_hint": "CANONICAL BT (handler param names verified):\n\n",
               "ccm_observed_failures": {
                 "16:54_observation": "find_and_click element=$popup.element \u2192 resolves target='' role=None \u2192 ACTION RETURNED NONE",
@@ -513,8 +518,8 @@
                 "17:25_observation": "Enumeration phase fully worked (all 3 popups, wait_for_element added). discover_menu returned options like ['the same not', 'different'] \u2014 the 'the same' option's AX name 'the same not selected' got 9 chars stripped by Mac's _extract_menu_items (which strips ' selected'), leaving 'the same not'. LLM picked 'the same not' (the only thing on offer). select_dropdown_option opened the popup and normalized menu items to ['the same', 'different'] \u2014 'the same not' was no match \u2192 click failed.",
                 "17:25_fix": "Server-side workaround in _solve_matching_with_gemini: strip dangling ' not' suffix from options before passing to LLM (undoes Mac's overzealous strip). Real fix would be Mac-side: _extract_menu_items should strip ' not selected' (13 chars) before falling back to ' selected' (9 chars). Mac is frozen, so server workaround is the pragmatic path."
               },
-              "last_verified_at": "2026-06-11T17:42:29Z",
-              "last_demoted_at": "2026-06-11T16:26:47Z"
+              "last_verified_at": "2026-06-11T18:14:47Z",
+              "last_demoted_at": "2026-06-11T18:21:52Z"
             },
             {
               "discovered_at": "2026-05-19T14:18:14Z",
