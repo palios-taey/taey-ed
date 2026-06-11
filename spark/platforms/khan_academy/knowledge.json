@@ -496,7 +496,7 @@
               "known_failure_modes": [
                 "Element staleness: if Wonder Blocks re-renders popups after one opens, $popup.element from outer find_all may go stale on iter 2+. If that happens (only first dropdown opens, rest fail with element-not-found), the workaround would be sequential unrolled blocks (find_all + index access) per popup \u2014 but try the canonical for_each version first."
               ],
-              "verified_count": 13,
+              "verified_count": 12,
               "bt_template_hint": "CANONICAL BT (handler param names verified):\n\n",
               "ccm_observed_failures": {
                 "16:54_observation": "find_and_click element=$popup.element \u2192 resolves target='' role=None \u2192 ACTION RETURNED NONE",
@@ -514,7 +514,7 @@
                 "17:25_fix": "Server-side workaround in _solve_matching_with_gemini: strip dangling ' not' suffix from options before passing to LLM (undoes Mac's overzealous strip). Real fix would be Mac-side: _extract_menu_items should strip ' not selected' (13 chars) before falling back to ' selected' (9 chars). Mac is frozen, so server workaround is the pragmatic path."
               },
               "last_verified_at": "2026-06-11T16:17:55Z",
-              "last_demoted_at": "2026-06-11T12:39:29Z"
+              "last_demoted_at": "2026-06-11T16:26:47Z"
             },
             {
               "discovered_at": "2026-05-19T14:18:14Z",
@@ -1183,6 +1183,11 @@
         },
         {
           "note": "CHECK-BUTTON STATE = first-class interaction indicator (Jesse 2026-06-11): gray/disabled Check = the widget has NOT been engaged (answer not staged) \u2014 a solve BT that ends with Check still disabled accomplished NOTHING, regardless of what the tree hash did. Active Check = answer staged, ready to submit. LIMITATION: captured trees currently lack AXEnabled (filed to claude-0); until it lands, request an explicit AXEnabled read when verifying drag/visual widgets.",
+          "discovered_at": "2026-06-11",
+          "verified_count": 1
+        },
+        {
+          "note": "CLASSIFY BY CURRENT WIDGETS, NEVER BY PAGE HISTORY (2026-06-11 16:26: a checkbox question was classified DROPDOWN because this collision-prone hash previously held a dropdown question; the blind dropdown flow then 422'd): the subtype comes from the ANSWER WIDGETS in THIS capture \u2014 '(Choice X)'-prefixed AXCheckBox rows = multiple_choice (one answer) or multiple_select ('Choose N answers'); AXComboBox 'Select an answer' = dropdown; zero-size 'Point N at' buttons = interactive_graph; a draggable list/table = ranking/sorter/matcher. The same page hash hosts DIFFERENT question types across visits.",
           "discovered_at": "2026-06-11",
           "verified_count": 1
         }
