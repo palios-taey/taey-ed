@@ -295,10 +295,32 @@ def _escalate_to_claude_diagnosing(
             _notify(body, notify_type="escalation")
         except Exception:
             logger.exception("notify_spark_claude failed in escalate helper")
+
+        # Auto-climb (INTENDED_FLOW §D): Tier 2/3 packets go to taeys-hands
+        # DIRECTLY from the server. This emission site was MISSED when the
+        # auto-dispatch shipped (only consultation_request.py was wired) —
+        # both 2026-06-11 Tier-2 escalations claimed "AUTO-DISPATCHED" while
+        # nothing was sent (Jesse caught it: "Taeys-Hands isn't getting
+        # anything from you").
+        dispatch_body = None
+        try:
+            from spark.tasks.escalation import dispatch_body_for_tier, notify_fleet
+            dispatch_body = dispatch_body_for_tier(
+                tier=tier,
+                packet_path=packet_path,
+                platform=platform,
+                screen_hash=_screen_hash,
+                retry_count=retries,
+            )
+            if dispatch_body:
+                notify_fleet("taeys-hands", dispatch_body, notify_type="task")
+        except Exception:
+            logger.exception("taeys-hands auto-dispatch failed in escalate helper")
         logger.warning(
             f"Escalation triggered for {consultation_id} "
             f"({platform}, {screen_type_hint}, hash={_screen_hash[:16]}, "
-            f"tier={tier}, retry_count={retries}, reason={reason!r})"
+            f"tier={tier}, retry_count={retries}, "
+            f"auto_dispatched={'yes' if dispatch_body else 'n/a'}, reason={reason!r})"
         )
 
     return _with_chat({
