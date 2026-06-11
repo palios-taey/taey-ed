@@ -75,6 +75,10 @@
       {
         "text": "Skip to lesson content",
         "reason": "accessibility skip-link, a no-op for navigation \u2014 observed wasted cycle 2026-06-11 (LLM picked it as the nav answer)"
+      },
+      {
+        "text": "Try again",
+        "reason": "on summary cards this re-does a COMPLETED set; forward is the Up next link (completion indicator)"
       }
     ],
     "platform_quirks": [
@@ -1501,6 +1505,17 @@
           "operational_notes": [
             {
               "note": "'(Choice X, Correct)' in a checkbox/radio name = ALREADY ANSWERED review state \u2014 never re-click choices. Forward move = find_and_click 'Show summary' (AXButton). The summary card that follows shows skills leveled up and a continue path.",
+              "discovered_at": "2026-06-11",
+              "verified_count": 1
+            }
+          ]
+        },
+        {
+          "name": "summary_card",
+          "description": "Post-set summary card: mastery points awarded ('X out of 100 Mastery points ... Proficient/Mastered'), 'Try again' button + 'Up next: <next item>' link.",
+          "operational_notes": [
+            {
+              "note": "Forward move = find_and_click the 'Up next: <X>' AXLink (exact name from the tree at decision time \u2014 the suffix varies). NEVER click 'Try again' (re-does the completed set). Same universal rule as videos: Up-next present = this item is DONE.",
               "discovered_at": "2026-06-11",
               "verified_count": 1
             }
