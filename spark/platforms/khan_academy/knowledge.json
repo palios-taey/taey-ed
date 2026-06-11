@@ -684,6 +684,11 @@
               "note": "BELOW-THE-FOLD DRAG WIDGETS (2026-06-11): the tree CONTAINS off-screen content (names/alt-text readable) but coordinates are only actuation-valid when the widget is ON-SCREEN. Mouse events cannot reach below the fold. TWO-PHASE pattern, fully autonomous with existing primitives: BT#1 = scroll the widget fully into view + wait (END the BT there); the next poll captures the post-scroll tree; BT#2 computes drag coords from THAT capture. NEVER drag with coordinates computed from a pre-scroll tree \u2014 they are stale by the scroll delta.",
               "discovered_at": "2026-06-11",
               "verified_count": 0
+            },
+            {
+              "note": "PLOT-POINTS RECIPE (2026-06-11, from the widget's own a11y contract): KEYBOARD ONLY \u2014 mouse drag is 0% effective on this Mafs widget (confirmed May DR). The widget announces it: 'Use the Tab key to move through the interactive elements. When an interactive element has focus, use Control + Shift + Arrows to move it.' Each press moves ONE GRID UNIT (read axis step from the screenshot). VERIFICATION IS IN THE TREE: each point is an AXButton named 'Point N at X comma Y' that UPDATES live as it moves \u2014 re-extract and check names after each point is placed; never assume. PLAN: 1) read the DATA TABLE (tree/screenshot) and pick the row GROUP the question asks for (e.g. the four entries sharing one mass); 2) for each point: Tab/click to focus it, press_key Right/Up with modifiers ['ctrl','shift'] x (target/grid-step) times; 3) verify all four 'Point N at X comma Y' names match targets; 4) Check only after ALL verified. Points start stacked at 0,0 \u2014 move them one at a time.",
+              "discovered_at": "2026-06-11",
+              "verified_count": 1
             }
           ],
           "aliases": [
