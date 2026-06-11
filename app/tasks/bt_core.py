@@ -333,6 +333,61 @@ def _node_summary(node_def: dict) -> str:
 # Main Entry Point
 # =========================================================================
 
+# Apps known to capture synthetic CGEvents before they reach the target
+# browser. Probe 2026-06-11 13:30: when Screen Sharing held the macOS
+# foreground, identical CGEvent clicks at correct coords had ZERO effect on
+# Chromium; when it lost foreground, the same clicks landed and toggled
+# state. The guard reactivates the target app before BT handlers fire.
+_EVENT_EATING_APPS = {
+    "Screen Sharing",
+    "Screen Sharing for macOS",
+    "ScreenSharing",
+    "Apple Remote Desktop",
+    "AnyDesk",
+    "RustDesk",
+    "TeamViewer",
+    "Splashtop",
+    "Splashtop Streamer",
+    "VNC Viewer",
+    "Microsoft Remote Desktop",
+}
+
+
+def _foreground_guard(target_app_name: str) -> None:
+    """Log frontmost app and re-foreground the BT target if an event-eating
+    app holds focus. Failure here is non-fatal — handlers proceed regardless
+    and the log line documents the foreground state for diagnosis."""
+    try:
+        from AppKit import (
+            NSWorkspace, NSRunningApplication,
+            NSApplicationActivateIgnoringOtherApps,
+        )
+        ws = NSWorkspace.sharedWorkspace()
+        fm = ws.frontmostApplication()
+        fm_name = (fm.localizedName() if fm else "") or ""
+        btlog(f"foreground_guard: frontmost={fm_name!r} target={target_app_name!r}")
+        if fm_name in _EVENT_EATING_APPS:
+            target = None
+            for app in ws.runningApplications():
+                if target_app_name.lower() in (app.localizedName() or "").lower():
+                    target = app
+                    break
+            if target is not None:
+                ok = target.activateWithOptions_(NSApplicationActivateIgnoringOtherApps)
+                btlog(
+                    f"foreground_guard: re-activated {target_app_name!r} "
+                    f"(activate_returned={ok}) — was eaten by {fm_name!r}"
+                )
+                time.sleep(0.3)
+            else:
+                btlog(
+                    f"foreground_guard: target app {target_app_name!r} not running; "
+                    f"events may be intercepted by {fm_name!r}"
+                )
+    except Exception as exc:
+        btlog(f"foreground_guard: exception {type(exc).__name__}: {exc}")
+
+
 def execute_tree(
     tree_definition: dict,
     app_name: str,
@@ -365,6 +420,8 @@ def execute_tree(
         use_local_kb=use_local_kb,
     )
     register_all_handlers(ctx)
+
+    _foreground_guard(app_name)
 
     btlog(f"=== Behavior Tree START for {platform} ===")
     status = tick_node(tree_definition, ctx)
