@@ -303,6 +303,19 @@ CRITICAL RULES:
 """
 
 
+# Screen types that should NEVER have extraction (no unique content).
+_NO_EXTRACT_TYPES = {"NAVIGATION", "TRANSITION"}
+
+
+def _should_extract(screen_type: str) -> bool:
+    """Return False for screen types that have no unique content to extract."""
+    if screen_type in _NO_EXTRACT_TYPES:
+        return False
+    from spark.tasks.screen_type_util import get_master_category
+    master = get_master_category(screen_type)
+    return master not in _NO_EXTRACT_TYPES
+
+
 def build_extract_config(
     tree: dict,
     screenshot_b64: str,
