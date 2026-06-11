@@ -694,6 +694,11 @@
               "note": "DYNAMIC POINT NAMES (failure 14:45): point buttons are named 'Point N at X comma Y.' and the name CHANGES with every move \u2014 NEVER target them with wait_for_element/find_and_click by name (exact-match law; prefixes are forbidden contains). FOCUS a point via click_at on its bbox center from the CURRENT (post-scroll) tree. MOVE via press_key arrows with modifiers ['ctrl','shift'] \u2014 one node per press, repeated (e.g. 3 right-presses = 3 press_key nodes). VERIFY by find_all(AXButton) re-extraction (the names update live) \u2014 read them, never name-match them. Get the grid step from the screenshot axes before computing press counts. Points are coordinate-actuated: the two-phase scroll rule APPLIES (scroll fully into view, end BT, rebuild from the post-scroll capture).",
               "discovered_at": "2026-06-11",
               "verified_count": 1
+            },
+            {
+              "note": "TIER-2 SYNTHESIS (Clarity DR 2026-06-11, provisional; REVIEWS/khan_academy_7393a3904b8b_tier2.md): VISION-then-KEYBOARD structure. The solve_complex call must extract from the screenshot: axis min/max + grid-step per tick, each point's CURRENT (x,y), and TARGET (x,y) per point from the data table. CRITICAL: the BT engine has NO runtime arithmetic \u2014 the LLM must PRE-COMPUTE signed integer press counts per point (delta_steps = (target-current)/grid_step) and emit one press_key node per press, choosing Right/Up vs Left/Down by the sign. Read CURRENT positions fresh from the live 'Point N at X comma Y' names (a prior partial attempt leaves points mid-board \u2014 never assume 0,0).",
+              "discovered_at": "2026-06-11",
+              "verified_count": 0
             }
           ],
           "aliases": [
