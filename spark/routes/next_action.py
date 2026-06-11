@@ -421,6 +421,20 @@ def _make_directive_id() -> str:
     return f"d-{uuid.uuid4().hex[:8]}"
 
 
+def _is_scroll_only_bt(bt_debug_tail) -> bool:
+    """True if the just-executed BT consisted solely of scroll/wait actions
+    (phase-1 of the two-phase drag pattern). Parsed from the Mac's BT debug
+    tail; requires step 1 visible so a truncated tail of a longer mixed BT
+    can never masquerade as scroll-only."""
+    import re as _re
+    if not bt_debug_tail:
+        return False
+    steps = _re.findall(r"seq step (\d+)/\d+: (\w+)", str(bt_debug_tail))
+    if not steps or steps[0][0] != "1":
+        return False
+    return all(action in ("scroll", "wait") for _, action in steps)
+
+
 def _get_extract_for_type(screen_type: str, tree: dict = None,
                           screenshot_b64: str = None, platform: str = None):
     """Build extract config for signatures missing stored extract.
@@ -1240,7 +1254,18 @@ def _next_action_impl(request: NextActionRequest):
     logger.info("  Step 2.5: Checking for stuck screen...")
     if lr and lr.success and not lr.continue_loop and lr.screen:
         tree_hash_changed = lr.tree_hash_before != lr.tree_hash_after
-        if not tree_hash_changed:
+        if not tree_hash_changed and _is_scroll_only_bt(lr.bt_debug_tail):
+            # Phase-1 of the two-phase drag pattern: a scroll/wait-only BT is
+            # EXPECTED to leave the screen unchanged — the point is the next
+            # capture carries on-screen coordinates for phase-2. Twice today
+            # (dropdown 14:11, matcher 14:20) this tripped stuck-detection and
+            # burned ladder attempts on a working flow. Fall through to a
+            # fresh build, no failure recorded.
+            logger.info(
+                f"  Step 2.5: scroll-only BT, unchanged screen — PHASE COMPLETE "
+                f"(not stuck). Rebuilding from post-scroll capture."
+            )
+        elif not tree_hash_changed:
             logger.error(
                 f"STUCK: {lr.screen} unchanged after action. "
                 f"ONE TRY ONLY — stopping. Hash={lr.directive_skeleton_hash or 'none'}"
