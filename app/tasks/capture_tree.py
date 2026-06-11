@@ -176,6 +176,17 @@ def capture_tree(app_name: str) -> dict:
         if err == kAXErrorSuccess and val is not None:
             node["focused"] = bool(val)
 
+        # AXEnabled — captured on every element where it's available. Critical
+        # for interaction validation: a Check button's gray->active transition
+        # is a first-class completion indicator that has NO bbox change, so
+        # server-side validators that bbox-compare are blind to it. Taey-ed
+        # field report 2026-06-11 13:00 + manual ranking-widget drag run
+        # confirmed the gap. Captured uniformly (no role filter) — server
+        # picks what it wants; same shape as main/focused above.
+        err, val = AXUIElementCopyAttributeValue(element, "AXEnabled", None)
+        if err == kAXErrorSuccess and val is not None:
+            node["enabled"] = bool(val)
+
         # Generate stable element_id from path + role + name (for Spark Claude visual reference ONLY)
         # NOTE: This ID is for visual mapping only - Mac executes by name+role, NOT element_id
         id_source = f"{path}:{node.get('role', '')}:{node.get('name', '')}"
