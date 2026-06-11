@@ -288,7 +288,7 @@ def build_section_2(consultation_id: str, is_reconsultation: bool,
 # BT patterns. To update a pattern, edit the matching subtype operational_note.
 
 SECTION_5_HANDLERS = """\
-=== HANDLER REFERENCE (16 registered + 2 composable) ===
+=== HANDLER REFERENCE (18 registered + 2 composable) ===
 
 REGISTERED HANDLERS — Use as action: value in BT nodes.
 Any other action name will SILENTLY FAIL (logs error, returns FAILURE).
@@ -431,6 +431,24 @@ press_escape:
   Purpose: Send Escape key
   Params: None
 
+drag:
+  Purpose: Synthesized mouse drag (mousedown → hold → stepped moves → drop).
+    For mouse-event drag widgets ONLY (e.g. Perseus Sortable / matcher).
+  Params:
+    start (dict, required): {"x": <num>, "y": <num>} — drag origin center
+    end (dict, required): {"x": <num>, "y": <num>} — drop target center
+    steps (int): intermediate moves (default 18)
+    post_delay (float): seconds after mouseup (default 0)
+  SHAPE WARNING: start/end are NESTED dicts. Flat keys (start_x, from_x,
+    to_y, ...) are silently invalid — the action returns None and the BT fails.
+
+type_keys:
+  Purpose: Type arbitrary Unicode (math symbols, Greek, subscripts) into the
+    FOCUSED element. Caller must focus the target first (click/find_and_click).
+  Params:
+    text (str, required): The literal text to type.
+    post_delay (float): seconds after typing (default 0).
+
 COMPOSABLE NODE TYPES — These are NOT handlers. Use as action: value.
 
 for_each:
@@ -477,6 +495,31 @@ SECTION_5_HANDLERS_ORIGINAL = SECTION_5_HANDLERS
 
 # Individual handler documentation blocks for JIT assembly
 HANDLER_DOCS = {
+    "drag": """\
+drag:
+  Purpose: Synthesized mouse drag (mousedown → hold → stepped moves → drop).
+    For mouse-event drag widgets ONLY (e.g. Perseus Sortable / matcher).
+    Does NOT fire HTML5-native dragstart/dragover, and does NOT work on
+    PointerEvent widgets (Mafs interactive-graph — use the keyboard path).
+  Params:
+    start (dict, required): {"x": <num>, "y": <num>} — drag origin center
+      (POINTS, same space as visible_bbox; compute bbox center like click_at).
+    end (dict, required): {"x": <num>, "y": <num>} — drop target center.
+    steps (int): intermediate moves (default 18).
+    post_delay (float): seconds after mouseup (default 0).
+  SHAPE WARNING: start/end are NESTED dicts. Flat keys (start_x, from_x,
+    to_y, ...) are silently invalid — the action returns None, BT fails.
+  Returns: {success: true/false}
+  Verify after EACH drop by re-reading the tree/screenshot — drops can miss.""",
+
+    "type_keys": """\
+type_keys:
+  Purpose: Type arbitrary Unicode (math symbols, Greek, subscripts) into the
+    FOCUSED element without a keymap. Caller must focus the target first.
+  Params:
+    text (str, required): The literal text to type.
+    post_delay (float): seconds after typing (default 0).""",
+
     "find_and_click": """\
 find_and_click:
   Purpose: Find element by EXACT name and click it. Use ONLY for elements
