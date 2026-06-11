@@ -177,7 +177,10 @@ def _do_call(
     # status reports can_stop: true...") instead of BT JSON. Also the likely
     # cause of today's intermittent exit-1/empty responses. (--bare would skip
     # hooks too but drops OAuth with it.)
-    worker_env = {**os.environ, "HOME": WORKER_HOME}
+    # DISABLE_AUTOUPDATER: the CLI auto-updated itself mid-run (16:09) and
+    # the binary vanished for the duration of the relink — a worker call
+    # raced it and died. Production loops must not race auto-updates.
+    worker_env = {**os.environ, "HOME": WORKER_HOME, "DISABLE_AUTOUPDATER": "1"}
 
     t0 = time.time()
     try:
