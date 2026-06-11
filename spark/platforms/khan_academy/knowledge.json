@@ -689,6 +689,11 @@
               "note": "PLOT-POINTS RECIPE (2026-06-11, from the widget's own a11y contract): KEYBOARD ONLY \u2014 mouse drag is 0% effective on this Mafs widget (confirmed May DR). The widget announces it: 'Use the Tab key to move through the interactive elements. When an interactive element has focus, use Control + Shift + Arrows to move it.' Each press moves ONE GRID UNIT (read axis step from the screenshot). VERIFICATION IS IN THE TREE: each point is an AXButton named 'Point N at X comma Y' that UPDATES live as it moves \u2014 re-extract and check names after each point is placed; never assume. PLAN: 1) read the DATA TABLE (tree/screenshot) and pick the row GROUP the question asks for (e.g. the four entries sharing one mass); 2) for each point: Tab/click to focus it, press_key Right/Up with modifiers ['ctrl','shift'] x (target/grid-step) times; 3) verify all four 'Point N at X comma Y' names match targets; 4) Check only after ALL verified. Points start stacked at 0,0 \u2014 move them one at a time.",
               "discovered_at": "2026-06-11",
               "verified_count": 1
+            },
+            {
+              "note": "DYNAMIC POINT NAMES (failure 14:45): point buttons are named 'Point N at X comma Y.' and the name CHANGES with every move \u2014 NEVER target them with wait_for_element/find_and_click by name (exact-match law; prefixes are forbidden contains). FOCUS a point via click_at on its bbox center from the CURRENT (post-scroll) tree. MOVE via press_key arrows with modifiers ['ctrl','shift'] \u2014 one node per press, repeated (e.g. 3 right-presses = 3 press_key nodes). VERIFY by find_all(AXButton) re-extraction (the names update live) \u2014 read them, never name-match them. Get the grid step from the screenshot axes before computing press counts. Points are coordinate-actuated: the two-phase scroll rule APPLIES (scroll fully into view, end BT, rebuild from the post-scroll capture).",
+              "discovered_at": "2026-06-11",
+              "verified_count": 1
             }
           ],
           "aliases": [
