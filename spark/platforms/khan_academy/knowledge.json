@@ -1053,6 +1053,11 @@
           "note": "Unit test / quiz question pages share ONE skeleton hash across DIFFERENT question types (observed 2026-06-11: checkbox Q1 and ranking Q2 matched the same hash). Map such hashes as bare EXERCISE \u2014 the per-question subtype (checkbox/ranking/matcher/...) must be decided at BT-rebuild time from the QUESTION CONTENT, never assumed from the hash's previous visit.",
           "discovered_at": "2026-06-11",
           "verified_count": 1
+        },
+        {
+          "note": "CHECK-BUTTON STATE = first-class interaction indicator (Jesse 2026-06-11): gray/disabled Check = the widget has NOT been engaged (answer not staged) \u2014 a solve BT that ends with Check still disabled accomplished NOTHING, regardless of what the tree hash did. Active Check = answer staged, ready to submit. LIMITATION: captured trees currently lack AXEnabled (filed to claude-0); until it lands, request an explicit AXEnabled read when verifying drag/visual widgets.",
+          "discovered_at": "2026-06-11",
+          "verified_count": 1
         }
       ]
     },
