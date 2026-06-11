@@ -28,9 +28,12 @@ tier is the synthesis.
    the research.
 
 3. Synthesize the responses into a unified PROVISIONAL operational_note update
-   for `knowledge.json`. Cite which Family member contributed which insight
-   (cannot-lie provenance). Re-register the screen's hash if a failure path
-   deleted it.
+   for `knowledge.json`. Write it with `verified_count: 0` — Family synthesis
+   is unproven until a real run succeeds with it (the credit path promotes it
+   automatically). Cite which Family member contributed which insight
+   (cannot-lie provenance). REPLACE or REMOVE the prior note(s) that produced
+   the failing attempts — failed provisional answers are discarded. Re-register
+   the screen's hash if a failure path deleted it.
 
 4. ONLY AFTER the fold: touch `diagnosis_done.flag`. The worker generates a
    fresh BT with the synthesized note. The note stays provisional until a real
