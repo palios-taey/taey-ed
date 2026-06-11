@@ -125,6 +125,18 @@ def classify_failure_environment(bt_debug_tail) -> Optional[str]:
     return None
 
 
+def classify_infra_failure(reason) -> Optional[str]:
+    """Server/worker INFRA failures are never researchable: a worker_fallback
+    means the pipeline crashed before producing a BT — there is nothing about
+    the SCREEN for Perplexity/the Family to diagnose. Live 2026-06-11: argv
+    limits, missing binaries and schema typos climbed the ladder to a Tier-3
+    Family fan-out before being held by hand."""
+    r = str(reason or "")
+    if r.startswith("worker_fallback:"):
+        return f"infra/worker_pipeline — {r[:160]}"
+    return None
+
+
 def dispatch_body_for_tier(
     *,
     tier: str,
@@ -133,6 +145,7 @@ def dispatch_body_for_tier(
     screen_hash: str,
     retry_count: int,
     bt_debug_tail=None,
+    reason=None,
 ) -> Optional[str]:
     """Build the DIRECT taeys-hands dispatch message for tier2/tier3.
 
@@ -140,7 +153,7 @@ def dispatch_body_for_tier(
     Content mirrors what the tier templates previously told claude-primary
     to relay verbatim — the server now sends it itself.
     """
-    env_class = classify_failure_environment(bt_debug_tail)
+    env_class = classify_failure_environment(bt_debug_tail) or classify_infra_failure(reason)
     if env_class:
         logger.warning(
             f"escalation: SKIPPING tier-{tier[-1]} fleet dispatch for "
