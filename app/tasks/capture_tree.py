@@ -22,12 +22,21 @@ from ApplicationServices import (
     kAXFocusedWindowAttribute,
 )
 from CoreFoundation import CFArrayGetCount, CFArrayGetValueAtIndex
-import re
 import hashlib
+import re
+import time
 
 # Per-process cache of PIDs where AXManualAccessibility has been set, so the
 # capture_tree call doesn't redundantly set the attribute on every poll.
 _ax_complete_pids: set[int] = set()
+
+# How long to wait after first-time AXManualAccessibility set, to let Chrome
+# rebuild its accessibility tree into complete mode. Without this, the very
+# first capture after the setter races the rebuild and gets a half-built
+# tree (taey-ed field report 2026-06-11 11:12: AXTable/AXRow/AXCell
+# structure present but AXStaticText names empty and heights 0). One-shot
+# cost — subsequent captures hit the PID cache and skip this delay.
+_AX_REBUILD_WAIT_S = 0.8
 
 
 def capture_tree(app_name: str) -> dict:
@@ -73,6 +82,14 @@ def capture_tree(app_name: str) -> dict:
             AXUIElementSetAttributeValue(
                 app_elem, "AXManualAccessibility", True,
             )
+            # Let Chrome finish rebuilding its accessibility tree into
+            # complete mode before we read AXFocusedWindow or walk
+            # children. Without this wait the FIRST capture-tree call
+            # after a fresh Chrome PID returns half-built nodes (taey-ed
+            # field report 2026-06-11 11:12). One-shot per PID — the
+            # _ax_complete_pids cache skips this branch on every
+            # subsequent call.
+            time.sleep(_AX_REBUILD_WAIT_S)
         _ax_complete_pids.add(pid)
 
     # Scope to the FOCUSED WINDOW only (Jesse 2026-06-01 root-fix).
