@@ -114,16 +114,29 @@ def _escalate_to_claude_diagnosing(
     # Mac/Spark cannot create this flag — only the Mira-side claude session can.
     if gave_up.exists():
         from spark.tasks.classify_screen import _describe_screen
+        # Terminal user-assist (INTENDED_FLOW §D terminal; Jesse 2026-06-11):
+        # when the system gives up on a screen, the user is notified WITH the
+        # correct answer / exact steps to do it themselves. claude-primary
+        # writes user_instructions.txt into the state dir alongside
+        # gave_up.flag; the dialog carries those instructions verbatim.
+        user_instr = ""
+        instr_p = diag_dir / "user_instructions.txt"
+        if instr_p.exists():
+            try:
+                user_instr = instr_p.read_text().strip()
+            except OSError:
+                pass
+        question_text = user_instr or f"Claude diagnosis exhausted: {reason}"
         return _with_chat({
             "directive": "user_input_needed",
             "directive_id": _make_directive_id(),
-            "reason": f"Claude diagnosis exhausted: {reason}",
+            "reason": question_text,
             "screen_type": screen_type_hint,
             "screen_description": _describe_screen(tree) if tree else "",
             "consultation_id": consultation_id,
         }, platform, [
-            build_status("Claude exhausted diagnosis — need your help"),
-            build_question(f"Claude diagnosis exhausted: {reason}"),
+            build_status("This one needs your hands — exact steps in the dialog"),
+            build_question(question_text),
         ])
 
     retries = 0
