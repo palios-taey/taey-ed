@@ -1431,13 +1431,15 @@ def _next_action_impl(request: NextActionRequest):
         # cached video_poll BT during playback (cheap) and falls to Step 5
         # classification when the structure finally changes at completion.
         # See consultations/04_VIDEO_POLL_ARCHAEOLOGY.md Section D1.
-        if lr.tree_hash_before != lr.tree_hash_after:
-            # For VIDEO screens: tree hash ALWAYS changes during playback
-            # (timestamps, progress bar). Check if video is actually done
-            # by looking for video signals in the current tree.
-            is_video = lr.screen and "VIDEO" in (lr.screen or "").upper()
-            # TODO(V20): Consider using get_master_category() here for robustness.
-            # Currently works because all video screen types contain "VIDEO".
+        # Completion check runs on EVERY poll cycle, independent of hash
+        # movement: a FINISHED video's tree stops changing entirely (live
+        # 2026-06-11 18:04 — hash static at 4848e6f0, detector unreachable
+        # inside the tree-changed branch, poll forever). During playback the
+        # hash changes (timestamps); at completion it freezes. Either way,
+        # the indicators in the CURRENT tree are the truth.
+        _is_video_poll = lr.screen and "VIDEO" in (lr.screen or "").upper()
+        if lr.tree_hash_before != lr.tree_hash_after or _is_video_poll:
+            is_video = _is_video_poll
             if is_video:
                 # COMPLETION INDICATORS decide, not player presence: the
                 # YouTube player stays in the tree after completion, so
