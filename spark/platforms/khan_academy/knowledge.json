@@ -192,10 +192,10 @@
         "added_by": "claude-primary"
       },
       {
-        "quirk": "Cmd+R (page reload) CLEARS staged answers on the current question (per Jesse 2026-06-11 \u2014 legitimate clearing mechanism). NEVER reload between clicking Check and confirming the submission registered: a reload in that window can eat the submission (suspected cause of the Q4 'X' on the 2026-06-11 unit test \u2014 the stale BT pressed Cmd+R 3s after Check).",
         "affects": [
           "EXERCISE"
-        ]
+        ],
+        "description": "Cmd+R (page reload) CLEARS staged answers on the current question (per Jesse 2026-06-11 \u2014 legitimate clearing mechanism). NEVER reload between clicking Check and confirming the submission registered: a reload in that window can eat the submission (suspected cause of the Q4 'X' on the 2026-06-11 unit test \u2014 the stale BT pressed Cmd+R 3s after Check)."
       }
     ],
     "completion_model": {

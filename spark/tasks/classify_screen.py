@@ -666,7 +666,8 @@ def _build_knowledge_context(
     # 3. Screen-type-specific quirks (filtered)
     if quirks:
         q_text = "\n".join(
-            f"- [{q.get('severity', 'important').upper()}] {q['description']}"
+            f"- [{q.get('severity', 'important').upper()}] "
+            f"{q.get('description') or q.get('quirk') or ''}"
             for q in quirks
         )
         parts.append(f"=== PLATFORM QUIRKS (affecting {screen_type}) ===\n{q_text}")
