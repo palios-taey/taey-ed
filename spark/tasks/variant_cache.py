@@ -175,11 +175,30 @@ def store_variant_bt(
 
 
 def mark_variant_validated(platform: str, variant: str):
-    """Increment success count and set validated=True."""
+    """Increment success count and set validated=True.
+
+    Source-note credit resolves at min_verified=0, NOT the reuse threshold:
+    a note must accumulate verified_count 0->1->2->3 through worker-built
+    successes BEFORE it qualifies for template replay. Resolving credit
+    through the reuse gate would trap every note below 3 forever (the
+    chicken-and-egg Jesse flagged 2026-05-18).
+    """
     source = None
     resolved = lookup_variant_bt(platform, variant)
     if resolved:
         source = resolved.get("source")
+    if not isinstance(source, dict):
+        try:
+            knowledge = load_knowledge(platform)
+            template_entry = get_verified_bt_template_entry(
+                knowledge, variant, min_verified=0,
+            )
+            if template_entry:
+                source = template_entry["source"]
+        except Exception as e:
+            logger.warning(
+                f"variant_cache: credit-source lookup failed for {platform}/{variant}: {e}"
+            )
 
     data = _load_variants(platform)
     entry = data["variants"].get(variant)
