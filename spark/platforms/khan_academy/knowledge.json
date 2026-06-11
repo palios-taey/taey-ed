@@ -196,6 +196,16 @@
           "EXERCISE"
         ],
         "description": "Cmd+R (page reload) CLEARS staged answers on the current question (per Jesse 2026-06-11 \u2014 legitimate clearing mechanism). NEVER reload between clicking Check and confirming the submission registered: a reload in that window can eat the submission (suspected cause of the Q4 'X' on the 2026-06-11 unit test \u2014 the stale BT pressed Cmd+R 3s after Check)."
+      },
+      {
+        "description": "SCREEN SHARING EATS SYNTHETIC EVENTS (root-caused 2026-06-11, probe-proven both ways): when the Screen Sharing app holds macOS foreground on the Mac, CGEvent clicks/drags are consumed and never reach Chrome \u2014 BTs report success, nothing stages. When Screen Sharing is not foreground, identical events work. If actions repeatedly report success with no staged effect, suspect the foreground app FIRST. Mac-side pre-BT foreground guard filed to claude-0.",
+        "affects": [
+          "EXERCISE",
+          "VIDEO",
+          "ARTICLE",
+          "NAVIGATION",
+          "TRANSITION"
+        ]
       }
     ],
     "completion_model": {
