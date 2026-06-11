@@ -639,8 +639,11 @@ def increment_operational_note_verified_count(platform: str, source: dict, incre
                     continue
                 if discovered_at and note.get("discovered_at") != discovered_at:
                     continue
-                note["verified_count"] = int(note.get("verified_count", 0) or 0) + increment
-                note["last_verified_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                note["verified_count"] = max(0, int(note.get("verified_count", 0) or 0) + increment)
+                if increment > 0:
+                    note["last_verified_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                else:
+                    note["last_demoted_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
                 atomic_write_json(knowledge_path, knowledge)
                 cache_key = str(knowledge_path)
                 _knowledge_cache.pop(cache_key, None)

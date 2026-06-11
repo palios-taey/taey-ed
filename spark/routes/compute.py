@@ -50,9 +50,11 @@ async def generate(request: GenerateRequest):
             )
         if len(request.items) > 10:
             logger.info(f"generate: ... ({len(request.items) - 10} more items)")
+    kb_chunks = [c.model_dump() for c in (request.relevant_kb_chunks or [])]
     logger.info(
         f"generate: q_type={request.question_type} "
-        f"question='{request.question[:60]}'"
+        f"question='{request.question[:60]}' "
+        f"relevant_kb_chunks={len(kb_chunks)}"
     )
 
     try:
@@ -66,6 +68,7 @@ async def generate(request: GenerateRequest):
             screen_config=request.screen_config,
             items=request.items,
             screenshot_b64=request.screenshot_b64,
+            relevant_kb_chunks=kb_chunks,
         )
     except Exception as e:
         # Genuine server crash inside the LLM call path. Log full traceback so

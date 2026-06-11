@@ -205,6 +205,7 @@ def mark_variant_validated(platform: str, variant: str):
     if entry:
         entry["validated"] = True
         entry["success_count"] = entry.get("success_count", 0) + 1
+        entry["consecutive_failures"] = 0
         entry["last_success"] = datetime.now(timezone.utc).isoformat()
         _atomic_write(_variant_path(platform), data)
         logger.info(f"variant_cache: validated {variant} (count={entry['success_count']})")
@@ -284,8 +285,66 @@ def mark_hash_validated(platform: str, skel_hash: str):
     entry = data["hashes"].get(skel_hash)
     if entry:
         entry["validated"] = True
+        entry["consecutive_failures"] = 0
         entry["last_seen"] = datetime.now(timezone.utc).isoformat()
         _atomic_write(_hash_index_path(platform), data)
+
+
+def record_validated_map_failure(platform: str, skel_hash: str, variant: str = None) -> bool:
+    """Demotion path (INTENDED_FLOW §E): a VALIDATED map that fails twice
+    consecutively is demoted back into the learning loop — validated=False
+    (the normal unvalidated handling applies on its next failure) and its
+    credited operational_note debited one step, dropping it below the replay
+    gate. Never deleted here; never demoted on a one-off failure.
+
+    Returns True if a demotion happened, False otherwise.
+    """
+    data = _load_hash_index(platform)
+    entry = data["hashes"].get(skel_hash)
+    if not entry or not entry.get("validated"):
+        return False
+    fails = int(entry.get("consecutive_failures", 0) or 0) + 1
+    entry["consecutive_failures"] = fails
+    if fails < 2:
+        _atomic_write(_hash_index_path(platform), data)
+        logger.info(
+            f"variant_cache: validated map {variant or skel_hash[:12]} failure "
+            f"{fails}/2 — keeping (demotes at 2 consecutive)"
+        )
+        return False
+
+    entry["validated"] = False
+    entry["consecutive_failures"] = 0
+    _atomic_write(_hash_index_path(platform), data)
+
+    source = None
+    if variant:
+        vdata = _load_variants(platform)
+        ventry = vdata["variants"].get(variant)
+        if ventry:
+            ventry["validated"] = False
+            source = ventry.get("source")
+            _atomic_write(_variant_path(platform), vdata)
+        if not isinstance(source, dict):
+            try:
+                knowledge = load_knowledge(platform)
+                template_entry = get_verified_bt_template_entry(
+                    knowledge, variant, min_verified=1,
+                )
+                if template_entry:
+                    source = template_entry["source"]
+            except Exception as e:
+                logger.warning(
+                    f"variant_cache: demote-source lookup failed for {platform}/{variant}: {e}"
+                )
+    if isinstance(source, dict) and source.get("kind") == "operational_note":
+        increment_operational_note_verified_count(platform, source, increment=-1)
+
+    logger.warning(
+        f"variant_cache: DEMOTED {variant or skel_hash[:12]} after {fails} "
+        f"consecutive failures — back into the learning loop (not deleted)"
+    )
+    return True
 
 
 # ── Stats ──

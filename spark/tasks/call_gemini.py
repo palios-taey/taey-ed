@@ -520,6 +520,7 @@ async def generate_answer(
     screen_config: Optional[Dict] = None,
     items: Optional[List[Dict]] = None,
     screenshot_b64: Optional[str] = None,
+    relevant_kb_chunks: Optional[List[Dict]] = None,
 ) -> dict:
     """
     Generate answer for educational question.
@@ -549,6 +550,20 @@ async def generate_answer(
     """
     # Build context block from KB + image descriptions
     context_parts = []
+    if relevant_kb_chunks:
+        # INTENDED_FLOW §C: chunks retrieved from THIS course's own
+        # videos/articles on the user's Mac — the answer must ground here.
+        chunk_texts = [
+            (ch.get("text") or "").strip()
+            for ch in relevant_kb_chunks
+            if isinstance(ch, dict) and (ch.get("text") or "").strip()
+        ]
+        if chunk_texts:
+            context_parts.append(
+                "Course content (from this course's own videos/articles — "
+                "ground your answer in this material):\n"
+                + "\n---\n".join(chunk_texts)
+            )
     if context:
         context_parts.append("Reference material:\n" + "\n".join(context))
     if image_descriptions:

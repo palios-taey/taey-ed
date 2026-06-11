@@ -76,6 +76,11 @@ class GenerateRequest(BaseModel):
     screen_config: Optional[Dict] = None
     items: Optional[List[Dict]] = None
     screenshot_b64: Optional[str] = None
+    # Top-K relevant chunks from the user's local KB, attached by the Mac's
+    # send_to_llm handler so the answer grounds in THIS course's own
+    # video/article content (INTENDED_FLOW §C). Forward ref — KBChunk is
+    # defined below; resolved by the model_rebuild() call after it.
+    relevant_kb_chunks: Optional[List["KBChunk"]] = None
 
 
 # ── Action Review (Phase 7) ──
@@ -175,6 +180,10 @@ class KBChunk(BaseModel):
     text: str  # the actual chunk text (≤1500 chars per chunk recommended)
     score: Optional[float] = None  # cosine similarity to query, 0..1
     kb_chunk_id: Optional[str] = None  # opaque local-only ID
+
+
+# Resolve the KBChunk forward reference in GenerateRequest (defined above).
+GenerateRequest.model_rebuild()
 
 
 class NextActionRequest(BaseModel):

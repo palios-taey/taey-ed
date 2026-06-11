@@ -1109,10 +1109,14 @@ def _next_action_impl(request: NextActionRequest):
                     )
                     hash_entry = lookup_by_hash(platform, lr.directive_skeleton_hash)
                     if hash_entry and hash_entry.get("validated"):
+                        from spark.tasks.variant_cache import record_validated_map_failure
+                        record_validated_map_failure(
+                            platform, lr.directive_skeleton_hash, lr.screen,
+                        )
                         logger.info(
                             f"Step 2: VALIDATED map {lr.screen} (hash "
-                            f"{lr.directive_skeleton_hash[:12]}) got a wrong answer once — "
-                            f"KEEPING map and escalating for review"
+                            f"{lr.directive_skeleton_hash[:12]}) got a wrong answer — "
+                            f"KEEPING map (demotes at 2 consecutive) and escalating"
                         )
                     else:
                         delete_hash(platform=platform, skel_hash=lr.directive_skeleton_hash)
@@ -1167,10 +1171,14 @@ def _next_action_impl(request: NextActionRequest):
                     )
                     _entry = _lookup_hash(platform, lr.directive_skeleton_hash)
                     if _entry and _entry.get("validated"):
+                        from spark.tasks.variant_cache import (
+                            record_validated_map_failure as _rec_fail,
+                        )
+                        _rec_fail(platform, lr.directive_skeleton_hash, lr.screen)
                         logger.info(
                             f"Step 2.5: VALIDATED map {lr.screen} (hash "
-                            f"{lr.directive_skeleton_hash[:12]}) got stuck once — "
-                            f"KEEPING map and escalating for review"
+                            f"{lr.directive_skeleton_hash[:12]}) got stuck — "
+                            f"KEEPING map (demotes at 2 consecutive) and escalating"
                         )
                     else:
                         _del_hash(platform=platform, skel_hash=lr.directive_skeleton_hash)
@@ -1374,10 +1382,16 @@ def _next_action_impl(request: NextActionRequest):
                     # or the screen having moved between match and execute) must NOT
                     # destroy it — that turns recognition into one-shot-then-forgotten.
                     # Keep the map; escalate for review instead of deleting.
+                    # record_validated_map_failure demotes (validated=False +
+                    # note debit) at 2 consecutive failures — INTENDED_FLOW §E.
+                    from spark.tasks.variant_cache import (
+                        record_validated_map_failure as _rec_fail3,
+                    )
+                    _rec_fail3(platform, lr.directive_skeleton_hash, lr.screen)
                     logger.info(
                         f"Step 3: VALIDATED map {lr.screen} (hash "
-                        f"{lr.directive_skeleton_hash[:12]}) failed once — KEEPING map, "
-                        f"escalating for review (not deleting)"
+                        f"{lr.directive_skeleton_hash[:12]}) failed — KEEPING map "
+                        f"(demotes at 2 consecutive), escalating for review"
                     )
                 else:
                     logger.info(
