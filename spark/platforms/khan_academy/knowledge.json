@@ -1289,8 +1289,8 @@
                 "Following the FIRST link in find_all results \u2014 order is DOM order, not progress order.",
                 "click element=$nav.answer_element \u2014 Mac's find_all on AXLink doesn't return a 'name' field, only label/popup_desc/options. Server-side element matching fails. Use find_and_click target=$nav.answer instead \u2014 Mac matches by AX name directly."
               ],
-              "verified_count": 7,
-              "last_verified_at": "2026-06-11T12:29:21Z"
+              "verified_count": 9,
+              "last_verified_at": "2026-06-11T12:30:53Z"
             }
           ]
         },
@@ -1302,6 +1302,11 @@
               "note": "Forward move = navigate toward the next INCOMPLETE work, never re-do completed items ('completed'/'mastered'/'proficient' markers + 'Take quiz again' buttons mean DONE \u2014 'Take ... again' is a re-do, never click). If the whole unit is mastered ('Great work!' banner), navigate to the next unit/skill that is 'unfamiliar' or 'started' \u2014 unit links in the left rail (e.g. 'UNIT 3 Energy') or the suggested next unit in the banner.",
               "discovered_at": "2026-06-11",
               "verified_count": 1
+            },
+            {
+              "note": "ORDERING (observed 2026-06-11): on a unit page, 'started'/un-completed VIDEOS and ARTICLES come BEFORE quizzes/unit tests. Only enter a Quiz/Unit test/Course challenge when NO other incomplete content remains in that unit \u2014 tests are sequential, high-stakes (wrong answers can level skills DOWN, no going back). 'Take unit test to level up!' is a marketing prompt, not an ordering instruction.",
+              "discovered_at": "2026-06-11",
+              "verified_count": 0
             }
           ]
         }
