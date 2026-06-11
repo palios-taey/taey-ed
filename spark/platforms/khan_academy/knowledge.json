@@ -637,6 +637,11 @@
               "observed": "2026-05-20 20:32: BT executed all 4 selections cleanly (menu_closed verify worked thanks to commit b90c436). LLM picked 'the same' for ball-in-right-hand-same-height (correct) and 'less' for ball-rolling-down-hill (correct). One+ of the other 2 dots (above/below reference line) was wrong \u2192 Khan rejected. Single-call vision can't reliably reason about 4 independent height comparisons simultaneously.",
               "bt_template_hint": "PER-DOT VISION DISCOVER phase for label-image dot-selectors:\n  1. find_all role=AXComboBox (or AXButton if probe shows real button names) \u2192 $dots, in DOM order top\u2192bottom left\u2192right.\n  2. For each dot popup: read its visible_bbox to compute the dot's pixel position on the trajectory image.\n  3. For each dot (one at a time): \n     - send_to_llm question_type=solve_complex with the FULL screenshot AND a per-dot prompt: 'Focus ONLY on dot N at pixel approximately (px, py). Determine its height relative to the dotted horizontal reference line through the boy's shoulder. If above the line \u2192 answer \"more\". If below \u2192 \"less\". If on the line \u2192 \"the same\". Return JSON: {answer: \"more|less|same\"}'.\n     - parse the per-dot answer.\n  4. Now per-dot answers are known. Click each $dots[i] to open its SingleSelect, find_and_click target=answer[i] role=AXMenuItem match_mode=exact, wait 0.5s.\n  5. find_and_click 'Check'.",
               "anti_pattern": "Do NOT use one solve_matching call for all 4 dots \u2014 it produces correct answers on some dots and wrong on others because the LLM splits attention across dots and gets at least one height-vs-reference comparison wrong."
+            },
+            {
+              "note": "BELOW-THE-FOLD DRAG WIDGETS (2026-06-11): the tree CONTAINS off-screen content (names/alt-text readable) but coordinates are only actuation-valid when the widget is ON-SCREEN. Mouse events cannot reach below the fold. TWO-PHASE pattern, fully autonomous with existing primitives: BT#1 = scroll the widget fully into view + wait (END the BT there); the next poll captures the post-scroll tree; BT#2 computes drag coords from THAT capture. NEVER drag with coordinates computed from a pre-scroll tree \u2014 they are stale by the scroll delta.",
+              "discovered_at": "2026-06-11",
+              "verified_count": 0
             }
           ],
           "aliases": [
@@ -737,6 +742,11 @@
               "note": "IMAGE-PAIR QUESTIONS (2026-06-11, complete-AX live): Khan's AXImage DESCRIPTIONS are the authoritative question content \u2014 e.g. 'Two small circles a large distance apart'. Solve from the alt-text FIRST; pixel/vision measurement is the fallback and mis-ranked a close call today ('two small/LARGE distance' read as 'medium/wide'). Equal-size pairs differ by DISTANCE \u2014 read the words.",
               "discovered_at": "2026-06-11",
               "verified_count": 1
+            },
+            {
+              "note": "BELOW-THE-FOLD DRAG WIDGETS (2026-06-11): the tree CONTAINS off-screen content (names/alt-text readable) but coordinates are only actuation-valid when the widget is ON-SCREEN. Mouse events cannot reach below the fold. TWO-PHASE pattern, fully autonomous with existing primitives: BT#1 = scroll the widget fully into view + wait (END the BT there); the next poll captures the post-scroll tree; BT#2 computes drag coords from THAT capture. NEVER drag with coordinates computed from a pre-scroll tree \u2014 they are stale by the scroll delta.",
+              "discovered_at": "2026-06-11",
+              "verified_count": 0
             }
           ]
         },
@@ -765,6 +775,11 @@
               "note": "IMAGE-PAIR QUESTIONS (2026-06-11, complete-AX live): Khan's AXImage DESCRIPTIONS are the authoritative question content \u2014 e.g. 'Two small circles a large distance apart'. Solve from the alt-text FIRST; pixel/vision measurement is the fallback and mis-ranked a close call today ('two small/LARGE distance' read as 'medium/wide'). Equal-size pairs differ by DISTANCE \u2014 read the words.",
               "discovered_at": "2026-06-11",
               "verified_count": 1
+            },
+            {
+              "note": "BELOW-THE-FOLD DRAG WIDGETS (2026-06-11): the tree CONTAINS off-screen content (names/alt-text readable) but coordinates are only actuation-valid when the widget is ON-SCREEN. Mouse events cannot reach below the fold. TWO-PHASE pattern, fully autonomous with existing primitives: BT#1 = scroll the widget fully into view + wait (END the BT there); the next poll captures the post-scroll tree; BT#2 computes drag coords from THAT capture. NEVER drag with coordinates computed from a pre-scroll tree \u2014 they are stale by the scroll delta.",
+              "discovered_at": "2026-06-11",
+              "verified_count": 0
             }
           ]
         },
@@ -823,6 +838,11 @@
               "note": "IMAGE-PAIR QUESTIONS (2026-06-11, complete-AX live): Khan's AXImage DESCRIPTIONS are the authoritative question content \u2014 e.g. 'Two small circles a large distance apart'. Solve from the alt-text FIRST; pixel/vision measurement is the fallback and mis-ranked a close call today ('two small/LARGE distance' read as 'medium/wide'). Equal-size pairs differ by DISTANCE \u2014 read the words.",
               "discovered_at": "2026-06-11",
               "verified_count": 1
+            },
+            {
+              "note": "BELOW-THE-FOLD DRAG WIDGETS (2026-06-11): the tree CONTAINS off-screen content (names/alt-text readable) but coordinates are only actuation-valid when the widget is ON-SCREEN. Mouse events cannot reach below the fold. TWO-PHASE pattern, fully autonomous with existing primitives: BT#1 = scroll the widget fully into view + wait (END the BT there); the next poll captures the post-scroll tree; BT#2 computes drag coords from THAT capture. NEVER drag with coordinates computed from a pre-scroll tree \u2014 they are stale by the scroll delta.",
+              "discovered_at": "2026-06-11",
+              "verified_count": 0
             }
           ]
         },
@@ -839,6 +859,11 @@
               "bt_template_hint": "find_and_click target=<combobox value substring> role=AXComboBox match_mode=contains -> wait 1s -> find_and_click target=<lowercase-answer> role=AXMenuItem match_mode=exact",
               "verified_count": 2,
               "last_verified_at": "2026-05-08T01:02:28Z"
+            },
+            {
+              "note": "BELOW-THE-FOLD DRAG WIDGETS (2026-06-11): the tree CONTAINS off-screen content (names/alt-text readable) but coordinates are only actuation-valid when the widget is ON-SCREEN. Mouse events cannot reach below the fold. TWO-PHASE pattern, fully autonomous with existing primitives: BT#1 = scroll the widget fully into view + wait (END the BT there); the next poll captures the post-scroll tree; BT#2 computes drag coords from THAT capture. NEVER drag with coordinates computed from a pre-scroll tree \u2014 they are stale by the scroll delta.",
+              "discovered_at": "2026-06-11",
+              "verified_count": 0
             }
           ]
         },
