@@ -75,6 +75,10 @@
       {
         "text": "Skip to lesson content",
         "reason": "accessibility skip-link, a no-op for navigation \u2014 observed wasted cycle 2026-06-11 (LLM picked it as the nav answer)"
+      },
+      {
+        "text": "cmd+r / page reload during quizzes, unit tests, course challenges",
+        "reason": "reload mid-assessment risks losing/resetting test state \u2014 observed in a stale stored BT 2026-06-11; BTs must NEVER begin with press_key cmd+r on assessment screens"
       }
     ],
     "platform_quirks": [
@@ -454,7 +458,7 @@
               "known_failure_modes": [
                 "Element staleness: if Wonder Blocks re-renders popups after one opens, $popup.element from outer find_all may go stale on iter 2+. If that happens (only first dropdown opens, rest fail with element-not-found), the workaround would be sequential unrolled blocks (find_all + index access) per popup \u2014 but try the canonical for_each version first."
               ],
-              "verified_count": 1,
+              "verified_count": 3,
               "bt_template_hint": "CANONICAL BT (handler param names verified):\n\n",
               "ccm_observed_failures": {
                 "16:54_observation": "find_and_click element=$popup.element \u2192 resolves target='' role=None \u2192 ACTION RETURNED NONE",
@@ -471,7 +475,7 @@
                 "17:25_observation": "Enumeration phase fully worked (all 3 popups, wait_for_element added). discover_menu returned options like ['the same not', 'different'] \u2014 the 'the same' option's AX name 'the same not selected' got 9 chars stripped by Mac's _extract_menu_items (which strips ' selected'), leaving 'the same not'. LLM picked 'the same not' (the only thing on offer). select_dropdown_option opened the popup and normalized menu items to ['the same', 'different'] \u2014 'the same not' was no match \u2192 click failed.",
                 "17:25_fix": "Server-side workaround in _solve_matching_with_gemini: strip dangling ' not' suffix from options before passing to LLM (undoes Mac's overzealous strip). Real fix would be Mac-side: _extract_menu_items should strip ' not selected' (13 chars) before falling back to ' selected' (9 chars). Mac is frozen, so server workaround is the pragmatic path."
               },
-              "last_verified_at": "2026-06-11T12:39:21Z",
+              "last_verified_at": "2026-06-11T13:19:04Z",
               "last_demoted_at": "2026-06-11T12:39:29Z"
             },
             {

@@ -58,14 +58,22 @@ def is_non_deterministic(platform: str, variant: str) -> bool:
             or variant.startswith("EXERCISE_")):
         try:
             knowledge = load_knowledge(platform)
-            return (
-                get_verified_bt_template_entry(
-                    knowledge,
-                    variant,
-                    min_verified=VERIFIED_TEMPLATE_REUSE_THRESHOLD,
-                )
-                is None
+            template_entry = get_verified_bt_template_entry(
+                knowledge,
+                variant,
+                min_verified=VERIFIED_TEMPLATE_REUSE_THRESHOLD,
             )
+            # Exact-subtype only (observed 2026-06-11): the template lookup
+            # falls back across ALL subtypes, so ONE subtype at the gate
+            # flipped EVERY EXERCISE_* variant to "deterministic" and
+            # replayed a stale stored BT (with a mid-test Cmd+R) against the
+            # wrong question. A foreign subtype's template is NOT a license
+            # to replay this variant.
+            if template_entry and not _subtype_matches_variant(
+                variant, template_entry.get("source") or {},
+            ):
+                template_entry = None
+            return template_entry is None
         except Exception as e:
             logger.warning(f"variant_cache: verified template check failed for {platform}/{variant}: {e}")
             return True
@@ -125,6 +133,11 @@ def lookup_variant_bt(platform: str, variant: str) -> dict | None:
             variant,
             min_verified=VERIFIED_TEMPLATE_REUSE_THRESHOLD,
         )
+        # Exact-subtype only — see is_non_deterministic (2026-06-11).
+        if template_entry and not _subtype_matches_variant(
+            variant, template_entry.get("source") or {},
+        ):
+            template_entry = None
         if not template_entry:
             return None
         template = template_entry["template"]
