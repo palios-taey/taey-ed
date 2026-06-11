@@ -160,9 +160,15 @@ def _escalate_to_claude_diagnosing(
                     _resp.unlink()
             except Exception:
                 logger.exception("failed to abandon stale consult on diagnosis_done")
+        # A completed diagnosis means knowledge changed — stale variant
+        # failure counts predate the fix and must not preempt the retry
+        # (observed 14:48: a healthy phase-1 scroll cycle got loop-guarded
+        # by attempt-1's leftover count and climbed to a spurious Tier-2).
+        _clear_variant_failures(platform)
         logger.info(
             f"Claude diagnosis complete for {platform}_{_screen_hash[:16]} — "
-            f"abandoned stale consult {consultation_id}, retry cycle {retries}"
+            f"abandoned stale consult {consultation_id}, retry cycle {retries}, "
+            f"variant failure counters cleared"
         )
         return _with_chat({
             "directive": "wait",
