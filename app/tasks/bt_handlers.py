@@ -17,6 +17,46 @@ from app.tasks.bt_helpers import (
 logger = logging.getLogger("taey-ed")
 
 
+def _json_sanitize(obj, path="payload", warnings=None):
+    """Walk a payload, stringify any non-JSON-serializable values, return
+    a fully JSON-serializable copy. Append a short tag per substitution to
+    *warnings* so the caller can log what got fixed.
+
+    Defect 2026-06-11 18:21: a worker BT passed raw find_all AXUIElementRef
+    handles into send_to_llm params; the json encoder inside call_spark
+    raised "Object of type AXUIElementRef is not JSON serializable" and
+    killed the BT mid-execution. Server-side bans the pattern in knowledge,
+    but the handler dying on bad params is a fragility worth removing.
+    Pass-through scalars, recurse containers, stringify everything else.
+    """
+    if warnings is None:
+        warnings = []
+    if obj is None or isinstance(obj, (bool, int, float, str)):
+        return obj
+    if isinstance(obj, bytes):
+        try:
+            return obj.decode("utf-8", errors="replace")
+        except Exception:
+            return repr(obj)
+    if isinstance(obj, dict):
+        return {
+            str(k): _json_sanitize(v, f"{path}.{k}", warnings)
+            for k, v in obj.items()
+        }
+    if isinstance(obj, (list, tuple)):
+        return [
+            _json_sanitize(v, f"{path}[{i}]", warnings)
+            for i, v in enumerate(obj)
+        ]
+    type_name = type(obj).__name__
+    warnings.append(f"{path}={type_name}")
+    try:
+        repr_str = str(obj)[:120]
+    except Exception:
+        repr_str = "<unrepr-able>"
+    return f"<non-serializable {type_name}: {repr_str}>"
+
+
 # =========================================================================
 # Action Handlers Registration
 # =========================================================================
@@ -403,6 +443,16 @@ def register_all_handlers(ctx: ExecutionContext):
                 else:
                     llm_items.append(item)
             payload["items"] = llm_items
+
+        # Sanitize payload before JSON serialization so AXUIElementRef or
+        # any other non-serializable value can't crash the whole BT.
+        sanitize_warnings: list = []
+        payload = _json_sanitize(payload, "payload", sanitize_warnings)
+        if sanitize_warnings:
+            btlog(
+                f"send_to_llm: sanitized {len(sanitize_warnings)} non-JSON "
+                f"values: {sanitize_warnings[:10]}"
+            )
 
         result = call_spark("/api/v1/generate", payload)
         btlog(f"send_to_llm: answer={result.get('answer', '')[:60]} success={result.get('success')} matches_keys={list(result.get('matches', {}).keys()) if result.get('matches') else 'None'}")
