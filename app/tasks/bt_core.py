@@ -333,30 +333,26 @@ def _node_summary(node_def: dict) -> str:
 # Main Entry Point
 # =========================================================================
 
-# Apps known to capture synthetic CGEvents before they reach the target
-# browser. Probe 2026-06-11 13:30: when Screen Sharing held the macOS
-# foreground, identical CGEvent clicks at correct coords had ZERO effect on
-# Chromium; when it lost foreground, the same clicks landed and toggled
-# state. The guard reactivates the target app before BT handlers fire.
-_EVENT_EATING_APPS = {
-    "Screen Sharing",
-    "Screen Sharing for macOS",
-    "ScreenSharing",
-    "Apple Remote Desktop",
-    "AnyDesk",
-    "RustDesk",
-    "TeamViewer",
-    "Splashtop",
-    "Splashtop Streamer",
-    "VNC Viewer",
-    "Microsoft Remote Desktop",
-}
-
-
 def _foreground_guard(target_app_name: str) -> None:
-    """Log frontmost app and re-foreground the BT target if an event-eating
-    app holds focus. Failure here is non-fatal — handlers proceed regardless
-    and the log line documents the foreground state for diagnosis."""
+    """Ensure the BT target app is frontmost before handlers fire.
+
+    Keyboard CGEvents (Tab, arrow keys, etc.) always route to whichever app
+    holds OS keyboard focus, regardless of where mouse clicks land. If the
+    target isn't frontmost, an entire keyboard BT sequence can land in some
+    other app (Terminal, Finder, anywhere) without a single event reaching
+    the target — silent, total failure.
+
+    Defect 2026-06-11 15:08: my probe Terminal was frontmost during the
+    autonomous-loop's 60-step keyboard BT. The earlier guard only activated
+    on a remote-desktop allowlist (Screen Sharing etc.), so Terminal
+    bypassed it. The entire keyboard sequence went to Terminal and the
+    plotting attempt was silently lost. Lesson: there is no safe allowlist;
+    activate the target on EVERY BT start when frontmost != target.
+
+    macOS 14+ cooperative-activation rule means activateWithOptions_ may
+    silently no-op (returns True regardless). We attempt it anyway and log
+    the post-activation frontmost so silent failures are visible.
+    """
     try:
         from AppKit import (
             NSWorkspace, NSRunningApplication,
@@ -366,24 +362,29 @@ def _foreground_guard(target_app_name: str) -> None:
         fm = ws.frontmostApplication()
         fm_name = (fm.localizedName() if fm else "") or ""
         btlog(f"foreground_guard: frontmost={fm_name!r} target={target_app_name!r}")
-        if fm_name in _EVENT_EATING_APPS:
-            target = None
-            for app in ws.runningApplications():
-                if target_app_name.lower() in (app.localizedName() or "").lower():
-                    target = app
-                    break
-            if target is not None:
-                ok = target.activateWithOptions_(NSApplicationActivateIgnoringOtherApps)
-                btlog(
-                    f"foreground_guard: re-activated {target_app_name!r} "
-                    f"(activate_returned={ok}) — was eaten by {fm_name!r}"
-                )
-                time.sleep(0.3)
-            else:
-                btlog(
-                    f"foreground_guard: target app {target_app_name!r} not running; "
-                    f"events may be intercepted by {fm_name!r}"
-                )
+        # Match on substring (target_app_name="Google Chrome" matches
+        # "Google Chrome", "Google Chrome Beta", etc.).
+        if target_app_name.lower() in fm_name.lower():
+            return  # Already correct.
+        target = None
+        for app in ws.runningApplications():
+            if target_app_name.lower() in (app.localizedName() or "").lower():
+                target = app
+                break
+        if target is None:
+            btlog(
+                f"foreground_guard: target app {target_app_name!r} not running; "
+                f"events will land in {fm_name!r}"
+            )
+            return
+        ok = target.activateWithOptions_(NSApplicationActivateIgnoringOtherApps)
+        time.sleep(0.3)
+        fm2 = ws.frontmostApplication()
+        fm2_name = (fm2.localizedName() if fm2 else "") or ""
+        btlog(
+            f"foreground_guard: activate({target_app_name!r}) returned={ok} "
+            f"frontmost_after={fm2_name!r} (was {fm_name!r})"
+        )
     except Exception as exc:
         btlog(f"foreground_guard: exception {type(exc).__name__}: {exc}")
 
