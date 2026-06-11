@@ -1359,6 +1359,13 @@
         "ARTICLE",
         "NAVIGATION",
         "TRANSITION"
+      ],
+      "operational_notes": [
+        {
+          "note": "UNIVERSAL ARTICLE RULE (Jesse 2026-06-11 \u2014 violated twice today by advance-only maps, never again): EVERY article screen, including ones already marked completed, scrolls to the BOTTOM first (multiple scroll+wait passes) and carries an extract config (AXStaticText min_length 5 + window image) so the content lands in the user's local KB. ONLY THEN advance via the exact Up-next link. An article map without scroll+extract is WRONG by definition.",
+          "discovered_at": "2026-06-11",
+          "verified_count": 1
+        }
       ]
     },
     "NAVIGATION": {
