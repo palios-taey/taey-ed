@@ -1,27 +1,28 @@
 """
-Capture accessibility tree from a Mac application.
-Single function. No filtering. Returns full tree as dict.
-Includes element_id and visible_bbox for macapptree format.
+Capture accessibility tree from a Mac application — FULL CAPTURE.
+
+Every node, every available AX attribute. No allowlist. No filtering on the
+Mac. All disambiguation, projection, and reduction happens server-side.
+
+Per Jesse 2026-06-11: this is a day-1 architectural requirement; field
+additions one at a time are explicitly the wrong shape. If transport size
+becomes a problem we change transport, never the content.
 """
 
 from AppKit import NSWorkspace
 from ApplicationServices import (
     AXUIElementCreateApplication,
     AXUIElementCopyAttributeValue,
+    AXUIElementCopyAttributeNames,
     AXUIElementSetAttributeValue,
+    AXUIElementGetTypeID,
     kAXErrorSuccess,
     kAXChildrenAttribute,
-    kAXRoleAttribute,
-    kAXTitleAttribute,
-    kAXDescriptionAttribute,
-    kAXValueAttribute,
-    kAXPositionAttribute,
-    kAXSizeAttribute,
-    kAXMainAttribute,
-    kAXFocusedAttribute,
     kAXFocusedWindowAttribute,
 )
-from CoreFoundation import CFArrayGetCount, CFArrayGetValueAtIndex
+from CoreFoundation import (
+    CFArrayGetCount, CFArrayGetValueAtIndex, CFArrayGetTypeID, CFGetTypeID,
+)
 import hashlib
 import re
 import time
@@ -33,10 +34,36 @@ _ax_complete_pids: set[int] = set()
 # How long to wait after first-time AXManualAccessibility set, to let Chrome
 # rebuild its accessibility tree into complete mode. Without this, the very
 # first capture after the setter races the rebuild and gets a half-built
-# tree (taey-ed field report 2026-06-11 11:12: AXTable/AXRow/AXCell
-# structure present but AXStaticText names empty and heights 0). One-shot
-# cost — subsequent captures hit the PID cache and skip this delay.
+# tree (taey-ed field report 2026-06-11 11:12). One-shot cost — subsequent
+# captures hit the PID cache and skip this delay.
 _AX_REBUILD_WAIT_S = 0.8
+
+# CFTypeIDs used to dispatch attribute values without per-attribute coding.
+_AX_ELEMENT_TYPE_ID = AXUIElementGetTypeID()
+_CF_ARRAY_TYPE_ID = CFArrayGetTypeID()
+
+
+def _to_jsonable(val):
+    """Best-effort conversion of an AX value to a JSON-friendly form.
+
+    Scalars (bool/int/float/str) pass through. Bytes decode UTF-8. Everything
+    else (AXValue position/size/range structs, NSURLs, NSDates, etc.) falls
+    back to its str() representation. Server can re-parse if it wants.
+    """
+    if val is None:
+        return None
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, (int, float)):
+        return val
+    if isinstance(val, str):
+        return val
+    if isinstance(val, bytes):
+        try:
+            return val.decode("utf-8", errors="replace")
+        except Exception:
+            return repr(val)
+    return str(val)
 
 
 def capture_tree(app_name: str) -> dict:
@@ -44,15 +71,15 @@ def capture_tree(app_name: str) -> dict:
     Capture full accessibility tree from application.
 
     Args:
-        app_name: Name of application (e.g., "Acellus")
+        app_name: Name of application (e.g., "Acellus", "Google Chrome")
 
     Returns:
-        Dict with full tree structure
+        Dict with full tree structure — every node carries every readable
+        AX attribute the system exposes for it.
 
     Raises:
         RuntimeError: If app not found
     """
-    # Find app
     workspace = NSWorkspace.sharedWorkspace()
     target_app = None
     for app in workspace.runningApplications():
@@ -67,15 +94,13 @@ def capture_tree(app_name: str) -> dict:
     app_elem = AXUIElementCreateApplication(pid)
 
     # Force Chrome (and other Chromium browsers) into complete-AX mode.
-    # Per taey-ed dispatch 2026-06-11 (Family-verified vs Perseus/Chromium):
     # Chrome only builds the full accessibility tree when assistive tech is
     # detected or accessibility is explicitly enabled. Without this, widget
-    # extents (w/h), value-bank items, and full nested cells in Perseus
-    # matchers come through as empty AXCells with zero geometry. Setting
-    # AXManualAccessibility=True on the Chrome app element switches it to
-    # complete mode. Surgical: no window-repositioning side effect (unlike
-    # AXEnhancedUserInterface=True). Idempotent — Chromium handles repeat
-    # sets fine. Cached per PID so we don't re-set on every poll tick.
+    # extents, value-bank items, and full nested cells in Perseus matchers
+    # come through as empty AXCells with zero geometry. Idempotent — repeat
+    # sets are fine. Cached per PID. Renderer PID changes (Cmd+R reload,
+    # tab close+reopen) get a fresh entry naturally when their pid isn't in
+    # the cache.
     if pid not in _ax_complete_pids:
         name_lower = (target_app.localizedName() or "").lower()
         if any(b in name_lower for b in ("chrome", "chromium", "edge", "brave")):
@@ -83,125 +108,127 @@ def capture_tree(app_name: str) -> dict:
                 app_elem, "AXManualAccessibility", True,
             )
             # Let Chrome finish rebuilding its accessibility tree into
-            # complete mode before we read AXFocusedWindow or walk
-            # children. Without this wait the FIRST capture-tree call
-            # after a fresh Chrome PID returns half-built nodes (taey-ed
-            # field report 2026-06-11 11:12). One-shot per PID — the
-            # _ax_complete_pids cache skips this branch on every
-            # subsequent call.
+            # complete mode before we read AXFocusedWindow or walk children.
             time.sleep(_AX_REBUILD_WAIT_S)
         _ax_complete_pids.add(pid)
 
-    # Scope to the FOCUSED WINDOW only (Jesse 2026-06-01 root-fix).
-    # Latent bug since the file was added 2026-02-20 (commit 0837e83):
-    # the capture used to root at the whole-app element and walk every
-    # window in the process. With one Chrome window open the resulting
-    # tree had a single AXWebArea so downstream queries appeared to
-    # work; with TWO windows (Khan + a Sign-in tab) there are two
-    # AXWebAreas and queries pick whichever was enumerated first —
-    # often the wrong one. kAXFocusedWindow returns the app's OWN
-    # frontmost window regardless of macOS-frontmost (so it works
-    # even when Chrome is backgrounded by Screen Sharing or another
-    # app), producing exactly one AXWebArea per capture.
+    # Scope to the FOCUSED WINDOW only. kAXFocusedWindow returns the app's
+    # own frontmost window regardless of macOS-frontmost, producing exactly
+    # one AXWebArea per capture even when Chrome has multiple windows open.
     err, focused_win = AXUIElementCopyAttributeValue(
         app_elem, kAXFocusedWindowAttribute, None,
     )
     if err == kAXErrorSuccess and focused_win is not None:
         root = focused_win
     else:
-        # No focused window — degraded fallback. Capture the whole-app
-        # element so downstream consumers still get *something* rather
-        # than a hard failure. This is the pre-fix shape; happens when
-        # the target app has no windows open at all.
         root = app_elem
 
     def get_node(element, path: str = "root") -> dict:
-        """Extract info from one element with element_id for visual reference."""
-        node = {}
+        """Serialize one element with EVERY readable attribute, then recurse."""
+        node: dict = {}
+        raw_pos = None
+        raw_size = None
 
-        # Role
-        err, val = AXUIElementCopyAttributeValue(element, kAXRoleAttribute, None)
-        if err == kAXErrorSuccess and val:
-            node["role"] = str(val)
+        err, names = AXUIElementCopyAttributeNames(element, None)
+        if err != kAXErrorSuccess or not names:
+            # Element refused to enumerate; still emit element_id so the
+            # caller knows it existed. Path-stable id.
+            node["element_id"] = hashlib.md5(
+                f"{path}::".encode()
+            ).hexdigest()[:16]
+            return node
 
-        # Title
-        err, val = AXUIElementCopyAttributeValue(element, kAXTitleAttribute, None)
-        if err == kAXErrorSuccess and val:
-            node["title"] = str(val)
+        for name in names:
+            name_str = str(name)
+            err, val = AXUIElementCopyAttributeValue(element, name_str, None)
+            if err != kAXErrorSuccess or val is None:
+                continue
 
-        # Description
-        err, val = AXUIElementCopyAttributeValue(element, kAXDescriptionAttribute, None)
-        if err == kAXErrorSuccess and val:
-            node["description"] = str(val)
+            # Lowercase-camel JSON key with the AX prefix stripped. Server
+            # convention (existing fields role/title/description/value/...).
+            if name_str.startswith("AX") and len(name_str) > 2:
+                json_key = name_str[2].lower() + name_str[3:]
+            else:
+                json_key = name_str
 
-        # Value
-        err, val = AXUIElementCopyAttributeValue(element, kAXValueAttribute, None)
-        if err == kAXErrorSuccess and val:
-            node["value"] = str(val)
+            try:
+                tid = CFGetTypeID(val)
+            except Exception:
+                tid = None
 
-        # Name = title or description (for matching convenience)
+            # Single AXUIElement reference (AXParent, AXTopLevelUIElement,
+            # AXWindow, AXFocusedUIElement, etc.) — skip to avoid duplicating
+            # the tree on every node. The Children walk covers structural
+            # traversal; per-node state lives in scalar attrs.
+            if tid == _AX_ELEMENT_TYPE_ID:
+                continue
+
+            if tid == _CF_ARRAY_TYPE_ID:
+                count = CFArrayGetCount(val)
+                # AXChildren — the one array we recurse on.
+                if name_str == kAXChildrenAttribute or name_str == "AXChildren":
+                    children = []
+                    for i in range(count):
+                        child = CFArrayGetValueAtIndex(val, i)
+                        children.append(get_node(child, f"{path}.{i}"))
+                    node["children"] = children
+                    continue
+                # Array of elements (AXSelectedChildren, AXVisibleChildren,
+                # AXRows, AXColumns, AXLinkedUIElements, etc.) — skip to avoid
+                # duplicating the tree. Server can reconstruct selection /
+                # visibility from per-node AXSelected/AXVisible flags.
+                if count > 0:
+                    first = CFArrayGetValueAtIndex(val, 0)
+                    first_tid = None
+                    try:
+                        first_tid = CFGetTypeID(first)
+                    except Exception:
+                        pass
+                    if first_tid == _AX_ELEMENT_TYPE_ID:
+                        continue
+                # Array of scalars — serialize each.
+                items = []
+                for i in range(count):
+                    items.append(_to_jsonable(CFArrayGetValueAtIndex(val, i)))
+                node[json_key] = items
+                continue
+
+            # Scalar / AXValue / anything else — best-effort serialize.
+            serialized = _to_jsonable(val)
+            node[json_key] = serialized
+
+            # Capture raw position/size strings for geometry derivation
+            # (str(val) for AXValue gives "x:NNN y:NNN" / "w:NNN h:NNN").
+            if name_str == "AXPosition":
+                raw_pos = serialized
+            elif name_str == "AXSize":
+                raw_size = serialized
+
+        # --- Additive derived fields (computed, not filtered) ---
+        # Convenience: name = title or description, used by find_and_click.
         node["name"] = node.get("title") or node.get("description") or ""
 
-        # Position
-        pos_x, pos_y = None, None
-        err, val = AXUIElementCopyAttributeValue(element, kAXPositionAttribute, None)
-        if err == kAXErrorSuccess and val:
-            m = re.search(r"x:([\d.]+)\s+y:([\d.]+)", str(val))
+        # Geometry derivation: [x, y, w, h] in points, same space as click_at.
+        pos_x = pos_y = width = height = None
+        if isinstance(raw_pos, str):
+            m = re.search(r"x:(-?[\d.]+)\s+y:(-?[\d.]+)", raw_pos)
             if m:
-                pos_x, pos_y = int(float(m.group(1))), int(float(m.group(2)))
+                pos_x = int(float(m.group(1)))
+                pos_y = int(float(m.group(2)))
                 node["position"] = [pos_x, pos_y]
-
-        # Size
-        width, height = None, None
-        err, val = AXUIElementCopyAttributeValue(element, kAXSizeAttribute, None)
-        if err == kAXErrorSuccess and val:
-            m = re.search(r"w:([\d.]+)\s+h:([\d.]+)", str(val))
+        if isinstance(raw_size, str):
+            m = re.search(r"w:(-?[\d.]+)\s+h:(-?[\d.]+)", raw_size)
             if m:
-                width, height = int(float(m.group(1))), int(float(m.group(2)))
+                width = int(float(m.group(1)))
+                height = int(float(m.group(2)))
                 node["size"] = [width, height]
-
-        # visible_bbox: [x, y, width, height] for Spark Claude visual reference
         if pos_x is not None and width is not None:
             node["visible_bbox"] = [pos_x, pos_y, width, height]
 
-        # Window/element focus state (Jesse 2026-06-01: capture both so the
-        # server can disambiguate the active AXWebArea when a browser process
-        # has multiple windows open — e.g. Khan + a sign-in tab in a
-        # background window). Captured on EVERY element where the AX call
-        # succeeds — no proactive filtering. Server picks what it wants.
-        err, val = AXUIElementCopyAttributeValue(element, kAXMainAttribute, None)
-        if err == kAXErrorSuccess and val is not None:
-            node["main"] = bool(val)
-        err, val = AXUIElementCopyAttributeValue(element, kAXFocusedAttribute, None)
-        if err == kAXErrorSuccess and val is not None:
-            node["focused"] = bool(val)
-
-        # AXEnabled — captured on every element where it's available. Critical
-        # for interaction validation: a Check button's gray->active transition
-        # is a first-class completion indicator that has NO bbox change, so
-        # server-side validators that bbox-compare are blind to it. Taey-ed
-        # field report 2026-06-11 13:00 + manual ranking-widget drag run
-        # confirmed the gap. Captured uniformly (no role filter) — server
-        # picks what it wants; same shape as main/focused above.
-        err, val = AXUIElementCopyAttributeValue(element, "AXEnabled", None)
-        if err == kAXErrorSuccess and val is not None:
-            node["enabled"] = bool(val)
-
-        # Generate stable element_id from path + role + name (for Spark Claude visual reference ONLY)
-        # NOTE: This ID is for visual mapping only - Mac executes by name+role, NOT element_id
+        # Stable element_id from path + role + name (visual reference only;
+        # Mac executes by name+role, not element_id).
         id_source = f"{path}:{node.get('role', '')}:{node.get('name', '')}"
         node["element_id"] = hashlib.md5(id_source.encode()).hexdigest()[:16]
-
-        # Children
-        err, children = AXUIElementCopyAttributeValue(element, kAXChildrenAttribute, None)
-        if err == kAXErrorSuccess and children:
-            count = CFArrayGetCount(children)
-            if count > 0:
-                node["children"] = []
-                for i in range(count):
-                    child = CFArrayGetValueAtIndex(children, i)
-                    child_path = f"{path}.{i}"
-                    node["children"].append(get_node(child, child_path))
 
         return node
 
