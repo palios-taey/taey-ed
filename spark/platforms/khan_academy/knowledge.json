@@ -1118,7 +1118,7 @@
           "anti_pattern": "Do NOT click 'Start over' \u2014 unreliable, leaves form in undefined state. Do NOT click 'Try again' as reset \u2014 dismisses modal only, state preserved. Do NOT compute delta-correction from a partially-wrong state. Cmd+R reload then fresh-solve is the only reliable path."
         },
         {
-          "note": "Unit test / quiz question pages share ONE skeleton hash across DIFFERENT question types (observed 2026-06-11: checkbox Q1 and ranking Q2 matched the same hash). Map such hashes as bare EXERCISE \u2014 the per-question subtype (checkbox/ranking/matcher/...) must be decided at BT-rebuild time from the QUESTION CONTENT, never assumed from the hash's previous visit.",
+          "note": "Unit test / quiz / PRACTICE exercise pages share ONE skeleton hash across DIFFERENT question types (observed 2026-06-11: checkbox Q1 and ranking Q2 matched the same hash). Map such hashes as bare EXERCISE \u2014 the per-question subtype (checkbox/ranking/matcher/...) must be decided at BT-rebuild time from the QUESTION CONTENT, never assumed from the hash's previous visit. ALSO OBSERVED on practice pages 2026-06-11: a dropdown question and the wrecking-ball MATCHER shared hash 8646957a \u2014 a promoted dropdown template replayed against the drag widget (zero comboboxes, fast-fail). Template replay on a colliding hash is unsafe; bare-EXERCISE labeling forces per-question rebuild.",
           "discovered_at": "2026-06-11",
           "verified_count": 1
         },
@@ -1372,8 +1372,8 @@
                 "Following the FIRST link in find_all results \u2014 order is DOM order, not progress order.",
                 "click element=$nav.answer_element \u2014 Mac's find_all on AXLink doesn't return a 'name' field, only label/popup_desc/options. Server-side element matching fails. Use find_and_click target=$nav.answer instead \u2014 Mac matches by AX name directly."
               ],
-              "verified_count": 9,
-              "last_verified_at": "2026-06-11T12:30:53Z"
+              "verified_count": 11,
+              "last_verified_at": "2026-06-11T13:47:12Z"
             }
           ]
         },
