@@ -50,7 +50,12 @@ def is_non_deterministic(platform: str, variant: str) -> bool:
     """Check if a variant needs a fresh BT every time.
     Any EXERCISE_* variant is non-deterministic (questions change per instance).
     """
-    if variant in NON_DETERMINISTIC_VARIANTS or variant.startswith("EXERCISE_"):
+    # Bare "EXERCISE" included: questions change per instance regardless of
+    # subtype. Observed live 2026-06-11: a hash relabeled to bare EXERCISE
+    # was treated deterministic and replayed a stale stored BT on a test Q.
+    if (variant in NON_DETERMINISTIC_VARIANTS
+            or variant == "EXERCISE"
+            or variant.startswith("EXERCISE_")):
         try:
             knowledge = load_knowledge(platform)
             return (
