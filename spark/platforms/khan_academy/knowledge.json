@@ -732,6 +732,11 @@
               "note": "DRAG VERIFICATION (Jesse-observed 2026-06-11): mouse drag DOES engage this widget \u2014 but AX bboxes go STALE after a DOM reorder, so tree/bbox comparison FALSELY reports 'no movement'. Verify drags by SCREENSHOT (visual order) only. Check-button readiness = AXEnabled attribute, never its bbox. A falsely-failed verifier here caused 3 duplicate drags \u2014 always re-derive remaining moves from the CURRENT visual order before dragging again.",
               "discovered_at": "2026-06-11",
               "verified_count": 1
+            },
+            {
+              "note": "IMAGE-PAIR QUESTIONS (2026-06-11, complete-AX live): Khan's AXImage DESCRIPTIONS are the authoritative question content \u2014 e.g. 'Two small circles a large distance apart'. Solve from the alt-text FIRST; pixel/vision measurement is the fallback and mis-ranked a close call today ('two small/LARGE distance' read as 'medium/wide'). Equal-size pairs differ by DISTANCE \u2014 read the words.",
+              "discovered_at": "2026-06-11",
+              "verified_count": 1
             }
           ]
         },
@@ -753,6 +758,11 @@
             },
             {
               "note": "DRAG VERIFICATION (Jesse-observed 2026-06-11): mouse drag DOES engage this widget \u2014 but AX bboxes go STALE after a DOM reorder, so tree/bbox comparison FALSELY reports 'no movement'. Verify drags by SCREENSHOT (visual order) only. Check-button readiness = AXEnabled attribute, never its bbox. A falsely-failed verifier here caused 3 duplicate drags \u2014 always re-derive remaining moves from the CURRENT visual order before dragging again.",
+              "discovered_at": "2026-06-11",
+              "verified_count": 1
+            },
+            {
+              "note": "IMAGE-PAIR QUESTIONS (2026-06-11, complete-AX live): Khan's AXImage DESCRIPTIONS are the authoritative question content \u2014 e.g. 'Two small circles a large distance apart'. Solve from the alt-text FIRST; pixel/vision measurement is the fallback and mis-ranked a close call today ('two small/LARGE distance' read as 'medium/wide'). Equal-size pairs differ by DISTANCE \u2014 read the words.",
               "discovered_at": "2026-06-11",
               "verified_count": 1
             }
@@ -806,6 +816,11 @@
             },
             {
               "note": "DRAG VERIFICATION (Jesse-observed 2026-06-11): mouse drag DOES engage this widget \u2014 but AX bboxes go STALE after a DOM reorder, so tree/bbox comparison FALSELY reports 'no movement'. Verify drags by SCREENSHOT (visual order) only. Check-button readiness = AXEnabled attribute, never its bbox. A falsely-failed verifier here caused 3 duplicate drags \u2014 always re-derive remaining moves from the CURRENT visual order before dragging again.",
+              "discovered_at": "2026-06-11",
+              "verified_count": 1
+            },
+            {
+              "note": "IMAGE-PAIR QUESTIONS (2026-06-11, complete-AX live): Khan's AXImage DESCRIPTIONS are the authoritative question content \u2014 e.g. 'Two small circles a large distance apart'. Solve from the alt-text FIRST; pixel/vision measurement is the fallback and mis-ranked a close call today ('two small/LARGE distance' read as 'medium/wide'). Equal-size pairs differ by DISTANCE \u2014 read the words.",
               "discovered_at": "2026-06-11",
               "verified_count": 1
             }
