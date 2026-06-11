@@ -67,6 +67,14 @@
       {
         "text": "Previous in course",
         "reason": "Course-wide navigation arrow that skips backward past completed content. Never the right target for forward progression."
+      },
+      {
+        "text": "Skip to main content",
+        "reason": "accessibility skip-link, a no-op for navigation \u2014 observed wasted cycle 2026-06-11 (LLM picked it as the nav answer)"
+      },
+      {
+        "text": "Skip to lesson content",
+        "reason": "accessibility skip-link, a no-op for navigation \u2014 observed wasted cycle 2026-06-11 (LLM picked it as the nav answer)"
       }
     ],
     "platform_quirks": [
@@ -1281,8 +1289,8 @@
                 "Following the FIRST link in find_all results \u2014 order is DOM order, not progress order.",
                 "click element=$nav.answer_element \u2014 Mac's find_all on AXLink doesn't return a 'name' field, only label/popup_desc/options. Server-side element matching fails. Use find_and_click target=$nav.answer instead \u2014 Mac matches by AX name directly."
               ],
-              "verified_count": 4,
-              "last_verified_at": "2026-06-11T12:26:35Z"
+              "verified_count": 7,
+              "last_verified_at": "2026-06-11T12:29:21Z"
             }
           ]
         },
