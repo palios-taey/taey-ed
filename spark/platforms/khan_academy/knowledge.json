@@ -1281,8 +1281,19 @@
                 "Following the FIRST link in find_all results \u2014 order is DOM order, not progress order.",
                 "click element=$nav.answer_element \u2014 Mac's find_all on AXLink doesn't return a 'name' field, only label/popup_desc/options. Server-side element matching fails. Use find_and_click target=$nav.answer instead \u2014 Mac matches by AX name directly."
               ],
-              "verified_count": 2,
-              "last_verified_at": "2026-06-11T11:08:06Z"
+              "verified_count": 4,
+              "last_verified_at": "2026-06-11T12:26:35Z"
+            }
+          ]
+        },
+        {
+          "name": "unit_overview",
+          "description": "Single-unit page (e.g. 'UNIT 1 Motion and forces') listing the unit's lessons with completed/proficient/mastered markers and 'Great work! You've mastered this unit' banner when done.",
+          "operational_notes": [
+            {
+              "note": "Forward move = navigate toward the next INCOMPLETE work, never re-do completed items ('completed'/'mastered'/'proficient' markers + 'Take quiz again' buttons mean DONE \u2014 'Take ... again' is a re-do, never click). If the whole unit is mastered ('Great work!' banner), navigate to the next unit/skill that is 'unfamiliar' or 'started' \u2014 unit links in the left rail (e.g. 'UNIT 3 Energy') or the suggested next unit in the banner.",
+              "discovered_at": "2026-06-11",
+              "verified_count": 1
             }
           ]
         }
