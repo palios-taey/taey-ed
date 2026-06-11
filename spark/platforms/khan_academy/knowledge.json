@@ -486,7 +486,7 @@
               "known_failure_modes": [
                 "Element staleness: if Wonder Blocks re-renders popups after one opens, $popup.element from outer find_all may go stale on iter 2+. If that happens (only first dropdown opens, rest fail with element-not-found), the workaround would be sequential unrolled blocks (find_all + index access) per popup \u2014 but try the canonical for_each version first."
               ],
-              "verified_count": 3,
+              "verified_count": 5,
               "bt_template_hint": "CANONICAL BT (handler param names verified):\n\n",
               "ccm_observed_failures": {
                 "16:54_observation": "find_and_click element=$popup.element \u2192 resolves target='' role=None \u2192 ACTION RETURNED NONE",
@@ -503,7 +503,7 @@
                 "17:25_observation": "Enumeration phase fully worked (all 3 popups, wait_for_element added). discover_menu returned options like ['the same not', 'different'] \u2014 the 'the same' option's AX name 'the same not selected' got 9 chars stripped by Mac's _extract_menu_items (which strips ' selected'), leaving 'the same not'. LLM picked 'the same not' (the only thing on offer). select_dropdown_option opened the popup and normalized menu items to ['the same', 'different'] \u2014 'the same not' was no match \u2192 click failed.",
                 "17:25_fix": "Server-side workaround in _solve_matching_with_gemini: strip dangling ' not' suffix from options before passing to LLM (undoes Mac's overzealous strip). Real fix would be Mac-side: _extract_menu_items should strip ' not selected' (13 chars) before falling back to ' selected' (9 chars). Mac is frozen, so server workaround is the pragmatic path."
               },
-              "last_verified_at": "2026-06-11T13:19:04Z",
+              "last_verified_at": "2026-06-11T14:03:32Z",
               "last_demoted_at": "2026-06-11T12:39:29Z"
             },
             {
@@ -574,6 +574,11 @@
               "verified_count": 0,
               "rule": "USE THE UNROLLED PATTERN, NOT a for_each over the whole answer string. Observed failure (637b998b): worker classified as a CUSTOM label (EXERCISE_DROPDOWN_KE_GRAPHS) and ran for_each  with the comma-joined answer -> select_dropdown_option success=False. The canonical UNROLLED pattern (lookup_match key=0/1/2/3 -> select_dropdown_option trigger_element=.N.element option=) is the proven path. ALWAYS classify these as the canonical \"dropdown\" subtype so this pattern is used.",
               "note": "taeys-hands AT-SPI confirms: (1) select_dropdown_option ALREADY normalizes the \" not selected\"/\" selected\" aria suffix and verifies the AXComboBox value flips \u2014 pass the BARE option text per box (mass / speed), one per popup, NOT the joined string. (2) WRAPPER-DUP: if find_all returns 2x AXComboBox for the visible blanks, operate on the FIRST HALF only (top-to-bottom); wrapper writes overwrite the first pass. (3) VALIDATE per box: AXComboBox name flips from \"Select an answer\" to the chosen value before moving to the next. (4) Fallback if a click genuinely will not commit: keyboard-by-POSITION (focus opener, ArrowDown to the option index from discover_menu, Enter) \u2014 keyboard == mouse_click (same OptionItem.onClick), sidesteps text matching entirely."
+            },
+            {
+              "note": "NO SCROLL-PHASE for dropdowns (observed 2026-06-11: a scroll-only BT on a dropdown question changed nothing and tripped stuck-detection). The two-phase scroll pattern applies ONLY to coordinate-actuated drag widgets. Dropdowns are ELEMENT-based (select_dropdown_option / focus_press resolve by name+role, no coordinates) \u2014 solve directly in ONE BT regardless of fold position: enumerate menus, send_to_llm, select per row, wait, Check.",
+              "discovered_at": "2026-06-11",
+              "verified_count": 1
             }
           ],
           "aliases": [
