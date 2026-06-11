@@ -699,6 +699,11 @@
               "note": "TIER-2 SYNTHESIS (Clarity DR 2026-06-11, provisional; REVIEWS/khan_academy_7393a3904b8b_tier2.md): VISION-then-KEYBOARD structure. The solve_complex call must extract from the screenshot: axis min/max + grid-step per tick, each point's CURRENT (x,y), and TARGET (x,y) per point from the data table. CRITICAL: the BT engine has NO runtime arithmetic \u2014 the LLM must PRE-COMPUTE signed integer press counts per point (delta_steps = (target-current)/grid_step) and emit one press_key node per press, choosing Right/Up vs Left/Down by the sign. Read CURRENT positions fresh from the live 'Point N at X comma Y' names (a prior partial attempt leaves points mid-board \u2014 never assume 0,0).",
               "discovered_at": "2026-06-11",
               "verified_count": 0
+            },
+            {
+              "note": "PHASE DETECTION \u2014 STOP SCROLL-LOOPING (observed 14:48-14:53: three consecutive scroll-only builds while the widget was already visible): BEFORE choosing the scroll phase, check the point buttons' visible_bbox in the CURRENT tree \u2014 if they carry on-screen coordinates (non-zero bbox, y within the viewport), the widget IS in view: build PHASE-2 NOW (solve_complex vision extraction -> click_at focus -> ctrl+shift arrow presses with pre-computed signed counts -> re-extract to verify -> Check). Scroll AT MOST once per question; a second scroll-only build in a row is always wrong.",
+              "discovered_at": "2026-06-11",
+              "verified_count": 1
             }
           ],
           "aliases": [
