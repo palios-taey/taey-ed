@@ -1,12 +1,12 @@
 # Terminal Escalation — Mark Unsolvable
 
 You hit Terminal because the full ladder has been exhausted (per Jesse
-2026-05-19 FINAL ladder):
+2026-06-11 canonical ladder):
 - Tier 1: 2 attempts by claude-primary editing knowledge.json
 - Tier 2: 1 Perplexity DR consultation
-- Tier 3: 2 full Family loops
+- Tier 3: 1 full Family round
 
-That's 5 attempts total. This screen is genuinely outside the system's current
+That's 4 attempts total. This screen is genuinely outside the system's current
 capability — likely a handler gap or a fundamentally novel widget pattern that
 can't be solved with the existing primitives.
 
@@ -33,7 +33,7 @@ can't be solved with the existing primitives.
    ```
    /usr/local/bin/taey-notify taey-ed --type defect --from spark \
      "TERMINAL ESCALATION — <platform> screen_hash <hash> marked unsolvable
-    after 6-tier exhaustion. Packet: <path>. Recommended next step:
+    after ladder exhaustion. Packet: <path>. Recommended next step:
     <one-line — usually a new Mac handler or server-side change>."
    ```
 

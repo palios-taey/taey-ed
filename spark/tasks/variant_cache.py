@@ -29,6 +29,8 @@ from .paths import VARIANT_BTS_DIR, HASH_INDEX_DIR
 
 logger = logging.getLogger("taey-ed")
 
+VERIFIED_TEMPLATE_REUSE_THRESHOLD = 3
+
 # Variants where BT varies per instance (always rebuild via Pro)
 # Any EXERCISE_* variant is non-deterministic — questions change per instance.
 NON_DETERMINISTIC_VARIANTS = {
@@ -51,7 +53,14 @@ def is_non_deterministic(platform: str, variant: str) -> bool:
     if variant in NON_DETERMINISTIC_VARIANTS or variant.startswith("EXERCISE_"):
         try:
             knowledge = load_knowledge(platform)
-            return get_verified_bt_template_entry(knowledge, variant, min_verified=1) is None
+            return (
+                get_verified_bt_template_entry(
+                    knowledge,
+                    variant,
+                    min_verified=VERIFIED_TEMPLATE_REUSE_THRESHOLD,
+                )
+                is None
+            )
         except Exception as e:
             logger.warning(f"variant_cache: verified template check failed for {platform}/{variant}: {e}")
             return True
@@ -106,7 +115,11 @@ def lookup_variant_bt(platform: str, variant: str) -> dict | None:
     entry = data["variants"].get(variant)
     if not entry or not entry.get("behavior_tree"):
         knowledge = load_knowledge(platform)
-        template_entry = get_verified_bt_template_entry(knowledge, variant, min_verified=1)
+        template_entry = get_verified_bt_template_entry(
+            knowledge,
+            variant,
+            min_verified=VERIFIED_TEMPLATE_REUSE_THRESHOLD,
+        )
         if not template_entry:
             return None
         template = template_entry["template"]

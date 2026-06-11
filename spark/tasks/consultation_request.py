@@ -354,7 +354,7 @@ def request_consultation(
             atomic_write_json(consult_path / "metadata.json", metadata)
             notify_spark_claude(
                 f"TERMINAL ESCALATION — {platform} screen_hash {screen_hash[:16]} "
-                f"marked unsolvable after 6-tier exhaustion. "
+                f"marked unsolvable after ladder exhaustion. "
                 f"Logged to {UNSOLVED_LOG}.",
                 notify_type="defect",
             )

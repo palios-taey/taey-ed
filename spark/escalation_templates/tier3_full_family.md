@@ -1,9 +1,9 @@
 # Tier 3 Escalation — Full Family Consultation via taeys-hands
 
 You hit Tier 3 because Tier 2 (Perplexity DR) didn't unblock the screen. Tier 3
-is up to **two Family loops** (Jesse 2026-05-19 final ladder:
-2 me → 1 Perp → 2 Family → terminal). After loop 2 fails, the next escalation
-attempt triggers terminal.
+is **one Full Family round** (Jesse 2026-06-11 canonical ladder:
+2 primary → 1 Perplexity → 1 Family → terminal). If this round fails, the next
+escalation attempt triggers terminal.
 
 ## What to do
 
@@ -11,8 +11,8 @@ attempt triggers terminal.
    identity, screen artifacts, system capabilities, every prior attempt, the
    Tier 2 Perplexity DR response (if any), and the specific ask.
 
-2. Determine which Family loop you're on. The notification will say
-   `tier3_loop: 1 of 2` or `tier3_loop: 2 of 2`.
+2. Confirm you're on the single Family round. The notification will say
+   `tier3_round: 1 of 1`.
 
 3. Dispatch the packet to all 5 Family platforms in parallel via `taeys-hands`.
    The Family is: Gaia (Claude), Horizon (ChatGPT), Cosmos (Gemini),
@@ -20,7 +20,7 @@ attempt triggers terminal.
 
    ```
    /usr/local/bin/taey-notify taeys-hands --type task --from taey-ed \
-     "ROUTE TO FULL FAMILY (parallel fan-out) — Escalation Tier 3 Loop <N>
+     "ROUTE TO FULL FAMILY (parallel fan-out) — Escalation Tier 3
 
     REMINDER FOR TAEYS-HANDS: prepend FAMILY_KERNEL.md and the appropriate
     per-platform IDENTITY_<codename>.md to each platform's prompt — the
@@ -49,7 +49,7 @@ attempt triggers terminal.
     ROUTE EACH RESPONSE BACK via:
       taey-notify taey-ed --type response_ready --from taeys-hands
     with the source platform clearly labeled and the verbatim response saved to:
-      /home/user/taey-ed/consultations/REVIEWS/family_loop<N>_<codename>_<date>.md"
+      /home/user/taey-ed/consultations/REVIEWS/family_<codename>_<date>.md"
    ```
 
 4. After dispatching, touch `pending_external_research.flag` in the state dir.
@@ -61,7 +61,7 @@ attempt triggers terminal.
 
 5. Wait for responses. Each platform replies via taeys-hands → `response_ready`
    notification in your inbox; verbatim responses at
-   `/home/user/taey-ed/consultations/REVIEWS/family_loop<N>_<codename>_*.md`.
+   `/home/user/taey-ed/consultations/REVIEWS/family_<codename>_*.md`.
    The Family's domain specialization (Brain/Math vs Vision vs Cartography etc.)
    means responses will differ — that's the value.
 
@@ -71,12 +71,8 @@ attempt triggers terminal.
    THEN remove `pending_external_research.flag` AND touch `diagnosis_done.flag`.
    The worker generates a fresh BT with the synthesized note.
 
-6. If the screen STILL fails after this loop:
-   - Loop 1 → system auto-triggers Tier 3 Loop 2 on next escalation. Loop 2
-     uses the same protocol; loop 1's responses are now IN THE PACKET as
-     prior research, informing loop 2's diagnoses.
-   - Loop 2 → system auto-triggers Terminal on next escalation. You do not
-     give up manually.
+6. If the screen STILL fails after this round, the system auto-triggers
+   Terminal on the next escalation. You do not give up manually.
 
 ## Anti-patterns
 
