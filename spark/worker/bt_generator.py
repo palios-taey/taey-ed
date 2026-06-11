@@ -301,6 +301,16 @@ def generate_bt(
 
     _validate_bt(bt, consultation_id)
 
+    # Screen session: absorb the worker's _session contribution (facts/plan/
+    # lesson) so the NEXT cycle on this screen resumes with what this build
+    # measured or decided (Jesse 2026-06-11 per-screen working memory).
+    try:
+        from spark.tasks.skeleton import extract_skeleton, skeleton_hash as _sh
+        from spark.tasks.screen_session import absorb_worker_session
+        absorb_worker_session(platform, _sh(extract_skeleton(tree)), bt)
+    except Exception:
+        logger.exception("screen_session absorption failed (continuing)")
+
     logger.info(
         f"bt_generator: success for {consultation_id} in {meta['elapsed_wall_s']:.1f}s "
         f"(turns={meta['num_turns']}, api-equivalent cost "

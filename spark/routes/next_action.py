@@ -441,6 +441,27 @@ def _make_directive_id() -> str:
     return f"d-{uuid.uuid4().hex[:8]}"
 
 
+def _bt_actions_from_tail(bt_debug_tail) -> list:
+    """Parse the executed action names from the Mac's BT debug tail."""
+    import re as _re
+    if not bt_debug_tail:
+        return []
+    return [a for _, a in _re.findall(r"seq step (\d+)/\d+: (\w+)", str(bt_debug_tail))]
+
+
+def _record_screen_failure(platform: str, skel_hash, bt_debug_tail, outcome: str, detail: str = ""):
+    """Screen-session hook for failure outcomes (Jesse 2026-06-11)."""
+    if not skel_hash:
+        return
+    try:
+        from spark.tasks.screen_session import record_attempt
+        record_attempt(platform, skel_hash,
+                       bt_actions=_bt_actions_from_tail(bt_debug_tail),
+                       outcome=outcome, detail=detail)
+    except Exception:
+        logger.exception("screen_session failure-record failed (continuing)")
+
+
 def _is_scroll_only_bt(bt_debug_tail) -> bool:
     """True if the just-executed BT consisted solely of scroll/wait actions
     (phase-1 of the two-phase drag pattern). Parsed from the Mac's BT debug
@@ -1171,6 +1192,22 @@ def _next_action_impl(request: NextActionRequest):
             # Success: clear failure tracking for this platform
             _clear_variant_failures(platform)
 
+            # Screen session: the screen ADVANCED — record + archive its
+            # working memory (Jesse 2026-06-11: stored until the screen
+            # advances).
+            if lr.directive_skeleton_hash:
+                try:
+                    from spark.tasks.screen_session import record_attempt, archive
+                    record_attempt(
+                        platform, lr.directive_skeleton_hash,
+                        bt_actions=_bt_actions_from_tail(lr.bt_debug_tail),
+                        outcome="advanced",
+                        detail=f"validated; new_screen={vr.get('new_screen')}",
+                    )
+                    archive(platform, lr.directive_skeleton_hash)
+                except Exception:
+                    logger.exception("screen_session advance-archive failed (continuing)")
+
             # Learn from successful BT execution
             # Note: lr doesn't carry the BT definition — pass empty dict.
             # submit_button detection won't fire but screen_type + success is recorded.
@@ -1226,6 +1263,8 @@ def _next_action_impl(request: NextActionRequest):
                         invalidate_variant_bt,
                         lookup_by_hash,
                     )
+                    _record_screen_failure(platform, lr.directive_skeleton_hash,
+                                           lr.bt_debug_tail, "wrong_answer")
                     hash_entry = lookup_by_hash(platform, lr.directive_skeleton_hash)
                     if hash_entry and hash_entry.get("validated"):
                         from spark.tasks.variant_cache import record_validated_map_failure
@@ -1285,11 +1324,17 @@ def _next_action_impl(request: NextActionRequest):
                 f"  Step 2.5: scroll-only BT, unchanged screen — PHASE COMPLETE "
                 f"(not stuck). Rebuilding from post-scroll capture."
             )
+            _record_screen_failure(platform, lr.directive_skeleton_hash,
+                                   lr.bt_debug_tail, "scroll_phase_complete",
+                                   "screen unchanged by design; phase-2 next")
         elif not tree_hash_changed:
             logger.error(
                 f"STUCK: {lr.screen} unchanged after action. "
                 f"ONE TRY ONLY — stopping. Hash={lr.directive_skeleton_hash or 'none'}"
             )
+            _record_screen_failure(platform, lr.directive_skeleton_hash,
+                                   lr.bt_debug_tail, "stuck",
+                                   "tree unchanged after non-scroll action")
             deleted_failed_map = False
             # Delete the failed hash mapping so it doesn't re-match next time
             if lr.directive_skeleton_hash:
@@ -1498,6 +1543,9 @@ def _next_action_impl(request: NextActionRequest):
         # If the BT came from a hash match and it failed (including Gemini
         # retry), the hash mapping was likely wrong. Delete it.
         # BUT: check failure count BEFORE falling through to reclassify.
+        _record_screen_failure(platform, lr.directive_skeleton_hash,
+                               lr.bt_debug_tail, "bt_failure",
+                               (lr.bt_debug_tail or "")[-200:])
         if lr.directive_skeleton_hash:
             try:
                 from spark.tasks.variant_cache import (

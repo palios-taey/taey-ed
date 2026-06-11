@@ -1270,6 +1270,21 @@ def compile_prompt(
         sections.append(SECTION_5_HANDLERS_ORIGINAL)
         sections.append(SECTION_6_QUESTION_TYPES_ORIGINAL)
 
+    # Screen session: per-screen working memory (Jesse 2026-06-11) — prior
+    # attempts, measured facts, standing plan for THIS screen/question.
+    # Injected so builds RESUME instead of re-deriving from zero.
+    try:
+        from spark.tasks.skeleton import extract_skeleton, skeleton_hash as _ss_hash
+        from spark.tasks.skeleton import extract_content_fingerprint as _ss_fp
+        from spark.tasks.screen_session import render_for_prompt as _ss_render
+        _sess_block = _ss_render(
+            platform, _ss_hash(extract_skeleton(tree)), _ss_fp(tree),
+        )
+        if _sess_block:
+            sections.append(_sess_block)
+    except Exception:
+        logger.exception("screen_session prompt injection failed (continuing)")
+
     # Section 7: Click Strategies & Timing (always)
     sections.append(SECTION_7_STRATEGIES)
 
