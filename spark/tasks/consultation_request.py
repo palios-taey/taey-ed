@@ -30,6 +30,8 @@ from .escalation import (
     tier_for_attempt,
     build_packet,
     notify_body_for_tier,
+    dispatch_body_for_tier,
+    notify_fleet,
     UNSOLVED_LOG,
 )
 
@@ -433,10 +435,25 @@ def request_consultation(
                     diag_state_dir=diag_state_dir,
                 )
                 notify_spark_claude(body, notify_type="escalation")
+
+                # Auto-climb (INTENDED_FLOW §D): Tier 2/3 dispatch goes to
+                # taeys-hands DIRECTLY from the server. claude-primary's
+                # notification above is the synthesis/fold assignment, not a
+                # relay instruction.
+                dispatch_body = dispatch_body_for_tier(
+                    tier=tier,
+                    packet_path=packet_path,
+                    platform=platform,
+                    screen_hash=screen_hash,
+                    retry_count=retry_count,
+                )
+                if dispatch_body:
+                    notify_fleet("taeys-hands", dispatch_body, notify_type="task")
                 logger.warning(
                     f"Escalation triggered for {consultation_id} "
                     f"({platform}, {screen_type_hint}, hash={screen_hash[:16]}, "
-                    f"tier={tier}, retry_count={retry_count})"
+                    f"tier={tier}, retry_count={retry_count}, "
+                    f"auto_dispatched={'yes' if dispatch_body else 'n/a'})"
                 )
             metadata["status"] = "claude_diagnosing"
             metadata["escalation_level"] = f"diagnosing_{tier}"

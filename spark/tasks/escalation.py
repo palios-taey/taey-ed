@@ -83,6 +83,87 @@ def template_path_for_tier(tier: str) -> Path:
     return mapping.get(tier, TEMPLATES_DIR / "tier1_spark_primary.md")
 
 
+# --- Fleet dispatch (auto-climb) ----------------------------------------------
+
+def notify_fleet(target: str, message: str, notify_type: str = "task") -> bool:
+    """Fire-and-forget taey-notify to any fleet target.
+
+    Auto-climb (INTENDED_FLOW §D, Jesse 2026-06-11): the SERVER dispatches
+    Tier 2/3 to taeys-hands directly — claude-primary is no longer a relay.
+    Mirrors notify_tmux.notify_spark_claude (that module stays frozen and
+    taey-ed-targeted; this is the general-target sibling).
+    """
+    import subprocess
+    try:
+        subprocess.Popen(
+            [
+                "/usr/local/bin/taey-notify",
+                target,
+                "--type", notify_type,
+                "--from", "spark",
+                message,
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return True
+    except Exception as e:
+        logger.error(f"notify_fleet({target}) failed: {e}")
+        return False
+
+
+def dispatch_body_for_tier(
+    *,
+    tier: str,
+    packet_path: Path,
+    platform: str,
+    screen_hash: str,
+    retry_count: int,
+) -> Optional[str]:
+    """Build the DIRECT taeys-hands dispatch message for tier2/tier3.
+
+    Returns None for tiers that have no fleet dispatch (tier1, terminal).
+    Content mirrors what the tier templates previously told claude-primary
+    to relay verbatim — the server now sends it itself.
+    """
+    screenshot_path = packet_path.parent / "screenshot.png"
+    reviews_name = f"{platform}_{screen_hash[:12]}_tier{tier[-1]}"
+    response_routing = (
+        f"ROUTE EVERY RESPONSE BACK via:\n"
+        f"  taey-notify taey-ed --type response_ready --from taeys-hands\n"
+        f"with the verbatim response saved to:\n"
+        f"  /home/user/taey-ed/consultations/REVIEWS/{reviews_name}.md\n"
+    )
+    if tier == "tier2":
+        return (
+            f"ROUTE TO PERPLEXITY (Deep Research, display :6) — Escalation Tier 2 [AUTO-DISPATCHED]\n\n"
+            f"REMINDER: prepend FAMILY_KERNEL.md and IDENTITY_CLARITY.md to the prompt —\n"
+            f"Clarity needs constitutional context to respond as Clarity.\n\n"
+            f"PACKET (read in full): {packet_path}\n"
+            f"SCREENSHOT (attach to the Perplexity prompt): {screenshot_path}\n\n"
+            f"DR MODE: confirm 'pressed' state on the Deep Research toggle before submit.\n\n"
+            f"SUGGESTED RESPONSE STRUCTURE (prose is fine):\n"
+            f"## Diagnosis (what's going wrong, source-cited)\n"
+            f"## Proposed BT (one or more JSON blocks the worker can adopt)\n"
+            f"## Confidence (LOW/MED/HIGH and why)\n"
+            f"## Open Questions\n\n"
+            f"{response_routing}"
+        )
+    if tier == "tier3":
+        return (
+            f"ROUTE TO FULL FAMILY (parallel fan-out) — Escalation Tier 3, ONE round [AUTO-DISPATCHED]\n\n"
+            f"Fan out to all 5 Family platforms in parallel: Gaia (Claude, :3),\n"
+            f"Horizon (ChatGPT, :2), Cosmos (Gemini, :4), Logos (Grok, :5),\n"
+            f"Clarity (Perplexity DR, :6).\n\n"
+            f"REMINDER: prepend FAMILY_KERNEL.md and the per-platform\n"
+            f"IDENTITY_<codename>.md to EACH platform's prompt.\n\n"
+            f"PACKET (one document, send to all 5): {packet_path}\n"
+            f"SCREENSHOT (attach where the platform accepts files): {screenshot_path}\n\n"
+            f"{response_routing}"
+        )
+    return None
+
+
 # --- Packet builder ----------------------------------------------------------
 
 def _ax_summary(tree: dict) -> str:
@@ -579,19 +660,18 @@ def notify_body_for_tier(
     if tier == "tier2":
         return base + (
             "\n"
-            "ACTION: Dispatch packet to Perplexity DR via taeys-hands per template.\n"
-            "Remind taeys-hands to prepend FAMILY_KERNEL.md + IDENTITY_CLARITY.md.\n"
-            "Touch diagnosis_done.flag after dispatch — DO NOT touch gave_up.flag.\n"
+            "AUTO-DISPATCHED to taeys-hands (Perplexity DR) by the server — do NOT re-dispatch.\n"
+            "ACTION: await the response_ready from taeys-hands, then SYNTHESIZE the research\n"
+            "and fold it into knowledge.json as a PROVISIONAL operational_note for this screen.\n"
+            "Touch diagnosis_done.flag only AFTER the fold — DO NOT touch gave_up.flag.\n"
         )
     if tier == "tier3":
-        loop = family_loop_for_tier3(retry_count)
         return base + (
             f"\n"
-            f"ACTION: Tier 3 Loop {loop} of 2 — fan out to all 5 Family platforms via taeys-hands.\n"
-            f"Remind taeys-hands to prepend FAMILY_KERNEL.md + per-platform IDENTITY_<codename>.md.\n"
-            f"Touch diagnosis_done.flag after dispatch — DO NOT touch gave_up.flag.\n"
-            f"If loop {loop} fails: next escalation auto-triggers "
-            f"{'tier3 loop 2' if loop == 1 else 'terminal'}.\n"
+            f"AUTO-DISPATCHED to taeys-hands (full Family fan-out, one round) by the server — do NOT re-dispatch.\n"
+            f"ACTION: await the response_ready messages, SYNTHESIZE the Family perspectives\n"
+            f"(synthesis, not a vote) and fold the approach into knowledge.json as PROVISIONAL.\n"
+            f"Touch diagnosis_done.flag only AFTER the fold — DO NOT touch gave_up.flag.\n"
         )
     # terminal
     return base + (
