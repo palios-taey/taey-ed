@@ -727,6 +727,11 @@
               "note": "DRAG TIMING (claude-0 diagnosis 2026-06-11, default 80ms press_hold does NOT activate the Sortable): set press_hold: 0.25, release_hold: 0.15 on every drag for this widget. Escalation order if no engagement: press_hold 0.40; then steps: 8 + step_delay: 0.04 (bigger first move). Engagement check: Check button ENABLES on first real widget touch \u2014 if Check is still gray after the drag, the widget was never engaged (do not click Check).",
               "discovered_at": "2026-06-11",
               "verified_count": 0
+            },
+            {
+              "note": "DRAG VERIFICATION (Jesse-observed 2026-06-11): mouse drag DOES engage this widget \u2014 but AX bboxes go STALE after a DOM reorder, so tree/bbox comparison FALSELY reports 'no movement'. Verify drags by SCREENSHOT (visual order) only. Check-button readiness = AXEnabled attribute, never its bbox. A falsely-failed verifier here caused 3 duplicate drags \u2014 always re-derive remaining moves from the CURRENT visual order before dragging again.",
+              "discovered_at": "2026-06-11",
+              "verified_count": 1
             }
           ]
         },
@@ -745,6 +750,11 @@
               "note": "DRAG TIMING (claude-0 diagnosis 2026-06-11, default 80ms press_hold does NOT activate the Sortable): set press_hold: 0.25, release_hold: 0.15 on every drag for this widget. Escalation order if no engagement: press_hold 0.40; then steps: 8 + step_delay: 0.04 (bigger first move). Engagement check: Check button ENABLES on first real widget touch \u2014 if Check is still gray after the drag, the widget was never engaged (do not click Check).",
               "discovered_at": "2026-06-11",
               "verified_count": 0
+            },
+            {
+              "note": "DRAG VERIFICATION (Jesse-observed 2026-06-11): mouse drag DOES engage this widget \u2014 but AX bboxes go STALE after a DOM reorder, so tree/bbox comparison FALSELY reports 'no movement'. Verify drags by SCREENSHOT (visual order) only. Check-button readiness = AXEnabled attribute, never its bbox. A falsely-failed verifier here caused 3 duplicate drags \u2014 always re-derive remaining moves from the CURRENT visual order before dragging again.",
+              "discovered_at": "2026-06-11",
+              "verified_count": 1
             }
           ]
         },
@@ -793,6 +803,11 @@
               "note": "DRAG TIMING (claude-0 diagnosis 2026-06-11, default 80ms press_hold does NOT activate the Sortable): set press_hold: 0.25, release_hold: 0.15 on every drag for this widget. Escalation order if no engagement: press_hold 0.40; then steps: 8 + step_delay: 0.04 (bigger first move). Engagement check: Check button ENABLES on first real widget touch \u2014 if Check is still gray after the drag, the widget was never engaged (do not click Check).",
               "discovered_at": "2026-06-11",
               "verified_count": 0
+            },
+            {
+              "note": "DRAG VERIFICATION (Jesse-observed 2026-06-11): mouse drag DOES engage this widget \u2014 but AX bboxes go STALE after a DOM reorder, so tree/bbox comparison FALSELY reports 'no movement'. Verify drags by SCREENSHOT (visual order) only. Check-button readiness = AXEnabled attribute, never its bbox. A falsely-failed verifier here caused 3 duplicate drags \u2014 always re-derive remaining moves from the CURRENT visual order before dragging again.",
+              "discovered_at": "2026-06-11",
+              "verified_count": 1
             }
           ]
         },
