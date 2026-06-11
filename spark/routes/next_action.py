@@ -772,7 +772,33 @@ def _validate_last_action(platform: str, config: dict, lr, current_tree: dict) -
     # EXERCISE skipped this whole block, then poisoned credits downstream).
     wrong_answer = False
     not_advanced = False
-    if new_screen:
+
+    # VERDICT FIRST (2026-06-11, Jesse: wrong answers sailed through as
+    # 'Validated' because the wrong-answer popover changes the tree, and
+    # movement was being read as success): Khan prints the verdict — a
+    # 'Not quite' heading in the feedback popover means WRONG, full stop,
+    # regardless of any hash/screen movement.
+    try:
+        from spark.tasks.screen_type_util import get_master_category as _gmc
+        if _gmc(lr.screen or "") == "EXERCISE":
+            def _wrong_feedback(n) -> bool:
+                if not isinstance(n, dict):
+                    return False
+                name = str(n.get("name") or n.get("title") or "")
+                if (n.get("role") in ("AXHeading", "AXGroup")
+                        and name.startswith("Not quite")):
+                    return True
+                return any(_wrong_feedback(c) for c in n.get("children") or [])
+            if _wrong_feedback(after_tree_to_match or {}):
+                logger.warning(
+                    "Step 2: WRONG-ANSWER FEEDBACK in after-tree ('Not quite') — "
+                    "verdict overrides movement."
+                )
+                wrong_answer = True
+    except Exception:
+        logger.exception("verdict scan failed (continuing with movement checks)")
+
+    if not wrong_answer and new_screen:
         from spark.tasks.screen_type_util import get_master_category
         screen_master = get_master_category(new_screen) or ""
         directive_hash = lr.directive_skeleton_hash or ""
