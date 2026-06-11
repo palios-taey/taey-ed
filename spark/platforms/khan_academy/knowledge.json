@@ -454,7 +454,7 @@
               "known_failure_modes": [
                 "Element staleness: if Wonder Blocks re-renders popups after one opens, $popup.element from outer find_all may go stale on iter 2+. If that happens (only first dropdown opens, rest fail with element-not-found), the workaround would be sequential unrolled blocks (find_all + index access) per popup \u2014 but try the canonical for_each version first."
               ],
-              "verified_count": 0,
+              "verified_count": 2,
               "bt_template_hint": "CANONICAL BT (handler param names verified):\n\n",
               "ccm_observed_failures": {
                 "16:54_observation": "find_and_click element=$popup.element \u2192 resolves target='' role=None \u2192 ACTION RETURNED NONE",
@@ -471,7 +471,7 @@
                 "17:25_observation": "Enumeration phase fully worked (all 3 popups, wait_for_element added). discover_menu returned options like ['the same not', 'different'] \u2014 the 'the same' option's AX name 'the same not selected' got 9 chars stripped by Mac's _extract_menu_items (which strips ' selected'), leaving 'the same not'. LLM picked 'the same not' (the only thing on offer). select_dropdown_option opened the popup and normalized menu items to ['the same', 'different'] \u2014 'the same not' was no match \u2192 click failed.",
                 "17:25_fix": "Server-side workaround in _solve_matching_with_gemini: strip dangling ' not' suffix from options before passing to LLM (undoes Mac's overzealous strip). Real fix would be Mac-side: _extract_menu_items should strip ' not selected' (13 chars) before falling back to ' selected' (9 chars). Mac is frozen, so server workaround is the pragmatic path."
               },
-              "last_verified_at": "2026-05-18T20:50:49Z"
+              "last_verified_at": "2026-06-11T12:31:12Z"
             },
             {
               "discovered_at": "2026-05-19T14:18:14Z",
@@ -731,34 +731,8 @@
           "interaction_pattern": "evaluate items by criterion (via screenshot) -> drag handles to reorder if needed -> ALWAYS perform at least one drag to engage widget (Khan disables Check until widget is touched) -> click 'Check'.",
           "operational_notes": [
             {
-              "discovered_at": "2026-05-18T21:55:00Z",
-              "by": "claude-primary",
-              "research_source": "Perplexity Deep Research (live Perseus repo source). Saved verbatim: /home/user/taey-ed/consultations/REVIEWS/perseus_sorter_widget_dr_20260518.md. Confidence on central claim: HIGH.",
-              "screen_variant": "EXERCISE_RANKING_DRAG (Khan Perseus sorter widget, vertical single-column ranking)",
-              "PROTOCOL_one_shot": "You are the BT compiler. You have BOTH the screenshot AND tree.json. Synthesize the drag plan AT GENERATION TIME and bake concrete drag actions into the BT. DO NOT defer to runtime. DO NOT punt to UNKNOWN. The handler set is sufficient \u2014 drag + find_and_click is all you need.",
-              "perseus_internals_OBSERVED": "Check button is gated by a single React state boolean: userInput.changed. validateSorter() returns {type: invalid} while !userInput.changed. The flag is set ONLY by Sorter.handleChange, which is wired to Sortable's onChange prop. onChange fires from: (a) onMouseUp(key) after drag-release, (b) moveOptionToIndex programmatic API. NOT from onMouseMove, NOT from HTML5 dragstart/dragover/drop (widget uses jQuery+React mouse events, no HTML5 drag API at all).",
-              "tickle_drag_VERIFIED": "A zero-displacement drag (mousedown \u2192 mouseup at same coords) DOES set changed:true. Mechanism: onChange fires from onMouseUp regardless of whether items[] reordered. Sortable.onMouseMove only reorders items[] when newIndex != currentIndex, but that does NOT gate onChange. Confirmed by Perplexity Deep Research direct from Perseus source.",
-              "macos_cgevent_sequence_REQUIRED": "kCGEventLeftMouseDown @ item center \u2192 (delay \u22651 rAF ~16ms) \u2192 kCGEventLeftMouseDragged @ same-or-displaced position \u2192 kCGEventLeftMouseUp @ target position. Our Mac drag handler (mousedown \u2192 80ms hold \u2192 18 dragged moves @ 20ms \u2192 50ms hold \u2192 mouseup) satisfies this regardless of start==end since it always emits intermediate dragged events. Use the existing `drag` handler as-is.",
-              "BT_GENERATION_RULES": [
-                "Step 1: Find the AXList containing the sortable items in tree.json (look for AXList with ~3-5 AXGroup children at consistent x-coord, small width ~30-40px \u2014 grip column).",
-                "Step 2: For each AXGroup child of that AXList, compute center = (x + w/2, y + h/2) from its visible_bbox. Call these POSITIONS p[0]=top, p[1]=mid, p[2]=bottom, ... by y-order.",
-                "Step 3: Read the screenshot. Identify the visible label at each position (e.g., p[0]='G', p[1]='B', p[2]='R'). Call this CURRENT.",
-                "Step 4: Read the question. Determine CORRECT order top-to-bottom by the question's criterion (e.g., greatest-to-least mass).",
-                "Step 5a: If CURRENT == CORRECT: emit ONE tickle drag at p[1] (mid item) \u2014 start and end at same coords. This engages the widget (changed:true) without reordering.",
-                "Step 5b: If CURRENT != CORRECT: emit sequential bubble-sort drags. For each position i in 0..N-1, if current[i] != correct[i], find correct[i] in current at index j, emit drag {start: p[j], end: p[i]}, then mentally swap current[i] and current[j]. Repeat until current == correct.",
-                "Step 6: Append wait_for_element Check max_wait=3.0, then find_and_click Check role=AXButton strategy=mouse_click match_mode=exact post_delay=2.5.",
-                "All drag coords MUST come from tree.json bboxes \u2014 NEVER hardcode from prior consults; the viewport may have shifted."
-              ],
-              "drag_handler_schema_REMINDER": "drag.params MUST be nested dicts: {start: {x: <int>, y: <int>}, end: {x: <int>, y: <int>}, post_delay: <float>}. NOT flat source_x/source_y/start_x/start_y/target_x/target_y. Handler rejects flat schema and BT fails.",
-              "bt_template_hint": "Two concrete examples. First when current == correct (tickle), second when current != correct (bubble-sort drags). Coords shown are for THIS consult's tree.json (grip centers at y=450, 502, 553, x=687). REPLACE with current tree.json bboxes on each consultation.\n\n```json\n{\n  \"type\": \"sequence\",\n  \"_comment\": \"CASE A: current top-to-bottom order MATCHES correct order \u2014 single tickle drag at mid item engages widget without reorder, then click Check.\",\n  \"children\": [\n    {\n      \"type\": \"action\",\n      \"action\": \"drag\",\n      \"params\": {\n        \"start\": {\"x\": 687, \"y\": 502},\n        \"end\":   {\"x\": 687, \"y\": 502},\n        \"post_delay\": 0.6\n      }\n    },\n    {\n      \"type\": \"action\",\n      \"action\": \"wait_for_element\",\n      \"params\": {\"role\": \"AXButton\", \"target\": \"Check\", \"max_wait\": 3.0}\n    },\n    {\n      \"type\": \"action\",\n      \"action\": \"find_and_click\",\n      \"params\": {\"target\": \"Check\", \"role\": \"AXButton\", \"strategy\": \"mouse_click\", \"match_mode\": \"exact\", \"post_delay\": 2.5}\n    },\n    {\n      \"type\": \"action\",\n      \"action\": \"store_qa\",\n      \"params\": {\"question\": \"Rank by question criterion (greatest first)\", \"answer\": \"G,B,R\", \"question_type\": \"solve_complex\"}\n    }\n  ]\n}\n```\n\n```json\n{\n  \"type\": \"sequence\",\n  \"_comment\": \"CASE B: current order is R,B,G but correct is G,B,R. Bubble-sort: swap pos 0 and pos 2 (drag y=553 \u2192 y=450, then drag y=502 \u2192 y=553 to push displaced item down). Final order achieved: G,B,R.\",\n  \"children\": [\n    {\n      \"type\": \"action\",\n      \"action\": \"drag\",\n      \"params\": {\"start\": {\"x\": 687, \"y\": 553}, \"end\": {\"x\": 687, \"y\": 450}, \"post_delay\": 0.6}\n    },\n    {\n      \"type\": \"action\",\n      \"action\": \"drag\",\n      \"params\": {\"start\": {\"x\": 687, \"y\": 502}, \"end\": {\"x\": 687, \"y\": 553}, \"post_delay\": 0.6}\n    },\n    {\n      \"type\": \"action\",\n      \"action\": \"wait_for_element\",\n      \"params\": {\"role\": \"AXButton\", \"target\": \"Check\", \"max_wait\": 3.0}\n    },\n    {\n      \"type\": \"action\",\n      \"action\": \"find_and_click\",\n      \"params\": {\"target\": \"Check\", \"role\": \"AXButton\", \"strategy\": \"mouse_click\", \"match_mode\": \"exact\", \"post_delay\": 2.5}\n    },\n    {\n      \"type\": \"action\",\n      \"action\": \"store_qa\",\n      \"params\": {\"question\": \"Rank by question criterion (greatest first)\", \"answer\": \"G,B,R\", \"question_type\": \"solve_complex\"}\n    }\n  ]\n}\n```",
-              "anti_patterns": [
-                "Returning screen_type='UNKNOWN' with a wait BT \u2014 this is the punt-to-runtime failure mode. The handler set IS sufficient. YOU are the compiler. Synthesize the drags now.",
-                "Calling send_to_llm to ask Pro for an answer AT RUNTIME \u2014 unnecessary; you have the screenshot already at BT-generation time. Decide the order yourself, bake concrete drag coords into the BT, optionally include a store_qa with the answer for course-knowledge persistence.",
-                "Skipping ALL drags and clicking Check immediately \u2014 Check stays disabled because userInput.changed is false.",
-                "Drag with flat keys (source_x/source_y/start_x/start_y/target_x/target_y) \u2014 handler rejects.",
-                "Hardcoding coords from a prior consult \u2014 viewport shifts; always re-read tree.json bboxes.",
-                "Clicking 'Make image bigger' or 'Skip' \u2014 wrong targets."
-              ],
+              "note": "CLASSIFY: question wording 'rank/order/strongest to weakest/arrange' + a draggable vertical list = EXERCISE_RANKING (NOT bare EXERCISE \u2014 bare gets no actuation guidance). FULL RECIPE (observed gap 2026-06-11: worker produced answer but zero actuation steps): 1) extract_question + screenshot; 2) send_to_llm solve_complex with the screenshot to get the target ORDER (items may be images \u2014 describe by visual features); 3) actuate with drag \u2014 params are NESTED {\"start\":{\"x\":N,\"y\":N},\"end\":{\"x\":N,\"y\":N}} \u2014 reorder the vertical list item-by-item (same mouse-event Sortable as matcher; list item x,y come from the tree even when text is empty); 4) Khan disables Check until the widget is touched \u2014 at least one drag ALWAYS happens; 5) verify order after each drag (re-read tree/screenshot), then find_and_click Check. NEVER end the BT after send_to_llm without actuation.",
+              "discovered_at": "2026-06-11",
               "verified_count": 0
             }
           ]
