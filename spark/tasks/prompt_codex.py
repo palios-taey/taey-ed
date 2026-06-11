@@ -506,7 +506,17 @@ drag:
       (POINTS, same space as visible_bbox; compute bbox center like click_at).
     end (dict, required): {"x": <num>, "y": <num>} — drop target center.
     steps (int): intermediate moves (default 18).
+    press_hold (float): seconds held down BEFORE the first move (default 0.08).
+    step_delay (float): seconds between moves (default 0.02).
+    release_hold (float): seconds held at target before mouseup (default 0.05).
     post_delay (float): seconds after mouseup (default 0).
+  ACTIVATION (Khan/Perseus Sortable, diagnosed 2026-06-11): the DEFAULT 80ms
+    press_hold is TOO SHORT — the drag library needs a long-press to enter
+    drag state (mousedown alone reads as a click; widget never engages and
+    Check stays disabled). ALWAYS set press_hold: 0.25 and release_hold: 0.15
+    on Sortable widgets (matcher/ranking/sorter). If that fails to engage:
+    press_hold: 0.40; still nothing: steps: 8 with step_delay: 0.04 (bigger
+    first move crosses 5-15px tolerance thresholds).
   SHAPE WARNING: start/end are NESTED dicts. Flat keys (start_x, from_x,
     to_y, ...) are silently invalid — the action returns None, BT fails.
   Returns: {success: true/false}

@@ -722,6 +722,11 @@
                 "Using fixed coords without consulting tree.json bboxes \u2014 coords shift per session/viewport"
               ],
               "verified_count": 0
+            },
+            {
+              "note": "DRAG TIMING (claude-0 diagnosis 2026-06-11, default 80ms press_hold does NOT activate the Sortable): set press_hold: 0.25, release_hold: 0.15 on every drag for this widget. Escalation order if no engagement: press_hold 0.40; then steps: 8 + step_delay: 0.04 (bigger first move). Engagement check: Check button ENABLES on first real widget touch \u2014 if Check is still gray after the drag, the widget was never engaged (do not click Check).",
+              "discovered_at": "2026-06-11",
+              "verified_count": 0
             }
           ]
         },
@@ -733,6 +738,11 @@
           "operational_notes": [
             {
               "note": "CLASSIFY: question wording 'rank/order/strongest to weakest/arrange' + a draggable vertical list = EXERCISE_RANKING (NOT bare EXERCISE \u2014 bare gets no actuation guidance). FULL RECIPE (observed gap 2026-06-11: worker produced answer but zero actuation steps): 1) extract_question + screenshot; 2) send_to_llm solve_complex with the screenshot to get the target ORDER (items may be images \u2014 describe by visual features); 3) actuate with drag \u2014 params are NESTED {\"start\":{\"x\":N,\"y\":N},\"end\":{\"x\":N,\"y\":N}} \u2014 reorder the vertical list item-by-item (same mouse-event Sortable as matcher; list item x,y come from the tree even when text is empty); 4) Khan disables Check until the widget is touched \u2014 at least one drag ALWAYS happens; 5) verify order after each drag (re-read tree/screenshot), then find_and_click Check. NEVER end the BT after send_to_llm without actuation.",
+              "discovered_at": "2026-06-11",
+              "verified_count": 0
+            },
+            {
+              "note": "DRAG TIMING (claude-0 diagnosis 2026-06-11, default 80ms press_hold does NOT activate the Sortable): set press_hold: 0.25, release_hold: 0.15 on every drag for this widget. Escalation order if no engagement: press_hold 0.40; then steps: 8 + step_delay: 0.04 (bigger first move). Engagement check: Check button ENABLES on first real widget touch \u2014 if Check is still gray after the drag, the widget was never engaged (do not click Check).",
               "discovered_at": "2026-06-11",
               "verified_count": 0
             }
@@ -778,6 +788,11 @@
               "verified_count": 0,
               "rule": "VALIDATION / dissent resolution. The Family SPLIT on the grab key: Gaia (source-verified vs Perseus + react-dnd-accessible-backend README) = Cmd+D; Grok+Gemini+Perplexity (generic a11y assumption, unverified) = Space. DO NOT hardcode either blind \u2014 RESOLVE EMPIRICALLY via the aria-live announcer (which only becomes readable AFTER Chrome complete-AX is enabled): focus a draggable, send Cmd+D, read the announcer \u2014 if it says \"Picked up <X>\" the grab worked (react-dnd, Cmd+D); if silent, send Space (the @dnd-kit/dnd-kit-KeyboardSensor path). Whichever produces the Picked-up announcement is correct for this widget. Arrows then Enter/Space to drop; re-read announcer/cell to confirm before the next pair.",
               "note": "CAPTURE fallback (Grok, if complete-AX truly cannot be enabled Mac-side): OCR the matcher bounding box (macOS Vision) to map value labels + drop-zone labels to x,y by row centroid, then drive the keyboard sequence + click_at for focus entry. complete-AX (Gaia) is preferred \u2014 it fixes geometry AND exposes the announcer (the verification channel); OCR gives positions but not the announcer, so verification is weaker. Consensus across all sources: coordinate CGEvent drag NEVER actuates (HTML5 DnD trusted-pointer gate); synthetic KEY events always do."
+            },
+            {
+              "note": "DRAG TIMING (claude-0 diagnosis 2026-06-11, default 80ms press_hold does NOT activate the Sortable): set press_hold: 0.25, release_hold: 0.15 on every drag for this widget. Escalation order if no engagement: press_hold 0.40; then steps: 8 + step_delay: 0.04 (bigger first move). Engagement check: Check button ENABLES on first real widget touch \u2014 if Check is still gray after the drag, the widget was never engaged (do not click Check).",
+              "discovered_at": "2026-06-11",
+              "verified_count": 0
             }
           ]
         },
