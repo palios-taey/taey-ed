@@ -299,7 +299,7 @@ find_and_click:
     target (str, required): Text to search for in element name/description
     role (str, optional): AX role filter (AXButton, AXLink, AXRadioButton, etc.)
     match_mode (str): "exact" or "contains" (default: exact)
-    strategy (str): "mouse_click" (default, browsers), "focus_space" (radio/checkbox),
+    strategy (str): "mouse_click" (ALWAYS for browser content incl. radio/checkbox), "focus_space" (NATIVE Mac apps only — silently no-ops on Chrome web widgets),
                     "focus_enter" (buttons), "ax_press" (native Mac apps)
     fallback_roles (list): Alternate roles to try if primary role not found
     post_delay (float): Seconds to wait after click (default: 0)
@@ -545,7 +545,7 @@ find_and_click:
     role (str, required): AX role filter (AXButton, AXLink, AXRadioButton, ...).
     match_mode (str): MUST be "exact" — "contains" is FORBIDDEN per the
       no-guessing rule. If exact match doesn't fit, switch to click_at.
-    strategy (str): "mouse_click" (default, browsers), "focus_space" (radio/checkbox),
+    strategy (str): "mouse_click" (ALWAYS for browser content incl. radio/checkbox), "focus_space" (NATIVE Mac apps only — silently no-ops on Chrome web widgets),
                     "focus_enter" (buttons), "ax_press" (native Mac only — Chrome ignores).
     post_delay (float): Seconds to wait after click (default: 0).
   Returns: {success: true/false, element: {...}}
