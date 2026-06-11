@@ -75,10 +75,6 @@
       {
         "text": "Skip to lesson content",
         "reason": "accessibility skip-link, a no-op for navigation \u2014 observed wasted cycle 2026-06-11 (LLM picked it as the nav answer)"
-      },
-      {
-        "text": "cmd+r / page reload during quizzes, unit tests, course challenges",
-        "reason": "reload mid-assessment risks losing/resetting test state \u2014 observed in a stale stored BT 2026-06-11; BTs must NEVER begin with press_key cmd+r on assessment screens"
       }
     ],
     "platform_quirks": [
@@ -194,6 +190,12 @@
         "severity": "critical",
         "added": "2026-05-18T15:55:00Z",
         "added_by": "claude-primary"
+      },
+      {
+        "quirk": "Cmd+R (page reload) CLEARS staged answers on the current question (per Jesse 2026-06-11 \u2014 legitimate clearing mechanism). NEVER reload between clicking Check and confirming the submission registered: a reload in that window can eat the submission (suspected cause of the Q4 'X' on the 2026-06-11 unit test \u2014 the stale BT pressed Cmd+R 3s after Check).",
+        "affects": [
+          "EXERCISE"
+        ]
       }
     ],
     "completion_model": {
@@ -235,7 +237,13 @@
             "choice_radio",
             "multiple_choice"
           ],
-          "operational_notes": [],
+          "operational_notes": [
+            {
+              "note": "CHECK-ENABLE RACE + NO-TOGGLE (observed live 2026-06-11, Q5): after clicking checkbox/radio choices, Check enables only after a React re-render \u2014 clicking Check immediately can no-op silently (BT 'succeeded', nothing submitted). ALWAYS wait >= 1.5s between the last choice click and the Check click. AND: checkboxes TOGGLE \u2014 before clicking any choice, read the SCREENSHOT for already-selected boxes; if the intended answers are already selected, click Check ONLY. Re-clicking a selected box deselects it and submits a wrong/partial answer.",
+              "discovered_at": "2026-06-11",
+              "verified_count": 1
+            }
+          ],
           "prompt_block": "=== DETECTED: RADIO BUTTONS (multiple-choice exercise) ===\n\nYour tree has AXRadioButton elements. This is a multiple-choice exercise screen.\n\nCOMPLETE BT PATTERN:\n{\n  \"type\": \"sequence\",\n  \"children\": [\n    {\n      \"type\": \"action\",\n      \"action\": \"extract_question\",\n      \"params\": {\n        \"question\": {\"role\": \"AXStaticText\", \"parent_contains\": \"Exercise:\"},\n        \"options\": {\"role\": \"AXRadioButton\"}\n      },\n      \"store\": \"q\"\n    },\n    {\n      \"type\": \"action\",\n      \"action\": \"send_to_llm\",\n      \"params\": {\n        \"question\": \"$q.question_text\",\n        \"question_type\": \"solve_choice\",\n        \"options\": \"$q.options\",\n        \"context\": \"$q.reference_texts\"\n      },\n      \"store\": \"llm\"\n    },\n    {\n      \"type\": \"action\",\n      \"action\": \"find_and_click\",\n      \"params\": {\n        \"target\": \"$llm.answer\",\n        \"role\": \"AXRadioButton\",\n        \"strategy\": \"focus_space\",\n        \"match_mode\": \"exact\"\n      }\n    },\n    {\n      \"type\": \"action\",\n      \"action\": \"find_and_click\",\n      \"params\": {\n        \"target\": \"Check\",\n        \"role\": \"AXButton\",\n        \"strategy\": \"mouse_click\",\n        \"post_delay\": 2.0,\n        \"match_mode\": \"exact\"\n      }\n    },\n    {\n      \"type\": \"action\",\n      \"action\": \"store_qa\",\n      \"params\": {\n        \"question\": \"$q.question_text\",\n        \"answer\": \"$llm.answer\",\n        \"question_type\": \"solve_choice\"\n      }\n    }\n  ]\n}\n\nHOW IT WORKS:\n1. extract_question scopes to AXWebArea, uses your params to find question text\n   and radio button options. You MUST set parent_contains to the actual container\n   name from the tree where the question lives.\n   Returns: {question_text: str, options: [str], reference_texts: [str]}\n2. send_to_llm calls Spark /api/v1/generate which routes to Gemini 2.5 Pro.\n   Maps options to A/B/C letters, asks LLM for letter, maps back to exact text.\n   Returns: {success: true, answer: \"exact option text from the list\"}\n3. find_and_click finds the radio button whose name contains $llm.answer.\n   Strategy focus_space: focuses element then presses Space (required for\n   browser radio buttons \u2014 mouse_click doesn't reliably toggle radio state).\n4. find_and_click(\"Check\") submits the answer. post_delay 2.0 gives the SPA\n   time to process and load the next question.\n5. store_qa saves the Q&A pair to Mac-side SQLite for knowledge building.\n\nEXPECTED_NEXT:\n- Same screen type (next question in the exercise)\n- TRANSITION (score card or \"Next\" button after all questions answered)\n- NAVIGATION (if exercise completes back to content list)\nDo NOT include the current screen in expected_next (creates infinite loops).\n\nWRONG ANSWER DETECTION:\nIf the Mac reports the same skeleton hash after executing this BT, it means\nthe same question was re-presented \u2014 the answer was wrong. This triggers\nreconsultation with failure_reason=\"wrong_answer_same_question\".\n\nVARIANT: If the tree also has AXTextArea (radio + text field combo):\nUse question_type=\"solve_choice\" with has_text_field=True in params.\nLLM returns {answer: \"option text\", text_response: \"reflection text\"}.\nAdd find_and_type for the text field AFTER clicking the radio button.\n\nVARIANT: If question has images/diagrams visible in screenshot:\nUse question_type=\"solve_complex\" instead. This sends the screenshot to\nGemini 2.5 Pro for multimodal analysis.\n\nSUBMIT BUTTON NAMES (varies by platform):\n- Khan Academy: \"Check\" (AXButton)\n- Coursera: \"Submit\" (AXButton)\n- Acellus: varies \u2014 look at the screenshot"
         },
         {
@@ -249,7 +257,13 @@
             "multi_select",
             "multiple_select"
           ],
-          "operational_notes": [],
+          "operational_notes": [
+            {
+              "note": "CHECK-ENABLE RACE + NO-TOGGLE (observed live 2026-06-11, Q5): after clicking checkbox/radio choices, Check enables only after a React re-render \u2014 clicking Check immediately can no-op silently (BT 'succeeded', nothing submitted). ALWAYS wait >= 1.5s between the last choice click and the Check click. AND: checkboxes TOGGLE \u2014 before clicking any choice, read the SCREENSHOT for already-selected boxes; if the intended answers are already selected, click Check ONLY. Re-clicking a selected box deselects it and submits a wrong/partial answer.",
+              "discovered_at": "2026-06-11",
+              "verified_count": 1
+            }
+          ],
           "prompt_block": "=== DETECTED: CHECKBOXES (multi-select exercise) ===\n\nYour tree has AXCheckBox elements. This is a multi-select exercise screen.\n\nCOMPLETE BT PATTERN:\n{\n  \"type\": \"sequence\",\n  \"children\": [\n    {\n      \"type\": \"action\",\n      \"action\": \"extract_question\",\n      \"params\": {\n        \"question\": {\"role\": \"AXStaticText\", \"parent_contains\": \"Exercise:\"},\n        \"options\": {\"role\": \"AXCheckBox\"}\n      },\n      \"store\": \"q\"\n    },\n    {\n      \"type\": \"action\",\n      \"action\": \"send_to_llm\",\n      \"params\": {\n        \"question\": \"$q.question_text\",\n        \"question_type\": \"solve_checkbox\",\n        \"options\": \"$q.options\",\n        \"context\": \"$q.reference_texts\"\n      },\n      \"store\": \"llm\"\n    },\n    {\n      \"type\": \"action\",\n      \"action\": \"for_each\",\n      \"items\": \"$llm.selected\",\n      \"variable\": \"sel\",\n      \"do\": {\n        \"type\": \"action\",\n        \"action\": \"find_and_click\",\n        \"params\": {\n          \"target\": \"$sel\",\n          \"role\": \"AXCheckBox\",\n          \"strategy\": \"focus_space\",\n          \"match_mode\": \"exact\"\n        }\n      }\n    },\n    {\n      \"type\": \"action\",\n      \"action\": \"find_and_click\",\n      \"params\": {\n        \"target\": \"Check\",\n        \"role\": \"AXButton\",\n        \"strategy\": \"mouse_click\",\n        \"post_delay\": 2.0\n      }\n    },\n    {\n      \"type\": \"action\",\n      \"action\": \"store_qa\",\n      \"params\": {\n        \"question\": \"$q.question_text\",\n        \"answer\": \"$llm.selected\",\n        \"question_type\": \"solve_checkbox\"\n      }\n    }\n  ]\n}\n\nHOW IT WORKS:\n1. extract_question uses your params to find question text and checkbox options.\n2. send_to_llm with solve_checkbox asks for comma-separated letter selection.\n   Returns: {success: true, selected: [\"option text 1\", \"option text 3\"]}\n3. for_each iterates $llm.selected, clicking each checkbox via focus_space.\n   CRITICAL: for_each params (items, variable, do) go at TOP LEVEL, not in params.\n4. find_and_click(\"Check\") submits. post_delay 2.0 for SPA processing.\n5. store_qa saves Q&A pair.\n\nWARNING: solve_checkbox has a known 30-char truncation bug on fallback parsing.\nUse full option text in the tree, not truncated versions."
         },
         {
