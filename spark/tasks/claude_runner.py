@@ -24,6 +24,23 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+def _resolve_claude_bin() -> str:
+    """Resolve the claude CLI robustly. /usr/local/bin/claude vanished mid-run
+    2026-06-11 (CLI update relinked to ~/.npm-global) and the worker's systemd
+    PATH lost it -> Errno 2 killed BT generation. Try PATH, then known homes;
+    fail LOUD with locations tried."""
+    import shutil
+    found = shutil.which("claude")
+    if found:
+        return found
+    for cand in ("/home/user/.npm-global/bin/claude", "/usr/local/bin/claude"):
+        if os.path.exists(cand):
+            return cand
+    raise ClaudeCallError(
+        "claude CLI not found (PATH, ~/.npm-global/bin, /usr/local/bin)"
+    )
+
+
 CLAUDE_BIN = "claude"
 # Isolated HOME for headless calls: hook-free settings.json ({}) plus
 # symlinked ~/.claude/.credentials.json and ~/.claude.json so OAuth refresh
@@ -143,7 +160,7 @@ def _do_call(
     full_user = _build_user_message(user_message, screenshot_path)
 
     cmd = [
-        CLAUDE_BIN,
+        _resolve_claude_bin(),
         "--print",
         "--output-format", "json",
         "--permission-mode", "bypassPermissions",
