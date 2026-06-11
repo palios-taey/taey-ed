@@ -1076,6 +1076,14 @@ RULES FOR screen_type:
   subtype fits, use the bare master (e.g. EXERCISE) — not a new label.
 - Be consistent — same screen structure = same screen_type name.
 
+TEMPLATE REUSE (read before designing):
+- If the operational notes for the subtype you classified include a VERIFIED
+  bt_template or canonical action pattern, ADAPT that template — fill in THIS
+  question's values/targets — instead of designing a new structure. Proven
+  templates exist precisely so later questions of the same subtype don't get
+  novel, unproven BTs. Design from scratch ONLY when no note for your
+  subtype carries a pattern.
+
 RULES FOR tree:
 - Must be a valid behavior tree with type: sequence at root
 - ONLY use registered handlers (see Section 5)
