@@ -758,14 +758,14 @@
           "interaction_pattern": "match items between columns (drag or select) -> click 'Check'. May need screenshot analysis.",
           "operational_notes": [
             {
-              "discovered_at": "2026-06-01T21:20:00Z",
+              "discovered_at": "2026-06-11",
               "by": "claude-primary via escalation -> taeys-hands (Family/Perplexity domain knowledge)",
               "source": "escalation_taeys_hands",
               "verified_count": 0,
               "validated_step2": false,
               "screen_variant": "Perseus matcher (EXERCISE_MATCHING) \u2014 event->energy-change, often animation/image-grounded",
               "rule": "Perseus matcher is a DRAG widget, NOT comboboxes and NOT click-to-cycle. find_all(AXComboBox) FAILS here (it matches Chrome tab-strip AXRadioButtons / returns nothing useful) \u2014 that was the worker mis-pattern that failed on f05e03e1. Draggable cards are AXCell/AXGroup with EMPTY names: identify them by visible_bbox geometry/order from tree.json, never by name.",
-              "note": "Cards live BELOW THE FOLD frequently -> scroll first. If the question references an animation (\"Play Animation\" button / \"Click play and observe\"), PLAY it then solve with vision. Determine the matching with send_to_llm question_type=solve_complex (full screenshot, NOT solve_choice) since the answer is image/animation-grounded. Then actuate each match by synthesized mouse DRAG from the source card center to its target slot center; verify after each drop by re-reading the tree (cell order changed).",
+              "note": "NEVER a dropdown \u2014 clicking cells opens NO AXMenuItems (observed live 2026-06-11: a dropdown-style BT failed at wait_for_element(AXMenuItem), zero menu items). The matcher is a Perseus mouse-event Sortable: actuate by synthesized mouse DRAG from value-bank item center to target cell center; verify after each drop by re-reading the tree. Complete-AX is now PARTIALLY live on the Mac (2026-06-11): AXTable/AXRow/AXCell/AXList structure appears, but on the FIRST capture after Chrome's AX rebuild the value texts can be EMPTY and heights 0 \u2014 RECAPTURE the tree (or wait+recapture) before concluding values are unavailable. If texts are still empty after recapture, ground the values from the SCREENSHOT (send_to_llm solve_complex with full screenshot) and drive drags by coordinates: value-bank list x,y and cell x,y ARE present in the tree even when texts are empty. Cards live BELOW THE FOLD frequently -> scroll first. If the question references an animation ('Play Animation'), PLAY it then solve with vision. Do NOT blind-guess a mapping (wrong placement = catastrophic wrong answer).",
               "drag_handler_schema": "drag.params MUST be nested: {start:{x:<int>,y:<int>}, end:{x:<int>,y:<int>}}. Read source/target centers from each AXCell visible_bbox=[x,y,w,h] in tree.json (center = [x+w/2, y+h/2]). Same schema as the sorter/ranking note.",
               "bt_template_hint": "1) scroll down (amount=5, x2-3 with short waits) until matcher cells are in-tree. 2) if a Play Animation button exists: find_and_click it, wait ~4s. 3) send_to_llm question_type=solve_complex with the full screenshot + the question + event list -> returns event->energy-change pairing. 4) read each event-card and target-slot visible_bbox from tree.json; emit one drag per pair {start:card_center,end:slot_center} (or reorder a single column into the correct sequence). 5) find_and_click Check post_delay=2.5. 6) wrong-answer state -> Cmd+R reset + full-stop RCA, no blind retry.",
               "physics_note_zipliner_example": "Worked example (ball-Earth system): pulled up = grav PE increases (energy in); released/swing down = PE->KE; smash wall = KE->thermal+sound. (Per-question physics; the DRAG widget handling above is the generalizable lesson.)"
@@ -780,28 +780,12 @@
               "note": "Physics for the wrecking-ball instance (ball-Earth TOTAL energy): cable raises ball=INCREASES (external work in); swings down (isolated, air-resistance ignored)=STAYS THE SAME (PE<->KE conserved); smashes wall=DECREASES (energy out as thermal/sound/deformation). LIMITATION: this widget is at the edge of current automation \u2014 needs Mac-side capture of the DnD value-bank + keyboard-DnD support (Mac code is frozen -> claude-0). Do NOT blind-attempt a drag (wrong placement = catastrophic wrong answer)."
             },
             {
-              "discovered_at": "2026-06-03T00:00:00Z",
-              "by": "claude-primary; synthesis of full escalation cycle (taeys-hands + Perplexity + Gemini + Claude/Gaia)",
-              "source": "escalation_family_cycle",
-              "verified_count": 0,
-              "rule": "SUPERSEDES the earlier matcher notes. Perseus matcher IS solvable with AT-SPI + press_key (no CDP) once two corrections are applied \u2014 verified by Gaia against Perseus source. (A) CAPTURE: the empty AXCell / h=0 / missing-3rd-row symptom is NOT a Perseus quirk \u2014 it is Chrome accessibility in DEGRADED/LAZY mode (Chrome only builds the full AX tree when AT is detected/enabled). Force COMPLETE mode: Chrome launch flag --force-renderer-accessibility=complete, OR set AXManualAccessibility=true on the Chrome APP AXUIElement (surgical; avoids the window-repositioning side-effect of AXEnhancedUserInterface). Then value-bank items + drop cells expose real AXTitle/AXValue/AXPosition/AXSize and the missing rows populate. (B) ACTUATE: coordinate CGEvent drag does NOT work (HTML5 DnD needs a trusted pointer) but synthetic KEY events DO (real keydowns drive the JS keyboard backend).",
-              "bt_template_hint": "Perseus matcher = react-dnd + Discord react-dnd-accessible-backend (NOT @dnd-kit). Keybinds are HARD-CODED: focus draggable via Tab; CMD+D (press_key key=d modifiers=[cmd]) to PICK UP (NOT Space \u2014 Space is a no-op for grab here); Up/Down arrows ONLY to move between drop targets; Enter or Space to DROP; Escape to cancel. Per pair: press_key Tab -> press_key d+cmd (grab) -> press_key Down/Up to target -> press_key Space (drop). VERIFY each step against the aria-live announcer (reads \"Picked up X\" then the hovered target name) \u2014 read AXARIALive, NOT cell geometry. Wrecking-ball mapping: cable raises->increases, swings down->stays the same, smashes->decreases. PREREQUISITE: Chrome complete-AX must be enabled first (see rule A) or the draggables are not focusable/addressable. If grab via Cmd+D produces no announcer change, the widget may be @dnd-kit (grab=Space/Enter, 4-arrow movement) \u2014 read the announcer under one manual drag to confirm the trigger."
-            },
-            {
               "discovered_at": "2026-06-03T00:20:00Z",
               "by": "claude-primary (Grok/LOGOS validation seat of the cycle)",
               "source": "escalation_family_cycle_validation",
               "verified_count": 0,
               "rule": "VALIDATION / dissent resolution. The Family SPLIT on the grab key: Gaia (source-verified vs Perseus + react-dnd-accessible-backend README) = Cmd+D; Grok+Gemini+Perplexity (generic a11y assumption, unverified) = Space. DO NOT hardcode either blind \u2014 RESOLVE EMPIRICALLY via the aria-live announcer (which only becomes readable AFTER Chrome complete-AX is enabled): focus a draggable, send Cmd+D, read the announcer \u2014 if it says \"Picked up <X>\" the grab worked (react-dnd, Cmd+D); if silent, send Space (the @dnd-kit/dnd-kit-KeyboardSensor path). Whichever produces the Picked-up announcement is correct for this widget. Arrows then Enter/Space to drop; re-read announcer/cell to confirm before the next pair.",
               "note": "CAPTURE fallback (Grok, if complete-AX truly cannot be enabled Mac-side): OCR the matcher bounding box (macOS Vision) to map value labels + drop-zone labels to x,y by row centroid, then drive the keyboard sequence + click_at for focus entry. complete-AX (Gaia) is preferred \u2014 it fixes geometry AND exposes the announcer (the verification channel); OCR gives positions but not the announcer, so verification is weaker. Consensus across all sources: coordinate CGEvent drag NEVER actuates (HTML5 DnD trusted-pointer gate); synthetic KEY events always do."
-            },
-            {
-              "discovered_at": "2026-06-03T00:35:00Z",
-              "by": "claude-primary; FINAL synthesis of full 5/5 Family cycle (ChatGPT/Horizon source-verified the actual Perseus matcher)",
-              "source": "escalation_family_cycle_final",
-              "verified_count": 0,
-              "rule": "RESOLUTION (supersedes the HTML5-DnD framing). ChatGPT verified the ACTUAL Perseus matcher source: it is table.perseus-widget-matcher with two Sortable columns; rows are li.perseus-sortable-draggable driven by onMouseDown + document mousemove/mouseup \u2014 a CUSTOM MOUSE-EVENT sortable, NOT native HTML5 drag-and-drop. There is NO dragstart/DataTransfer. Therefore the EXISTING  handler (CGEvent mousedown -> interpolated mousemoves -> mouseup) \u2014 the same one that actuates the Perseus SORTER \u2014 SHOULD actuate this matcher too. The earlier consensus (HTML5 DnD, coordinate drag cannot work, needs CDP/keyboard) was based on an unverified assumption and is WRONG for this widget. The real blocker was only the degraded AX (h=0 / empty cells / no coords).",
-              "bt_template_hint": "SOLVE order: (1) PREREQ capture fix: enable Chrome complete-AX (--force-renderer-accessibility=complete OR AXManualAccessibility=true on the Chrome app element) so li.perseus-sortable-draggable + drop cells get real AXPosition/AXSize. (2) PRIMARY actuate: use the  handler exactly like the sorter \u2014 for each pair, drag {start: source-row li center, end: target-slot center} reading both centers from the now-real bboxes; intermediate motion is built into the handler. Re-read after each to verify the order changed. Map: cable raises->increases, swings down->stays the same, smashes->decreases. (3) FALLBACK if mouse-drag does not commit: keyboard DnD resolved empirically via the aria-live announcer (Cmd+D grab per react-dnd-accessible-backend, else Space per @dnd-kit). (4) Cleanest-but-FORBIDDEN (do not use, documented for completeness): CDP Runtime.evaluate calling the matcher React instance moveRightOptionToIndex(label,index). NET: try the drag handler FIRST once coords are real \u2014 Jesse was right, it is the same Sortable as the sorter."
             }
           ]
         },
@@ -1283,7 +1267,8 @@
                 "Following the FIRST link in find_all results \u2014 order is DOM order, not progress order.",
                 "click element=$nav.answer_element \u2014 Mac's find_all on AXLink doesn't return a 'name' field, only label/popup_desc/options. Server-side element matching fails. Use find_and_click target=$nav.answer instead \u2014 Mac matches by AX name directly."
               ],
-              "verified_count": 0
+              "verified_count": 2,
+              "last_verified_at": "2026-06-11T11:08:06Z"
             }
           ]
         }

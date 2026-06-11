@@ -1012,9 +1012,16 @@ JSON payload:
 }}
 
 RULES FOR screen_type:
-- Use DESCRIPTIVE names: EXERCISE_RADIO, VIDEO_PLAYING, UNIT_OVERVIEW, etc.
-- Be consistent — same screen structure = same screen_type name
-- Include platform prefix if ambiguous: KA_EXERCISE_DROPDOWN
+- Format is MASTER or MASTER_SUBTYPE where MASTER is EXACTLY one of:
+  NAVIGATION, VIDEO, ARTICLE, EXERCISE, TRANSITION, UNKNOWN.
+- SUBTYPE must reuse the EXACT subtype name from this platform's knowledge
+  (the operational notes section of this prompt shows them) when one fits —
+  e.g. EXERCISE_MATCHER, EXERCISE_RADIO, EXERCISE_DROPDOWN. Matching the
+  knowledge subtype is what routes the platform's proven notes to future
+  encounters; an invented name silently orphans them.
+- NEVER invent platform prefixes (no KA_*, no custom families). If no known
+  subtype fits, use the bare master (e.g. EXERCISE) — not a new label.
+- Be consistent — same screen structure = same screen_type name.
 
 RULES FOR tree:
 - Must be a valid behavior tree with type: sequence at root
