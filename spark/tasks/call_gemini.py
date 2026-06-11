@@ -411,18 +411,26 @@ async def _solve_with_claude_cli_image(
     import asyncio as _aio
 
     def _do():
-        try:
-            raw, _meta = call_claude_cli(
-                system_prompt="You are answering an educational quiz question using both the screenshot and the prompt below. Reply with ONLY the answer in the exact format the prompt requests — no preamble, no markdown fences.",
-                user_message=prompt,
-                screenshot_b64=screenshot_b64,
-                timeout_s=timeout,
-                require_screenshot_read=bool(screenshot_b64),
-            )
-            return raw
-        except ClaudeCallError as e:
-            logger.error(f"_solve_with_claude_cli_image: {e}")
-            return None
+        # Transient claude CLI failures (exit 1, empty stderr) observed twice
+        # live on 2026-06-11 (11:02, 11:36) and not reproducible immediately
+        # after — each cost a full Mac cycle. One retry absorbs the blip.
+        for attempt in (1, 2):
+            try:
+                raw, _meta = call_claude_cli(
+                    system_prompt="You are answering an educational quiz question using both the screenshot and the prompt below. Reply with ONLY the answer in the exact format the prompt requests — no preamble, no markdown fences.",
+                    user_message=prompt,
+                    screenshot_b64=screenshot_b64,
+                    timeout_s=timeout,
+                    require_screenshot_read=bool(screenshot_b64),
+                )
+                if raw:
+                    return raw
+                logger.error(
+                    f"_solve_with_claude_cli_image: empty response (attempt {attempt}/2)"
+                )
+            except ClaudeCallError as e:
+                logger.error(f"_solve_with_claude_cli_image (attempt {attempt}/2): {e}")
+        return None
 
     return await _aio.get_event_loop().run_in_executor(None, _do)
 

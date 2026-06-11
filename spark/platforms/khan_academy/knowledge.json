@@ -196,7 +196,11 @@
     "bot_detection": {
       "known_measures": "Khan Academy uses Fastly CDN which provides basic bot detection and rate limiting. No CAPTCHA documented for normal browsing. The platform tracks video watching behavior closely (scrub detection, play state monitoring via YouTube API) to prevent credit gaming. Google Cloud App Engine has default DDoS protections. Static assets served from kastatic.org and kasandbox.org domains. No explicit Cloudflare or dedicated bot management layer documented in public sources.",
       "recommended_delays": "Add 1-2s random delay between actions. For exercises, wait at least 2s after Check before clicking Next. For video pages, do not interact with the player programmatically faster than a human would. Avoid submitting answers faster than 5s per question to prevent pattern detection. Between page navigations, wait 2-3s minimum. For rapid sequential exercises, vary timing between 3-8s per question."
-    }
+    },
+    "web_area_markers": [
+      "Khan Academy",
+      "khanacademy.org"
+    ]
   },
   "screen_types": {
     "EXERCISE": {
@@ -792,16 +796,6 @@
               "rule": "VALIDATION / dissent resolution. The Family SPLIT on the grab key: Gaia (source-verified vs Perseus + react-dnd-accessible-backend README) = Cmd+D; Grok+Gemini+Perplexity (generic a11y assumption, unverified) = Space. DO NOT hardcode either blind \u2014 RESOLVE EMPIRICALLY via the aria-live announcer (which only becomes readable AFTER Chrome complete-AX is enabled): focus a draggable, send Cmd+D, read the announcer \u2014 if it says \"Picked up <X>\" the grab worked (react-dnd, Cmd+D); if silent, send Space (the @dnd-kit/dnd-kit-KeyboardSensor path). Whichever produces the Picked-up announcement is correct for this widget. Arrows then Enter/Space to drop; re-read announcer/cell to confirm before the next pair.",
               "note": "CAPTURE fallback (Grok, if complete-AX truly cannot be enabled Mac-side): OCR the matcher bounding box (macOS Vision) to map value labels + drop-zone labels to x,y by row centroid, then drive the keyboard sequence + click_at for focus entry. complete-AX (Gaia) is preferred \u2014 it fixes geometry AND exposes the announcer (the verification channel); OCR gives positions but not the announcer, so verification is weaker. Consensus across all sources: coordinate CGEvent drag NEVER actuates (HTML5 DnD trusted-pointer gate); synthetic KEY events always do."
             }
-          ],
-          "handlers_needed": [
-            "scroll",
-            "extract_question",
-            "send_to_llm",
-            "drag",
-            "click_at",
-            "wait",
-            "wait_for_element",
-            "find_and_click"
           ]
         },
         {
@@ -888,7 +882,12 @@
           "find_all",
           "send_to_llm",
           "find_and_click",
-          "scroll"
+          "scroll",
+          "drag",
+          "click_at",
+          "extract_question",
+          "wait",
+          "wait_for_element"
         ],
         "conditional": {
           "HAS_RADIO": [

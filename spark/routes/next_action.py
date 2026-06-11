@@ -955,6 +955,47 @@ def _next_action_impl(request: NextActionRequest):
         if lr.bt_debug_tail:
             logger.info(f"    bt_debug_tail:\n{lr.bt_debug_tail}")
 
+    # ── Step 0.5: Wrong-window guard ──
+    # If the platform's knowledge declares web_area_markers and the captured
+    # WebArea title matches none of them, the Mac captured a NON-course window
+    # (observed live 2026-06-11: JupyterLab captured twice, got hashed into
+    # the khan map and escalated). Junk input must not reach validation,
+    # hashing, classification, or escalation — return wait and self-heal
+    # when the course window regains focus.
+    if tree:
+        try:
+            from spark.tasks.knowledge_loader import load_knowledge as _lk_ww
+            _markers = (_lk_ww(platform) or {}).get(
+                "global", {}).get("web_area_markers") or []
+            if _markers:
+                from spark.tasks.prompt_codex import _find_web_area as _fwa_ww
+                _wa = _fwa_ww(tree) or {}
+                _wa_title = str(_wa.get("name") or "")
+                if _wa_title and not any(
+                    m.lower() in _wa_title.lower() for m in _markers
+                ):
+                    logger.warning(
+                        f"  Step 0.5: WRONG WINDOW — WebArea {_wa_title!r} matches no "
+                        f"web_area_markers for {platform}. Waiting for course window."
+                    )
+                    return _with_chat({
+                        "directive": "wait",
+                        "directive_id": _make_directive_id(),
+                        "seconds": 10.0,
+                        "reason": "wrong_window",
+                        "message": (
+                            f"Captured window is '{_wa_title[:60]}', not {platform}. "
+                            f"Bring the course window to the front."
+                        ),
+                    }, platform, [
+                        build_status(
+                            f"Wrong window focused ('{_wa_title[:40]}') — "
+                            f"bring the course window to the front"
+                        ),
+                    ])
+        except Exception as _ww_exc:
+            logger.warning(f"  Step 0.5: wrong-window guard error (continuing): {_ww_exc}")
+
     # ── Step 1: Active consultation? Check if done ──
     logger.info("  Step 1: Checking active consultation...")
     consultation_id = cs.active_consultation_id
