@@ -564,6 +564,15 @@ async def generate_answer(
                 "ground your answer in this material):\n"
                 + "\n---\n".join(chunk_texts)
             )
+        else:
+            # Fail loud (grok task-8c8a258f): chunks arrived but none carried
+            # usable 'text' — wire-format drift would otherwise silently
+            # degrade to "No reference material available."
+            logger.warning(
+                f"relevant_kb_chunks present ({len(relevant_kb_chunks)}) but "
+                f"NO usable 'text' fields — KBChunk wire-format drift? "
+                f"keys={[list(ch.keys()) if isinstance(ch, dict) else type(ch).__name__ for ch in relevant_kb_chunks[:3]]}"
+            )
     if context:
         context_parts.append("Reference material:\n" + "\n".join(context))
     if image_descriptions:
