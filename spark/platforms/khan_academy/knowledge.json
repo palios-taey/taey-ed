@@ -1494,6 +1494,17 @@
             }
           ],
           "name": "dont_give_up_modal"
+        },
+        {
+          "name": "exercise_summary",
+          "description": "End-of-practice-set state: the final question shows '(Choice X, Correct)' review markers with explanations expanded, and the submit area shows 'Show summary' instead of Check.",
+          "operational_notes": [
+            {
+              "note": "'(Choice X, Correct)' in a checkbox/radio name = ALREADY ANSWERED review state \u2014 never re-click choices. Forward move = find_and_click 'Show summary' (AXButton). The summary card that follows shows skills leveled up and a continue path.",
+              "discovered_at": "2026-06-11",
+              "verified_count": 1
+            }
+          ]
         }
       ]
     },
