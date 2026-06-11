@@ -476,16 +476,35 @@ def get_operational_notes_for_screen(knowledge: dict, screen_type: str) -> str:
             lines += _render_operational_notes(sub_notes)
             sections.append("\n".join(lines))
     elif screen_type == master:
-        # When the consult arrived with the master type itself (no subtype suffix),
-        # include ALL subtype notes — the worker doesn't know yet which variant applies.
+        # JIT via agentic Read (Jesse 2026-06-11: "you can't send everything —
+        # why would all knowledge be sent instead of screen specific?"): the
+        # old behavior shipped EVERY subtype's notes whenever the subtype was
+        # unknown — which on collision-prone assessment pages was every build,
+        # ballooning prompts past 130KB. Now each subtype's notes are written
+        # to a file and the prompt carries only a classification table; the
+        # worker identifies the subtype from the CURRENT answer widgets, then
+        # Reads exactly that one file.
+        from pathlib import Path as _P
+        plat = knowledge.get("platform", "unknown")
+        notes_dir = _P(f"/home/user/taey-ed-data/knowledge_notes/{plat}")
+        notes_dir.mkdir(parents=True, exist_ok=True)
+        table = [f"### {master} subtypes — classify by CURRENT widgets, then Read the matching notes file",
+                 "Identify the subtype from the ANSWER WIDGETS in this capture (never from",
+                 "page history). Then INVOKE THE Read TOOL on that subtype's notes file",
+                 "BEFORE designing the BT — it contains the proven recipes and gotchas:"]
         for s in subtypes:
-            sub_notes = s.get("operational_notes") or []
-            if not sub_notes:
-                continue
             name = s.get("name", "unknown")
-            lines = [f"### {master}.{name} (subtype-level — master-only consult, all included)"]
-            lines += _render_operational_notes(sub_notes)
-            sections.append("\n".join(lines))
+            sub_notes = s.get("operational_notes") or []
+            desc = (s.get("description") or "").strip()
+            fpath = notes_dir / f"{master}.{name}.md"
+            try:
+                content = [f"# {plat} / {master}.{name}", desc, ""]
+                content += _render_operational_notes(sub_notes) if sub_notes else ["(no notes yet)"]
+                fpath.write_text("\n".join(content))
+            except OSError:
+                logger.exception(f"notes-file write failed for {fpath}")
+            table.append(f"- {name}: {desc[:120]}  ->  Read {fpath}")
+        sections.append("\n".join(table))
 
     if not sections:
         return ""

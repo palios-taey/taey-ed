@@ -159,10 +159,15 @@ def _do_call(
     so the b64-temp-file lifecycle can wrap it cleanly."""
     full_user = _build_user_message(user_message, screenshot_path)
 
-    # Prompt goes via STDIN, never argv: Linux caps a single argv at 128KB
-    # (MAX_ARG_STRLEN) and the compiled prompt crossed it live 2026-06-11
-    # 16:33 ([Errno 7] Argument list too long). Stdin has no ceiling —
-    # no-truncation rule honored structurally.
+    # NOTHING big rides argv: Linux caps a single argv at 128KB
+    # (MAX_ARG_STRLEN) — hit live TWICE on 2026-06-11 (user message 16:33,
+    # then the system prompt 16:36, which bt_generator fills with the
+    # compiled prompt). User message goes via STDIN; system prompt via
+    # --system-prompt-file. No size ceilings anywhere; no-truncation rule
+    # honored structurally.
+    sys_fd, sys_path = tempfile.mkstemp(prefix="taey-sysprompt-", suffix=".txt", dir="/tmp")
+    with os.fdopen(sys_fd, "w") as _sf:
+        _sf.write(system_prompt)
     cmd = [
         _resolve_claude_bin(),
         "--print",
@@ -170,7 +175,7 @@ def _do_call(
         "--permission-mode", "bypassPermissions",
         "--model", model,
         "--max-budget-usd", str(max_budget_usd),
-        "--system-prompt", system_prompt,
+        "--system-prompt-file", sys_path,
     ]
 
     # Isolated HOME: hook-free settings + symlinked credentials. The fleet's
@@ -199,6 +204,11 @@ def _do_call(
         raise ClaudeCallError(
             f"claude --print timed out after {timeout_s}s"
         ) from e
+    finally:
+        try:
+            os.unlink(sys_path)
+        except OSError:
+            pass
     elapsed = time.time() - t0
 
     if result.returncode != 0:
