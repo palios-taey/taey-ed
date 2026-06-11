@@ -779,7 +779,39 @@ def _validate_last_action(platform: str, config: dict, lr, current_tree: dict) -
         if (screen_master == "EXERCISE" and after_hash and directive_hash
                 and after_hash == directive_hash):
             if new_screen == lr.screen:
-                wrong_answer = True
+                # Full-tree disambiguation (2026-06-11, Q8): same screen after
+                # a solve can mean WRONG ANSWER *or* CLICKS NEVER STAGED. The
+                # capture now carries value/enabled — if no answer widget is
+                # selected AND the submit button is disabled, nothing was
+                # submitted: retry the same answer, don't treat as wrong.
+                staged = None
+                try:
+                    submit_disabled = False
+                    any_selected = False
+                    def _scan(n):
+                        nonlocal submit_disabled, any_selected
+                        role = n.get("role") or ""
+                        name = n.get("name") or ""
+                        if role == "AXButton" and name == "Check" and n.get("enabled") is False:
+                            submit_disabled = True
+                        if role in ("AXCheckBox", "AXRadioButton") and name.startswith("(Choice"):
+                            if n.get("value") in (1, "1", True):
+                                any_selected = True
+                        for c in n.get("children") or []:
+                            _scan(c)
+                    _scan(after_tree_to_match or {})
+                    staged = any_selected or not submit_disabled
+                except Exception:
+                    staged = None
+                if staged is False:
+                    not_advanced = True
+                    logger.warning(
+                        "Step 2: solve produced NO staged selection (all choices "
+                        "value=0, Check disabled) — clicks did not register. "
+                        "NOT a wrong answer; rebuilding to retry."
+                    )
+                else:
+                    wrong_answer = True
             else:
                 # Same skeleton, different label — collision territory.
                 # Without a content-fingerprint delta we cannot claim the
