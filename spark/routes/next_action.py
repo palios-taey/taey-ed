@@ -683,21 +683,40 @@ def _validate_last_action(platform: str, config: dict, lr, current_tree: dict) -
             f"after_skel_hash={after_hash[:12]})"
         )
 
-    # Wrong answer detection
+    # Wrong answer / not-advanced detection. Key on the SKELETON HASH, never
+    # variant-name equality — unit-test pages share one skeleton across
+    # question types, so the stored variant name can differ from lr.screen
+    # while the screen is in fact unchanged (observed 2026-06-11: a ranking Q
+    # reorder auto-validated as 'advanced' because EXERCISE_CHECKBOX !=
+    # EXERCISE skipped this whole block, then poisoned credits downstream).
     wrong_answer = False
-    if new_screen and new_screen == lr.screen:
+    not_advanced = False
+    if new_screen:
         from spark.tasks.screen_type_util import get_master_category
-        screen_master = get_master_category(new_screen)
-        if screen_master == "EXERCISE":
-            directive_hash = lr.directive_skeleton_hash or ""
-            if after_hash and directive_hash and after_hash != directive_hash:
-                logger.info(
-                    f"Step 2: Same variant {new_screen} but different skeleton hash "
-                    f"({directive_hash[:12]} → {after_hash[:12]}). "
-                    f"Progress to next question, not wrong answer."
-                )
-            else:
+        screen_master = get_master_category(new_screen) or ""
+        directive_hash = lr.directive_skeleton_hash or ""
+        if (screen_master == "EXERCISE" and after_hash and directive_hash
+                and after_hash == directive_hash):
+            if new_screen == lr.screen:
                 wrong_answer = True
+            else:
+                # Same skeleton, different label — collision territory.
+                # Without a content-fingerprint delta we cannot claim the
+                # question advanced. Neutral: no validation, no map damage.
+                not_advanced = True
+                logger.info(
+                    f"Step 2: after-skeleton equals directive skeleton "
+                    f"({after_hash[:12]}) with label mismatch "
+                    f"({lr.screen} → {new_screen}) — NOT validating "
+                    f"(cannot prove the question advanced)."
+                )
+        elif (screen_master == "EXERCISE" and after_hash and directive_hash
+                and after_hash != directive_hash):
+            logger.info(
+                f"Step 2: Exercise skeleton changed "
+                f"({directive_hash[:12]} → {after_hash[:12]}) — "
+                f"progress to next question."
+            )
 
     # Expected_next check (informational)
     expected_next = lr.directive_expected_next or []
@@ -705,16 +724,19 @@ def _validate_last_action(platform: str, config: dict, lr, current_tree: dict) -
     if expected_next and new_screen:
         expected_match = new_screen in expected_next
 
-    validated = tree_changed and not wrong_answer
+    validated = tree_changed and not wrong_answer and not not_advanced
 
     return {
         "validated": validated,
         "screen_transitioned": tree_changed,
         "new_screen": new_screen,
         "wrong_answer": wrong_answer,
+        "not_advanced": not_advanced,
         "expected_next_match": expected_match,
         "after_skeleton_hash": after_hash,
-        "reason": "validated" if validated else ("wrong_answer" if wrong_answer else "validation_failed"),
+        "reason": ("validated" if validated else
+                   ("wrong_answer" if wrong_answer else
+                    ("not_advanced" if not_advanced else "validation_failed"))),
     }
 
 

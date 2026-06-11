@@ -179,6 +179,31 @@ def store_variant_bt(
     logger.info(f"variant_cache: stored BT for {variant} on {platform} (source={source})")
 
 
+def _subtype_matches_variant(variant: str, source: dict) -> bool:
+    """Credit/debit attribution guard (grok task-8c8a258f counter-example,
+    observed live 2026-06-11): the template lookup falls back across ALL of a
+    master's subtypes, so first-match crediting gave checkbox/ranking
+    successes to the DROPDOWN note — inflating its verified_count to the
+    replay gate and causing a stale-template replay on a ranking question.
+    A fallback-resolved source may only be credited/debited when its subtype
+    matches the variant's subtype EXACTLY. No match -> no attribution
+    (under-crediting is safe; cross-crediting poisons the gate)."""
+    try:
+        from spark.tasks.knowledge_loader import (
+            _variant_subtype_key, _normalize_subtype_name,
+        )
+        from spark.tasks.screen_type_util import get_master_category
+        master = get_master_category(variant) or variant
+        want = _variant_subtype_key(variant, master)
+        if not want:
+            return False  # bare master — cannot attribute to any one note
+        have = _normalize_subtype_name(str(source.get("subtype_name") or ""))
+        return bool(have) and have == want
+    except Exception as e:
+        logger.warning(f"variant_cache: subtype-match check failed ({variant}): {e}")
+        return False
+
+
 def mark_variant_validated(platform: str, variant: str):
     """Increment success count and set validated=True.
 
@@ -198,7 +223,9 @@ def mark_variant_validated(platform: str, variant: str):
             template_entry = get_verified_bt_template_entry(
                 knowledge, variant, min_verified=0,
             )
-            if template_entry:
+            if template_entry and _subtype_matches_variant(
+                variant, template_entry.get("source") or {},
+            ):
                 source = template_entry["source"]
         except Exception as e:
             logger.warning(
@@ -336,7 +363,9 @@ def record_validated_map_failure(platform: str, skel_hash: str, variant: str = N
                 template_entry = get_verified_bt_template_entry(
                     knowledge, variant, min_verified=1,
                 )
-                if template_entry:
+                if template_entry and _subtype_matches_variant(
+                    variant, template_entry.get("source") or {},
+                ):
                     source = template_entry["source"]
             except Exception as e:
                 logger.warning(

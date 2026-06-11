@@ -454,7 +454,7 @@
               "known_failure_modes": [
                 "Element staleness: if Wonder Blocks re-renders popups after one opens, $popup.element from outer find_all may go stale on iter 2+. If that happens (only first dropdown opens, rest fail with element-not-found), the workaround would be sequential unrolled blocks (find_all + index access) per popup \u2014 but try the canonical for_each version first."
               ],
-              "verified_count": 2,
+              "verified_count": 1,
               "bt_template_hint": "CANONICAL BT (handler param names verified):\n\n",
               "ccm_observed_failures": {
                 "16:54_observation": "find_and_click element=$popup.element \u2192 resolves target='' role=None \u2192 ACTION RETURNED NONE",
