@@ -714,6 +714,11 @@
               "note": "SELF-CALIBRATE THE SCALE (Jesse 2026-06-11: a previous run on this exact layout MOVED the dots successfully but misjudged the GRAPH SCALE and placed wrong values \u2014 actuation is proven, scale-reading is the failure mode): NEVER infer the per-press step from the screenshot axes alone. CALIBRATE EMPIRICALLY: with Point 1 focused, press ctrl+shift+Right ONCE, re-read 'Point 1 at X comma Y' \u2014 the X delta IS the per-press step in data units (same for Up/Y). Then compute remaining presses from the CALIBRATED step and the target values, verify each point's final name, and only then Check. The readback names are the scale oracle; pixels are not.",
               "discovered_at": "2026-06-11",
               "verified_count": 1
+            },
+            {
+              "note": "CALIBRATED LIVE (claude-0 probe 2026-06-11, measured on the real widget \u2014 PROVEN): X_STEP = 0.5 per press, Y_STEP = 1 per press; PLAIN arrows work \u2014 modifiers unnecessary (Ctrl+Shift+Arrow behaves identically to plain Arrow on this Mafs handle); name readback is instant (<0.3s) after each press. FOCUS: click the graph container once, then press Tab REPEATEDLY until the focused element's description starts with 'Point N at' for the point you want (points alternate with 48x48 interstitial groups; do not trust a fixed Tab count). PRESS COUNTS (BT has no arithmetic \u2014 precompute): X presses = target_x / 0.5, Y presses = target_y / 1, one press_key node per press, plain Right/Up (Left/Down for negative). VERIFY every point's final 'Point N at X comma Y' name via re-extraction before Check.",
+              "discovered_at": "2026-06-11",
+              "verified_count": 1
             }
           ],
           "aliases": [
