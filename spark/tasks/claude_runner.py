@@ -46,7 +46,7 @@ CLAUDE_BIN = "claude"
 # symlinked ~/.claude/.credentials.json and ~/.claude.json so OAuth refresh
 # propagates. Keeps the fleet's stop-engine/notify hooks out of worker calls.
 WORKER_HOME = "/home/user/.taey-worker-home"
-DEFAULT_MODEL = "claude-opus-4-7"
+DEFAULT_MODEL = "claude-opus-4-8"
 DEFAULT_TIMEOUT_S = 180
 DEFAULT_MAX_BUDGET_USD = 2.50  # API-equivalent ceiling; Max subscription covers real spend
 
