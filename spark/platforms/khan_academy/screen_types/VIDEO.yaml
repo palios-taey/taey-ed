@@ -1,0 +1,20 @@
+screen_type: VIDEO
+classify: >
+  Embedded player (YouTube Video Player group / Play-Pause-Replay buttons).
+recipe:
+  - fallback:
+      - find_and_click: {target: "Play video", role: AXButton,
+                         strategy: mouse_click, match_mode: exact}
+      - wait 0.1                   # already playing -> harmless no-op
+  - video_poll                     # 30s human-paced wait, loop re-checks
+contracts: []
+actuation:
+  never: coordinate clicks on the player (blind pause/play toggle)
+verification:
+  playing: "Play video" button ABSENT (renamed "Pause video")
+completion:
+  any of: "Replay Video" button; seek slider >= 99.5; sidebar
+  "completed Video <title>" link  ->  server advances via Up-next
+failure_modes:
+  - completed video's tree FREEZES (hash stops changing) — completion is
+    read from indicators, never from movement
