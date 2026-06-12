@@ -30,11 +30,16 @@ class ValidationIssue:
     path: Path
     message: str
     line_no: int | None = None
+    severity: str = "ERROR"
+    justification: str | None = None
 
     def render(self) -> str:
+        details = self.message
+        if self.justification:
+            details = f"{details} [{self.justification}]"
         if self.line_no is None:
-            return f"{self.path}: {self.message}"
-        return f"{self.path}:{self.line_no}: {self.message}"
+            return f"{self.path}: {details}"
+        return f"{self.path}:{self.line_no}: {details}"
 
 
 @dataclass
@@ -44,7 +49,15 @@ class ValidationResult:
 
     @property
     def ok(self) -> bool:
-        return not self.issues
+        return not any(issue.severity == "ERROR" for issue in self.issues)
+
+    @property
+    def warning_count(self) -> int:
+        return sum(1 for issue in self.issues if issue.severity == "WARN")
+
+    @property
+    def error_count(self) -> int:
+        return sum(1 for issue in self.issues if issue.severity == "ERROR")
 
 
 def _iter_yaml_paths(target: Path) -> Iterable[Path]:
@@ -99,8 +112,59 @@ def _is_reask_or_blind_retry_violation(text: str) -> bool:
     return False
 
 
+def _leading_spaces(text: str) -> int:
+    return len(text) - len(text.lstrip(" "))
+
+
+def _r3_exception_spans(text: str) -> dict[int, str]:
+    spans: dict[int, str] = {}
+    lines = text.splitlines()
+    pending: tuple[int, str] | None = None
+    active: tuple[int, str] | None = None
+
+    idx = 1
+    while idx <= len(lines):
+        line = lines[idx - 1]
+        stripped = line.strip()
+        indent = _leading_spaces(line)
+
+        if "# R3-EXCEPTION:" in line:
+            parts = [line.split("# R3-EXCEPTION:", 1)[1].strip()]
+            lookahead = idx + 1
+            while lookahead <= len(lines):
+                next_line = lines[lookahead - 1]
+                next_stripped = next_line.strip()
+                if not next_stripped.startswith("#"):
+                    break
+                parts.append(next_stripped.lstrip("#").strip())
+                lookahead += 1
+            justification = " ".join(part for part in parts if part)
+            pending = (indent, justification)
+            idx += 1
+            continue
+
+        if pending and stripped.startswith("- "):
+            active = pending
+            pending = None
+
+        if active:
+            active_indent, justification = active
+            if stripped.startswith("- ") and indent <= active_indent and idx not in spans:
+                active = (indent, justification)
+                active_indent = indent
+            if stripped and not stripped.startswith("#"):
+                spans[idx] = justification
+            if idx != 1 and indent < active_indent and stripped:
+                active = None
+
+        idx += 1
+
+    return spans
+
+
 def _lint_lines(path: Path, text: str) -> list[ValidationIssue]:
     issues: list[ValidationIssue] = []
+    r3_exceptions = _r3_exception_spans(text)
     for idx, line in enumerate(text.splitlines(), start=1):
         if "match_mode: contains" in line:
             issues.append(ValidationIssue(path, "forbidden token: match_mode: contains", idx))
@@ -111,7 +175,17 @@ def _lint_lines(path: Path, text: str) -> list[ValidationIssue]:
         if _is_ax_press_browser_violation(line):
             issues.append(ValidationIssue(path, "browser elements must not use ax_press", idx))
         if _is_try_again_retry_violation(line):
-            issues.append(ValidationIssue(path, "\"Try again\" recovery recipes are banned by R3", idx))
+            justification = r3_exceptions.get(idx)
+            severity = "WARN" if justification else "ERROR"
+            issues.append(
+                ValidationIssue(
+                    path,
+                    "\"Try again\" recovery recipes are banned by R3",
+                    idx,
+                    severity=severity,
+                    justification=justification,
+                )
+            )
         if _is_reask_or_blind_retry_violation(line):
             issues.append(ValidationIssue(path, "wrong-answer retry language is banned by R3", idx))
     return issues
@@ -193,19 +267,25 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     results = [validate_yaml_file(path) for path in yaml_paths]
-    issue_count = sum(len(r.issues) for r in results)
+    error_count = sum(r.error_count for r in results)
+    warning_count = sum(r.warning_count for r in results)
 
     for result in results:
-        status = "OK" if result.ok else f"FAIL ({len(result.issues)} issues)"
+        if result.error_count:
+            status = f"FAIL ({result.error_count} errors, {result.warning_count} warnings)"
+        elif result.warning_count:
+            status = f"OK-WARN ({result.warning_count} warnings)"
+        else:
+            status = "OK"
         print(f"{status}: {result.path}")
         for issue in result.issues:
-            print(f"  - {issue.render()}")
+            print(f"  - {issue.severity}: {issue.render()}")
 
     ok_files = sum(1 for result in results if result.ok)
     print(
-        f"\nSummary: {ok_files}/{len(results)} files passed, {issue_count} total issue(s)."
+        f"\nSummary: {ok_files}/{len(results)} files passed, {error_count} error(s), {warning_count} warning(s)."
     )
-    return 0 if issue_count == 0 else 1
+    return 0 if error_count == 0 else 1
 
 
 if __name__ == "__main__":
