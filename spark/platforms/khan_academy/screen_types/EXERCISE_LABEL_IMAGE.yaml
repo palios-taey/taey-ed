@@ -1,0 +1,53 @@
+screen_type: EXERCISE_LABEL_IMAGE
+classify: >
+  Perseus label-image: an image with clickable dots/hotspots, each opening a
+  small selector (Wonder Blocks SingleSelect — AXComboBox per dot, or real HTML
+  buttons via Wonder Blocks Clickable). "Click each dot on the image" wording.
+  NOT the Mafs graph widget — different family, different mechanics.
+recipe:                              # THE type-BT — intelligence steps embedded
+  - scroll into view if needed (two-phase rule: end BT after scroll; rebuild
+    from the post-scroll capture)
+  - extract_question: {question: {role: AXStaticText, min_length: 20}, store: q}
+  - find_all: {role: AXComboBox, store: dots}   # each value carries the dot's
+      # description; if zero comboboxes, probe find_all AXButton in the content
+      # area; if names empty -> vision path (solve_complex returns per-dot px,py)
+  - PER-DOT VISION (one send_to_llm per dot — REQUIRED):
+      send_to_llm:
+        question_type: solve_complex
+        question: >
+          Focus ONLY on the dot described "<dot value>" / at pixel (px,py).
+          <the question's per-dot comparison>. Return JSON {answer: ...}.
+        store: a<N>
+  - for each dot:
+      - find_and_click: {target: <FULL combobox value text from the tree>,
+                         role: AXComboBox, strategy: mouse_click, match_mode: exact}
+        # or click_at(px,py) on the vision path
+      - wait 1.0
+      - find_and_click: {target: $a<N>.answer, role: AXMenuItem,
+                         strategy: mouse_click, match_mode: exact}
+      - wait 0.5
+  - find_and_click: {target: Check, role: AXButton, strategy: mouse_click, match_mode: exact, post_delay: 2.5}
+contracts:
+  - combobox targets use the COMPLETE value text read from the CURRENT tree —
+    match_mode exact ONLY (contains is FORBIDDEN platform-wide); the long dot
+    descriptions are matched whole, never substring
+  - menu item values are LOWERCASE ("electron", "proton") — use the lowercase
+    text exactly as it appears in the tree
+  - ONE vision call PER DOT: a single multi-dot call context-blends and gets at
+    least one comparison wrong (RCA'd wrong answer 2026-05-20)
+actuation:
+  strategy: mouse_click; AXMenuItem popups render at SHALLOW depth OUTSIDE the
+    AXWebArea — handler falls through to full-app search, expected
+  settle: 1.0s after dot click (menu render); 0.5s after each selection
+verification:
+  - after each selection: menu closed + combobox value updated
+  - Check still disabled after all dots = something not staged
+  - "Not quite" / red feedback after Check = WRONG ANSWER regardless of movement
+completion:
+  - "Next question" / "Show summary" AXButton = correct, advance
+failure_modes:
+  - wrong answer -> FULL STOP, escalate (R3)
+  - find_all AXComboBox returns 0 when the dots are Clickable buttons — probe
+    AXButton before falling to vision; whole-image bbox center is NEVER a dot
+  - dots not discrete AX elements at all (SVG/canvas variant): vision path —
+    per-dot pixel positions from solve_complex, click_at each

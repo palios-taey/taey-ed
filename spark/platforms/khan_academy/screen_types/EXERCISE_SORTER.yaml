@@ -1,0 +1,53 @@
+screen_type: EXERCISE_SORTER
+classify: >
+  Perseus sorter / orderer / ranking: a draggable list to ARRANGE — single
+  column ranked by a criterion ("rank/order/strongest to weakest/arrange"
+  wording) or items sorted into category buckets. Same mouse-event Sortable as
+  the matcher; items may be images. Never bare EXERCISE (bare gets no actuation
+  guidance) and never a dropdown.
+recipe:                              # THE type-BT — intelligence steps embedded
+  - scroll: {direction: down, amount: 5}    # PHASE 1 — widget fully in view.
+  - wait 0.5                                # END BT here if scrolling occurred;
+  # next capture has actuation-valid coords (pre-scroll coords are stale).
+  - extract_question:
+      question: {role: AXStaticText, min_length: 20}
+      store: q
+  - send_to_llm:
+      question: $q.question_text
+      question_type: solve_complex   # screenshot attached; returns target ORDER
+      context: $q.reference_texts    # (items may be images — describe by features)
+      store: llm
+  - for each move (current order -> target order):
+      drag:
+        start: {x: <item center>, y: <item center>}    # centers from each
+        end:   {x: <target-position center>, y: ...}   # node's visible_bbox
+        press_hold: 0.25
+        release_hold: 0.15
+        post_delay: 1.2
+      then verify visual order by SCREENSHOT before computing the next move
+  - wait_for_element: {target: Check, role: AXButton, max_wait: 3.0}
+  - find_and_click: {target: Check, role: AXButton, strategy: mouse_click, match_mode: exact, post_delay: 2.5}
+contracts:
+  - drag params MUST be NESTED {start:{x,y}, end:{x,y}} — flat keys fail
+  - Khan disables Check until the widget is TOUCHED — at least one drag always
+    happens, even if the default order is already correct (drag an item out and
+    back); NEVER end the BT after send_to_llm without actuation
+  - image items: AXImage DESCRIPTIONS (alt text) are authoritative — solve from
+    the words first; pixel measurement mis-ranks close calls
+actuation:
+  primary: BT drag handler, press_hold 0.25 / release_hold 0.15
+    (PRODUCTION-PROVEN 2026-06-11 — ranking answered CORRECT on a live unit test)
+  escalation if no engagement: press_hold 0.40; then steps 8 + step_delay 0.04
+verification:
+  - by SCREENSHOT only — AX bboxes go STALE after a DOM reorder and falsely
+    report "no movement" (caused 3 duplicate drags); re-derive remaining moves
+    from the CURRENT visual order before each next drag
+  - engagement: Check ENABLES on first real touch (AXEnabled attribute, never
+    bbox) — Check still gray = never engaged = do NOT submit
+completion:
+  - "Next question" / "Show summary" AXButton = correct, advance
+failure_modes:
+  - wrong answer -> FULL STOP, escalate (R3)
+  - LLM-only BT (no drag) leaves default order — Khan marks wrong
+  - fixed/hardcoded coords — they shift per session/viewport; always from the
+    CURRENT capture's visible_bbox

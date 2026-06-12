@@ -2,29 +2,57 @@ screen_type: EXERCISE_DROPDOWN
 classify: >
   AXComboBox "Select an answer" present among the ANSWER WIDGETS (question
   area, not chrome — "View progress"/"Share with..."/"Sort by:" popups are
-  chrome). One combobox per blank/row.
-recipe:
-  - wait 2.0                       # menus render lazily after transitions
-  - for each row, in order:
-      select_dropdown_option:      # opens, verifies, commits — the ONLY way
-        target: "Select an answer" # or the row's current value on revisit
-        option: <chosen for THIS row>
-      then wait 1.0
-  - wait 1.5                       # Check enable race
-  - find_and_click: {target: Check, role: AXButton, strategy: mouse_click}
+  chrome). One combobox per blank/row; inline fill-blank sentences or table
+  rows. 2-5 dropdowns is normal variation — count from find_all, same recipe.
+recipe:                              # THE type-BT — HARD BAN (vc=3): solved by
+  # select_dropdown_option per row + Check, NOTHING ELSE. If you are designing
+  # any new structure for a dropdown question, you are wrong — adapt this.
+  - wait 2.0                         # menus render lazily after transitions
+  - find_all: {role: AXComboBox, store: popups}
+  # WRAPPER DEDUPE: Khan double-wraps — if find_all returns 2x the visible
+  # blanks, operate on the FIRST HALF only, top-to-bottom (pairs are
+  # sequential by index, NOT interleaved).
+  - MENU DISCOVERY phase, per visible popup:    # enumerate BEFORE asking (vc=17)
+      click popup -> wait_for_element AXMenuItem -> discover_menu -> press_escape
+  - send_to_llm:
+      question_type: solve_matching
+      question: >                    # row context comes from the SCREENSHOT,
+        <full sentences / row labels QUOTED VERBATIM, each blank indexed:
+        "Blank 0 (top-left) fills: '<fragment>'..." — the item.label heuristic
+        returns column headers / sentence garbage, NEVER rely on it>
+      options: <discovered menu items per popup>
+      store: matches
+  - for each visible popup i (UNROLLED, one node per row):
+      lookup_match: {key: <popup i's key>, store: chosen_i}   # key = what
+      # parse_matching_response used — popup_desc/label text, or index if the
+      # question explicitly indexed the blanks
+      select_dropdown_option:        # opens, verifies, commits — the ONLY way
+        trigger_element: $popups.<i>.element
+        option: $chosen_i            # BARE option text — handler normalizes
+      then wait 1.0                  # the " not selected" display suffix
+  - wait 1.5                         # Check enable race
+  - find_and_click: {target: Check, role: AXButton, strategy: mouse_click, match_mode: exact, post_delay: 2.5}
 contracts:
-  - options come from the menu enumeration; chosen option text VERBATIM
-    (suffixes like "not selected" are display noise the handler strips)
+  - option text VERBATIM from the menu enumeration; one answer per VISIBLE row
+  - find_all(AXMenuItem) element refs must NEVER enter send_to_llm params
+    (crashes JSON serialization Mac-side); click_at on triggers is BANNED
+  - multi-system questions (gravity AND electric, "each system"): one vision
+    call PER SYSTEM/region — a single multi-blob call cross-bleeds context
 actuation:
-  strategy: select_dropdown_option only — click_at on triggers is BANNED;
-    find_all(AXMenuItem) refs must NEVER enter send_to_llm params
-  settle: 2.0s before first open; 1.0s between rows
+  strategy: select_dropdown_option only; settle 2.0s before first open, 1.0s
+    between rows; keyboard-by-POSITION fallback if a click will not commit
+    (focus opener, ArrowDown to the option's discovered index, Enter)
 verification:
-  - handler verifies per-row (menu_closed + value committed)
+  - per row: AXComboBox value flips from "Select an answer" to the chosen value
+    BEFORE moving to the next row (handler verifies menu_closed + committed)
   - same-skeleton after Check = wrong answer or nothing staged — never success
 completion:
   - post-answer popover with "Next question" = advance
 failure_modes:
-  - menu_items_seen=[] -> fired too early; settle longer, retry once
-  - submit renamed "Check again" after a Try-again reset — exact-match the
-    name found in the CURRENT tree
+  - wrong answer -> FULL STOP, escalate (R3)
+  - menu_items_seen=[] -> fired too early; settle longer, re-enumerate once
+  - submit renamed "Check again" after a platform reset — exact-match the name
+    in the CURRENT tree
+  - NO scroll phase: dropdowns are ELEMENT-based (name+role, no coordinates);
+    a scroll-only BT here changes nothing and trips stuck-detection
+  - for_each over a comma-joined answer string -> select fails; UNROLLED only

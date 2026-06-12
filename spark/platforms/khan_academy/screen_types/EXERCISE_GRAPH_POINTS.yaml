@@ -1,0 +1,52 @@
+screen_type: EXERCISE_GRAPH_POINTS
+classify: >
+  Mafs interactive graph (Perseus interactive-graphs): AXButtons named
+  "Point N at X comma Y" + instruction to plot/drag points. The handles are
+  ZERO-SIZE BY DESIGN ([x,y,0,0], stacked) — keyboard targets, not mouse
+  targets. Use the graph image/container bbox (real size) for in-view checks,
+  never the handles.
+recipe:                              # THE type-BT — KEYBOARD ONLY (mouse drag
+  # 0% effective on Mafs, confirmed by DR + live). VISION-then-KEYBOARD:
+  - extract_question: {question: {role: AXStaticText, min_length: 20}, store: q}
+  - send_to_llm:
+      question_type: solve_complex   # screenshot: read the DATA TABLE / axis
+      question: $q.question_text     # ranges; return TARGET (x,y) per point and
+      store: plan                    # CURRENT (x,y) parsed from live point names
+      # LLM PRE-COMPUTES signed integer press counts per point — the BT engine
+      # has NO runtime arithmetic. PROVEN calibration: X_STEP 0.5/press,
+      # Y_STEP 1/press, PLAIN arrows (modifiers unnecessary).
+  - find_and_click: {target: <graph container>, strategy: mouse_click}  # focus entry
+  - for each point:
+      - press_key Tab REPEATEDLY until the focused element's description starts
+        "Point N at" for THIS point (points alternate with 48x48 interstitial
+        groups — never trust a fixed Tab count; focused=true in fresh capture)
+      - one press_key node PER PRESS: plain Right/Left for X (count =
+        target_x / 0.5), plain Up/Down for Y (count = target_y / 1)
+      - re-extract via find_all(AXButton): READ the live "Point N at X comma Y"
+        name to verify — names update instantly (<0.3s)
+  - after ALL points verified at targets:
+      find_and_click: {target: Check, role: AXButton, strategy: mouse_click, match_mode: exact, post_delay: 2.5}
+contracts:
+  - NEVER name-target point buttons (wait_for_element/find_and_click) — the
+    name CHANGES with every move and exact-match law forbids prefixes; READ
+    names via re-extraction, never match them
+  - points do NOT reset between attempts — read CURRENT positions from live
+    names first; never assume 0,0
+  - if the calibrated step ever disagrees with 0.5/1: re-calibrate empirically
+    (one press, read the name delta — the readback names are the scale oracle,
+    pixels are not; a scale misjudgment placed wrong values on a live run)
+actuation:
+  keyboard only; focus = container click + Tab-until-name-matches
+verification:
+  - every point's final "Point N at X comma Y" name re-extracted and matching
+    its target BEFORE Check — never assume a press landed
+completion:
+  - "Next question" / "Show summary" AXButton = correct, advance
+failure_modes:
+  - wrong answer -> FULL STOP, escalate (R3)
+  - scroll-looping: if the graph CONTAINER bbox is on-screen the widget is in
+    view — build the solve phase NOW; scroll AT MOST once per question; a
+    second consecutive scroll-only build is always wrong
+  - modal-dismiss-only BT ("Try again" click alone) changes the tree but solves
+    nothing — the full plot sequence must follow in the same BT
+  - click_at on a point handle: all four report the same stacked position

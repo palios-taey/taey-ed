@@ -1,0 +1,50 @@
+screen_type: EXERCISE_MULTIPLE_SELECT
+classify: >
+  "(Choice X)"-prefixed AXCheckBox rows among the ANSWER WIDGETS, and the
+  question says "Select all that apply" / "Choose N answers" (multiple answers).
+  Same widget role as MULTIPLE_CHOICE — the question TEXT decides which type.
+  Classify from the CURRENT widgets + question, never page history.
+recipe:                              # THE type-BT — intelligence steps embedded
+  - extract_question:
+      question: {role: AXStaticText, min_length: 20}
+      options: {role: AXCheckBox, exclude_titles: ["Draw on exercise", "Bonus question"]}
+      store: q
+  - send_to_llm:
+      question: $q.question_text
+      question_type: solve_checkbox  # images in question area -> solve_complex
+      options: $q.options            # raw AX names incl "(Choice X) " prefix
+      context: $q.reference_texts
+      store: llm                     # returns {selected: [full option names]}
+  - for_each:                        # items/variable/do at TOP LEVEL, never in params
+      items: $llm.selected
+      variable: sel
+      do:
+        find_and_click: {target: $sel, role: AXCheckBox, strategy: mouse_click,
+                         match_mode: exact, post_delay: 1.0}
+  - wait 1.5                         # Check-enable race: React re-render gates the button
+  - wait_for_element: {target: Check, role: AXButton, max_wait: 3.0}
+  - find_and_click: {target: Check, role: AXButton, strategy: mouse_click, match_mode: exact, post_delay: 2.5}
+  - store_qa: {question: $q.question_text, answer: $llm.selected, question_type: solve_checkbox}
+contracts:
+  - LLM returns FULL option names VERBATIM in selected — never bare letters
+  - options ALWAYS flow from extract_question ($q.options) — hardcoding loses
+    the "(Choice X) " prefix and exact-match clicks fail
+actuation:
+  strategy: mouse_click ALWAYS — focus_space silently no-ops on Chrome web
+    widgets (proven live 2026-06-11)
+  settle: 1.0s between choice clicks; 1.5s after the last; post-Check 2.5s
+verification:
+  - read the SCREENSHOT before clicking — checkboxes TOGGLE; skip any intended
+    box that is ALREADY selected; re-clicking deselects and submits wrong/partial
+  - Check still disabled (gray) after the clicks = nothing staged — the BT
+    accomplished nothing regardless of tree movement
+  - "Not quite" / red feedback after Check = WRONG ANSWER regardless of movement
+completion:
+  - "Next question" / "Show summary" AXButton = correct, advance
+failure_modes:
+  - wrong answer -> FULL STOP, escalate (R3). Never re-pick, never resubmit.
+    "Check"->"Try again" rename is a state signal, not an affordance.
+  - image-bearing question: solve_complex + per-image description instruction;
+    figure beyond viewport -> scroll + need_screenshot frames, pass ALL frames
+  - solve_checkbox fallback parsing truncates ~30 chars — always pass the full
+    option text from the tree, never shortened versions

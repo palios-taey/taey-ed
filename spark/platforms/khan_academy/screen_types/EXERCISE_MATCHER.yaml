@@ -1,0 +1,59 @@
+screen_type: EXERCISE_MATCHER
+classify: >
+  Perseus matcher: two-column match / value-bank-to-slot DRAG widget rendered as
+  AXTable/AXRow/AXCell or AXGroup cards (names often EMPTY — identify by
+  visible_bbox geometry/order). NOT a dropdown (clicking cells opens zero
+  AXMenuItems), NOT comboboxes. Cards frequently sit below the fold.
+recipe:                              # THE type-BT — intelligence steps embedded
+  - scroll: {direction: down, amount: 5}    # PHASE 1 — widget fully in view;
+  - wait 0.5                                # repeat 2-3x until cells in-tree.
+  # END BT here if scrolling occurred — the NEXT capture has actuation-valid
+  # coords. NEVER drag with coordinates computed from a pre-scroll tree.
+  - conditional: if "Play Animation" button exists -> find_and_click it, wait 4.0
+  - extract_question:
+      question: {role: AXStaticText, min_length: 20}
+      store: q
+  - send_to_llm:
+      question: $q.question_text
+      question_type: solve_matching   # full screenshot attached; returns the
+      context: $q.reference_texts     # item -> slot pairing
+      store: llm
+  - for each pair in $llm.pairs:      # one drag per pair, from CURRENT capture
+      drag:
+        start: {x: <card center>, y: <card center>}   # centers from each cell's
+        end:   {x: <slot center>, y: <slot center>}   # visible_bbox [x,y,w,h]
+        press_hold: 0.25
+        release_hold: 0.15
+      then wait 1.0
+  - find_and_click: {target: Check, role: AXButton, strategy: mouse_click, match_mode: exact, post_delay: 2.5}
+contracts:
+  - drag params MUST be NESTED dicts {start:{x,y}, end:{x,y}} — flat keys
+    (start_x/from_x/to_x) silently return None
+  - image-pair questions: AXImage DESCRIPTIONS (alt text) are the authoritative
+    content — solve from the words first; pixel/vision measurement is fallback
+    and has mis-ranked close calls (equal-size pairs differ by DISTANCE)
+  - NEVER blind-guess a mapping — wrong placement is a wrong answer
+actuation:
+  primary: BT drag handler, press_hold 0.25 / release_hold 0.15
+    (PRODUCTION-PROVEN 2026-06-11 — correct on a live unit test)
+  escalation if no engagement: press_hold 0.40; then steps 8 + step_delay 0.04
+  fallback (mouse cannot engage): KEYBOARD DnD via react-dnd a11y sensor —
+    Tab to focus the draggable, grab key resolved EMPIRICALLY via the aria-live
+    announcer (Cmd+D -> "Picked up X" = react-dnd; silent -> Space), Arrows to
+    target, Space to drop. NEVER hardcode the grab key.
+verification:
+  - by SCREENSHOT only — AX bboxes go STALE after a DOM reorder and falsely
+    report "no movement" (caused 3 duplicate drags); re-derive remaining moves
+    from the CURRENT visual order before any further drag
+  - engagement check: Check ENABLES on first real widget touch (AXEnabled
+    attribute, never its bbox) — Check still gray = never engaged = do NOT submit
+  - empty cell texts on first capture after Chrome AX rebuild: RECAPTURE before
+    concluding values are unavailable; if still empty, ground values from the
+    screenshot — coords remain present even when texts are empty
+completion:
+  - "Next question" / "Show summary" AXButton = correct, advance
+failure_modes:
+  - wrong answer -> FULL STOP, escalate (R3); no blind retry, no reset-and-retry
+  - dropdown-style BT on this widget fails at wait_for_element(AXMenuItem) —
+    zero menu items exist here
+  - drags computed from a pre-scroll tree land on stale coordinates

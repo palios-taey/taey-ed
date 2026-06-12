@@ -1,0 +1,48 @@
+screen_type: EXERCISE_TEXT_INPUT
+classify: >
+  AXTextField or AXTextArea answer box among the ANSWER WIDGETS. Covers Perseus
+  numeric-input / input-number, expression, and free-response. CLASSIFY BY THE
+  ANSWER WIDGET, NOT THE IMAGE: an image/graph next to a text field is question
+  CONTEXT, never a widget to actuate — and chrome AXComboBox/AXPopUpButton
+  (tab strip, Share, Extensions) are NOT answers. Misclassifying these as
+  dropdown/matcher/assessment fails every time (observed repeatedly).
+recipe:                              # THE type-BT — intelligence steps embedded
+  - extract_question:
+      question: {role: AXStaticText, min_length: 25}
+      text: [{role: AXStaticText, min_length: 10}]
+      store: q
+  - send_to_llm:
+      question: $q.question_text
+      question_type: solve           # screenshot auto-attached: LLM reads the
+      context: $q.reference_texts    # image/graph as context, computes the answer
+      store: llm
+  - find_and_type:
+      target: ""                     # "" = first content field; if several
+      role: AXTextField              # fields, target by the field's label.
+      text: $llm.answer              # AXTextArea for free-response screens.
+  - wait_for_element: {target: Check, role: AXButton, max_wait: 3.0}
+  - find_and_click: {target: Check, role: AXButton, strategy: mouse_click, match_mode: exact, post_delay: 2.5}
+  - store_qa: {question: $q.question_text, answer: $llm.answer, question_type: solve}
+contracts:
+  - numeric: type the NUMBER ONLY — the unit (J, GJ, m/s) is fixed text beside
+    the field; typing the unit makes the answer wrong
+  - expression: precise formatting — parentheses matter, PEMDAS enforced; for
+    math symbols beyond ASCII use type_keys (any Unicode codepoint), with the
+    field focused first
+actuation:
+  strategy: find_and_type (focuses then types); type_keys for special characters
+  settle: post-Check 2.5s
+verification:
+  - field shows the typed value before Check (tree or screenshot)
+  - Check still disabled after typing = nothing staged
+  - "Not quite" / red feedback after Check = WRONG ANSWER regardless of movement
+completion:
+  - "Next question" / "Show summary" AXButton = correct, advance
+failure_modes:
+  - wrong answer -> FULL STOP, escalate (R3); never retype-and-resubmit
+  - hash collision: distinct numeric questions share one skeleton hash — ALWAYS
+    re-extract the current question; never assume a fixed answer from history
+  - choice + text combo (AXCheckBox rows AND a text field): this is
+    MULTIPLE_CHOICE with has_text_field=true, not TEXT_INPUT
+  - image-bearing question where the figure exceeds the viewport: scroll +
+    need_screenshot extra frames, pass ALL frames to the LLM

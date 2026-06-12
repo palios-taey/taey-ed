@@ -1,0 +1,42 @@
+screen_type: ARTICLE
+classify: >
+  Formatted educational text (article-renderer): headers, paragraphs, images,
+  MathJax/KaTeX, sometimes inline non-graded Perseus widgets. "Up next" AXLink
+  at bottom / in sidebar. No Check button, no graded answer widgets.
+recipe:                              # THE type-BT — scroll + EXTRACT + advance
+  # EVERY article, including ones already marked completed (Jesse 2026-06-11 —
+  # violated twice by advance-only maps, never again):
+  - repeat 3-6x until page bottom (no further y-movement) or Up-next visible:
+      scroll: {direction: down, amount: 5}
+      wait 0.5                       # let the page settle
+  - extract (KB loop — content lands in the user's LOCAL KB):
+      text: {role: AXStaticText, min_length: 5}
+      images: window                 # diagrams/charts captured with the text
+  - find_and_click:
+      target: <exact "Up next: <type>" link name from the CURRENT tree>
+      role: AXLink
+      strategy: mouse_click
+      match_mode: exact
+      post_delay: 3.0
+contracts:
+  - an article map WITHOUT scroll+extract is WRONG BY DEFINITION — completion
+    is auto (visit + scroll), but the extract is the point: it feeds retrieval
+    for later exercise questions
+  - the Up-next link's FULL name varies by next content type — read the exact
+    name from the tree (enumerate AXLinks if needed); never guess, never
+    substring-click
+actuation:
+  strategy: mouse_click on AXLink; scrolling in small increments (amount 5)
+verification:
+  - bottom reached: next scroll produces no y-movement, or the advance link is
+    in the AX tree
+  - extraction returned non-trivial text (an empty extract on an article =
+    failed capture, not an empty article)
+completion:
+  - articles auto-complete on view/scroll; "Up next" navigates onward
+failure_modes:
+  - advance-only BT (no scroll, no extract) — forbidden
+  - inline "Try it yourself" Perseus widgets are NOT separately graded — do not
+    solve them; scroll past
+  - Up-next absent after full scroll: use the sidebar's next-item link (exact
+    name) — same advance contract

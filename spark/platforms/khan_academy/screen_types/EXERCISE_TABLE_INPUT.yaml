@@ -1,0 +1,52 @@
+screen_type: EXERCISE_TABLE_INPUT
+classify: >
+  Perseus table/matrix: a table of editable cells — text fields (all
+  identically named "Your answer:") and/or per-cell dropdowns (all named
+  "Select an answer"). Identify by the grid of same-named input widgets.
+recipe:                              # THE type-BT — intelligence steps embedded
+  - wait 2.0
+  - find_all: {role: AXTextField, store: tfs}      # text cells, tree order =
+  - find_all: {role: AXComboBox, store: popups}    # top-to-bottom; dedupe
+      # wrapper duplicates (first half only, sequential not interleaved)
+  - MENU DISCOVERY per visible popup (if any): click -> discover_menu -> escape
+  - send_to_llm:
+      question_type: solve_matching
+      question: >
+        <row labels QUOTED VERBATIM from the screenshot, indexed top-to-bottom —
+        every popup's label heuristic returns the COLUMN HEADER, never trust it>
+      options: <discovered menu items per popup>
+      store: matches
+  - for_each over $tfs (text cells, in tree order):
+      find_and_type:
+        element: $tf.element         # MUST pass the element ref — all cells
+        text: <that row's value>     # share name "Your answer:" and a bare
+                                     # find_and_type always hits the FIRST cell
+  - for each visible popup i (UNROLLED):
+      lookup_match -> select_dropdown_option:
+        trigger_element: $popups.<i>.element
+        option: $chosen_i
+        open_strategy: mouse_click, open_wait 0.7, verify_wait 0.4
+      then wait 1.0
+  - wait 1.5
+  - find_and_click: {target: Check, role: AXButton, strategy: mouse_click, match_mode: exact, post_delay: 2.5}
+contracts:
+  - text cells are addressed by ELEMENT REF from find_all + for_each — never by
+    name (identical names make name-targeting overwrite the first cell)
+  - dropdown cells use select_dropdown_option ONLY (the handler owns the
+    focus_press -> mouse_click strategy ladder and verifies the value changed);
+    never compose raw click + press_key
+  - numbers only in numeric cells — units are fixed text beside the cell
+actuation:
+  settle: 2.0s initial; 1.0s between dropdown rows; 1.5s before Check
+verification:
+  - per cell: value visible in tree/screenshot before moving on
+  - same-skeleton after Check = wrong answer or incomplete — never success
+completion:
+  - "Next question" / "Show summary" AXButton = correct, advance
+failure_modes:
+  - wrong answer -> FULL STOP, escalate (R3)
+  - PARTIAL SUBMISSION is recoverable, NOT a wrong answer: Check with empty
+    cells shows a soft modal "You're almost there... Give it another try!" —
+    fills are PRESERVED; find_and_click "Try again" (exact), wait 1.5s, resume
+    filling the remaining cells in the SAME BT
+  - find_and_type without element ref silently refills cell 1 repeatedly
