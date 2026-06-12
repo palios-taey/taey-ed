@@ -3,9 +3,6 @@ Consultation request handling.
 
 Creates and checks consultation requests for unknown screens.
 Includes knowledge gate: no knowledge.json = research-first notification.
-
-Uses prompt_codex.compile_prompt() for comprehensive prompts.
-V21 change: Gate checks knowledge.json instead of RESEARCH.md.
 """
 
 import base64
@@ -204,15 +201,26 @@ def request_consultation(
         )
 
     # Save context/metadata
+    kb_payload = []
+    for ch in (context.get("relevant_kb_chunks") or []):
+        if hasattr(ch, "model_dump"):
+            kb_payload.append(ch.model_dump())
+        elif isinstance(ch, dict):
+            kb_payload.append(ch)
+
     metadata = {
         "consultation_id": consultation_id,
         "platform": platform,
+        "screen_type_hint": context.get("screen_type") or context.get("screen_type_hint") or "UNKNOWN",
+        "failure_reason": context.get("failure_reason", ""),
+        "previous_screen_type": context.get("previous_screen", ""),
         "screen_hash": compute_tree_hash(tree),
         "context": context,
         "timestamp": datetime.now().isoformat(),
         "status": "pending",
         "escalation_level": escalation_level,
         "spark_attempts": spark_attempts,
+        "relevant_kb_chunks": kb_payload,
     }
     atomic_write_json(consult_path / "metadata.json", metadata)
 
@@ -232,52 +240,6 @@ def request_consultation(
     if needs_research:
         metadata["research_required"] = True
         atomic_write_json(consult_path / "metadata.json", metadata)
-
-    # Build notification preambles
-    research_preamble = ""
-    if needs_research:
-        research_preamble = (
-            f"RESEARCH REQUIRED FIRST: No knowledge.json exists for platform '{platform}'.\n"
-            f"You MUST use Perplexity Deep Research via taey's hands MCP tools BEFORE mapping any screens.\n"
-            f"DO NOT use WebSearch, WebFetch, or any other substitute. Perplexity is the ONLY acceptable method.\n"
-            f"DO NOT delegate this to a subagent — subagents cannot use MCP tools.\n"
-            f"Use the Perplexity research to create a knowledge.json file at:\n"
-            f"  spark/platforms/{platform}/knowledge.json\n"
-            f"The knowledge.json must follow the schema: platform, schema_version, global (timing, never_click, platform_quirks),\n"
-            f"screen_types (each with handlers_needed, question_types, submit_button, extraction hints),\n"
-            f"and accessibility_tree_guide. See existing knowledge.json files for reference.\n"
-            f"ONLY AFTER saving knowledge.json, proceed to map the screen below.\n\n"
-        )
-
-    escalation_preamble = ""
-    if escalation_level == "perplexity":
-        escalation_preamble = (
-            f"ESCALATION TIER 2 — PERPLEXITY DEEP RESEARCH REQUIRED.\n"
-            f"Previous {spark_attempts} Spark Claude fixes FAILED for this screen.\n"
-            f"You MUST complete ALL steps below in order BEFORE creating a consultation response.\n\n"
-            f"=== MECHANICAL RUNBOOK (follow exactly) ===\n\n"
-            f"STEP 1: Build combined context file\n"
-            f"  Read the consultation files at {consult_path}/\n"
-            f"  Combine: tree.json, screenshot.png, bt_debug.log, metadata.json\n\n"
-            f"STEP 2: Prepare Perplexity session\n"
-            f"  Call MCP tool: taey_inspect(platform='perplexity')\n"
-            f"  Call MCP tool: taey_set_map(platform='perplexity', controls={{...}})\n\n"
-            f"STEP 3: Attach context and enable Deep Research\n"
-            f"  Call MCP tool: taey_attach(platform='perplexity', file_path=<context_file>)\n\n"
-            f"STEP 4: Send research query about this screen type and failure\n"
-            f"  Call MCP tool: taey_send_message(platform='perplexity', message=<query>)\n\n"
-            f"STEP 5: Wait for response (Deep Research takes 2-5 minutes)\n"
-            f"  Monitor daemon spawns automatically. Wait for the notification.\n\n"
-            f"STEP 6: Extract research and create/update knowledge.json\n"
-            f"  Call MCP tool: taey_quick_extract(platform='perplexity', complete=True)\n"
-            f"  Parse the research into structured knowledge.json format.\n"
-            f"  Save to: spark/platforms/{platform}/knowledge.json\n\n"
-            f"STEP 7: NOW respond with definition improvements only\n"
-            f"  Update the screen definition path: classification, YAML edits,\n"
-            f"  platform quirks, or operational_notes guidance informed by the research.\n"
-            f"  Do NOT propose or return a behavior tree.\n\n"
-            f"=== END RUNBOOK ===\n\n"
-        )
 
     # (Legacy perplexity/user thresholds collapsed into the single
     # spark_attempts >= 1 → user check above. Kept here as a final safety net
@@ -409,16 +371,8 @@ def request_consultation(
                 # Build the packet. Operational notes rendering deferred to
                 # caller knowledge if available; here we pass empty string and
                 # let the worker prompt include them at BT-gen time.
-                try:
-                    from .knowledge_loader import (
-                        load_knowledge as _lk, get_operational_notes_for_screen,
-                    )
-                    knowledge = _lk(platform)
-                    notes_md = get_operational_notes_for_screen(knowledge, screen_type_hint)
-                except Exception as e:
-                    logger.warning(f"escalation packet: ops-notes load failed: {e}")
-                    knowledge = {}
-                    notes_md = ""
+                knowledge = {}
+                notes_md = ""
 
                 try:
                     packet_path = build_packet(
@@ -475,53 +429,6 @@ def request_consultation(
                 "message": f"Escalation tier={tier} active — Mac will retry automatically.",
                 "path": str(consult_path),
             }
-
-    # Comprehensive self-contained prompt via prompt_codex
-    from .prompt_codex import compile_prompt
-
-    # Pass screen_type to prompt builder so it can inject subtype-specific
-    # operational_notes from knowledge.json. Falls back to "UNKNOWN" only when
-    # we genuinely have no hint; the prompt builder treats UNKNOWN as "include
-    # all subtype notes since we don't know which applies yet" via the
-    # master-category fallback in get_operational_notes_for_screen.
-    screen_type_for_prompt = (
-        context.get("screen_type")
-        or metadata.get("screen_type_hint")
-        or "UNKNOWN"
-    )
-    consultation_context = {
-        "escalation_level": escalation_level,
-        "course_id": context.get("course_id", "unknown"),
-        "failure_reason": context.get("failure_reason", ""),
-        "previous_screen_type": context.get("previous_screen", ""),
-        "screen_type": screen_type_for_prompt,
-    }
-
-    consultation_details = compile_prompt(
-        tree=tree,
-        platform=platform,
-        consultation_id=consultation_id,
-        context=consultation_context,
-        spark_attempts=spark_attempts,
-        is_reconsultation=is_reconsultation,
-    )
-
-    # When Perplexity MCP tools are required (research gate or tier 2 escalation),
-    # handle DIRECTLY — do NOT delegate to a subagent (they can't use MCP tools).
-    requires_mcp = needs_research or escalation_level == "perplexity"
-
-    if requires_mcp:
-        notification = (
-            f"HANDLE DIRECTLY — DO NOT delegate to a subagent (MCP tools required).\n\n"
-            f"{escalation_preamble}{research_preamble}"
-            f"{consultation_details}"
-        )
-    else:
-        notification = (
-            f"Use the Task tool NOW to launch an agent (subagent_type=general-purpose) "
-            f"with this prompt:\n\n"
-            f"\"{consultation_details}\""
-        )
 
     logger.info(
         f"Consultation created: {consultation_id} (worker mode — no tmux notify)"
@@ -642,9 +549,8 @@ def request_minimal_consultation(
         f'"expected_next": [], "extract": null}}\n'
         f"BT format and handler list are in CLAUDE.md. Never click Skip or Up next.\n"
         f"After successful resolution of a previously-unsolved widget, append a new "
-        f"entry under the matching subtype's `operational_notes` in knowledge.json "
-        f"so the next consultation reuses your insight (use record_operational_note "
-        f"helper in spark/tasks/knowledge_loader.py if writing programmatically)."
+        f"entry under the matching screen type's learned observations in knowledge.json "
+        f"so the next consultation reuses your insight."
     )
 
     logger.info(

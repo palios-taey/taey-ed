@@ -31,7 +31,6 @@ from pathlib import Path
 from fastapi import APIRouter
 
 from spark.models import NextActionRequest, ClientState
-from spark.tasks.load_yaml import load_yaml
 from spark.tasks.handle_consultation import (
     request_consultation,
     check_consultation,
@@ -271,16 +270,8 @@ def _escalate_to_claude_diagnosing(
         except Exception:
             logger.exception("attempts.jsonl append failed (non-fatal)")
 
-        # Resolve operational_notes for the packet's known-notes section
-        try:
-            from spark.tasks.knowledge_loader import (
-                load_knowledge, get_operational_notes_for_screen,
-            )
-            knowledge = load_knowledge(platform)
-            notes_md = get_operational_notes_for_screen(knowledge, screen_type_hint)
-        except Exception:
-            knowledge = {}
-            notes_md = ""
+        knowledge = {}
+        notes_md = ""
 
         try:
             packet_path = build_packet(
@@ -547,51 +538,6 @@ def learn_from_bt_result(
         logger.warning(f"Learning failed (non-blocking): {e}")
 
 
-def _store_and_return_bt(result: dict, platform: str, tree: dict, sig_hash: str,
-                         course_id: str = "") -> dict:
-    """Store a Gemini-built BT with the signature and return execute_tree directive."""
-    variant_type = result.get("screen_type", "UNKNOWN")
-
-    # V21: Store BT in variant cache (deterministic types only)
-    from spark.tasks.variant_cache import store_variant_bt, is_non_deterministic, register_hash
-    extract_config = result.get("extract")
-    try:
-        if not is_non_deterministic(platform, variant_type):
-            store_variant_bt(platform, variant_type, result["tree"],
-                             extract_config, result.get("expected_next"),
-                             source="gemini_bt")
-        # Register hash → variant if we have a skeleton hash
-        if sig_hash:
-            register_hash(platform, sig_hash, variant_type)
-        logger.info(f"  Stored variant BT for {variant_type} (hash={sig_hash[:12] if sig_hash else 'none'})")
-    except Exception as e:
-        logger.warning(f"  Failed to store variant BT: {e}")
-
-    bt_json = json.dumps(result["tree"], indent=2)
-    logger.info(f"  Gemini BT for {variant_type}:\n{bt_json}")
-
-    # Pre-record BT definition for learning (actual success/failure recorded in Step 2)
-    learn_from_bt_result(
-        platform=platform,
-        screen_type=variant_type,
-        bt_result={"success": True, "screen_type": variant_type,
-                   "extract": result.get("extract", {})},
-        bt_definition=result.get("tree", {}),
-        skeleton_hash=sig_hash,
-    )
-
-    return _with_chat({
-        "directive": "execute_tree",
-        "directive_id": _make_directive_id(),
-        "tree": result["tree"],
-        "screen": variant_type,
-        "skeleton_hash": sig_hash,
-        "extract": result.get("extract"),
-        "expected_next": result.get("expected_next", []),
-        "course_id": course_id,
-    }, platform, [build_status(f"Built new {variant_type} automation — executing")])
-
-
 def _consultation_or_wait(consult_result: dict) -> dict:
     """Convert request_consultation result to a directive."""
     status = consult_result.get("status", "")
@@ -628,47 +574,30 @@ def _consultation_or_wait(consult_result: dict) -> dict:
 def _build_screen_directive(request, platform: str, tree: dict, screen_type: str, sig_hash: str,
                             user_guidance: str = None, course_id: str = "") -> dict:
     """
-    Gemini 2.5 Pro builds a screen-specific BT by looking at the actual tree + screenshot.
-    Templates are only a fallback when no screenshot is available.
-
-    Flow:
-    1. Has screenshot? → Gemini 2.5 Pro builds dynamic BT → store with signature
-    2. No screenshot? → deterministic template as last resort
-    3. Both fail? → user_input_needed
+    Single assembly stack: create a worker consultation and let the worker
+    build the BT. Server-side BT generation is removed.
     """
-    from spark.tasks.classify_screen import build_bt_from_tree
-
-    # PRIMARY PATH: Gemini 2.5 Pro builds a BT specific to THIS screen
-    if request.screenshot_b64:
-        logger.info(f"  Building dynamic BT via Gemini 2.5 Pro for {screen_type}")
-        result = build_bt_from_tree(
-            tree=tree,
-            screenshot_b64=request.screenshot_b64,
-            platform=platform,
-            screen_type=screen_type,
-            user_guidance=user_guidance,
-        )
-        if result:
-            return _store_and_return_bt(result, platform, tree, sig_hash, course_id=course_id)
-        logger.error(f"  Gemini 2.5 Pro BT build failed for {screen_type} — no template fallback")
-
-    # Gemini failed or no screenshot — escalate, don't use templates
-    from spark.tasks.classify_screen import _describe_screen
-    _reason = (f"Could not build behavior tree for '{screen_type}'. "
-               f"Tell me what to do on this screen.")
-    return _with_chat({
-        "directive": "user_input_needed",
-        "directive_id": _make_directive_id(),
-        "reason": _reason,
-        "screen_type": screen_type,
-        "screen_description": _describe_screen(tree),
-    }, platform, [
-        build_status(f"Could not build automation for {screen_type}"),
-        build_question(_reason),
-    ])
+    if not request.screenshot_b64:
+        return {
+            "directive": "need_screenshot",
+            "directive_id": _make_directive_id(),
+            "reason": f"{screen_type.lower()}_consultation_needs_screenshot",
+        }
+    consult_result = request_consultation(
+        platform=platform,
+        tree=tree,
+        screenshot_b64=request.screenshot_b64,
+        context={
+            "screen_type": screen_type,
+            "screen_type_hint": screen_type,
+            "user_guidance": user_guidance or "",
+            "course_id": course_id,
+        },
+    )
+    return _consultation_or_wait(consult_result)
 
 
-def _validate_last_action(platform: str, config: dict, lr, current_tree: dict) -> dict:
+def _validate_last_action(platform: str, lr, current_tree: dict) -> dict:
     """
     Validate the result of the previous execute_tree directive.
 
@@ -1011,8 +940,6 @@ def _next_action_impl(request: NextActionRequest):
     cs = request.client_state or ClientState()
     lr = request.last_result
 
-    config = load_yaml(platform)
-
     # Store incoming user chat message (proactive or response)
     if request.chat_message:
         store_message(platform, build_user_message(request.chat_message))
@@ -1175,7 +1102,7 @@ def _next_action_impl(request: NextActionRequest):
     # ── Step 2: Validate previous action result ──
     logger.info("  Step 2: Validating previous action...")
     if lr and lr.success and lr.after_tree and not lr.continue_loop:
-        vr = _validate_last_action(platform, config, lr, tree)
+        vr = _validate_last_action(platform, lr, tree)
 
         if vr["validated"]:
             if lr.directive_skeleton_hash:
@@ -1529,26 +1456,18 @@ def _next_action_impl(request: NextActionRequest):
                     "reason": "user_guidance_needs_screenshot",
                 }
 
-            from spark.tasks.classify_screen import build_bt_from_tree
-            result = build_bt_from_tree(
-                tree=tree,
-                screenshot_b64=request.screenshot_b64,
-                platform=platform,
-                screen_type=lr.screen or "UNKNOWN",
-                user_guidance=lr.user_response,
-            )
-            if result:
-                from spark.tasks.skeleton import extract_skeleton, skeleton_hash as _s3_hash
-                sig_hash = _s3_hash(extract_skeleton(tree))
-                return _store_and_return_bt(result, platform, tree, sig_hash, course_id=cs.course_id)
-
-            # Gemini couldn't build BT from user guidance — fall back to consultation
-            logger.warning("Step 3: Gemini couldn't build BT from user guidance, trying consultation")
             consult_result = request_consultation(
                 platform=platform,
                 tree=tree,
                 screenshot_b64=request.screenshot_b64,
-                context={"user_guidance": lr.user_response, "failed_screen": lr.screen},
+                context={
+                    "screen_type": lr.screen or "UNKNOWN",
+                    "screen_type_hint": lr.screen or "UNKNOWN",
+                    "user_guidance": lr.user_response,
+                    "failed_screen": lr.screen,
+                    "course_id": cs.course_id,
+                },
+                bt_debug_log=lr.bt_debug_tail or "",
             )
             return _consultation_or_wait(consult_result)
 
@@ -1558,20 +1477,21 @@ def _next_action_impl(request: NextActionRequest):
                 f"Step 3: BT failed for {lr.screen} — retrying with failure context"
             )
 
-            from spark.tasks.classify_screen import build_bt_from_tree
-            result = build_bt_from_tree(
+            consult_result = request_consultation(
+                platform=platform,
                 tree=tree,
                 screenshot_b64=request.screenshot_b64,
-                platform=platform,
-                screen_type=lr.screen or "UNKNOWN",
-                failed_bt=lr.failed_bt,
-                failed_bt_debug=lr.bt_debug_tail,
+                context={
+                    "screen_type": lr.screen or "UNKNOWN",
+                    "screen_type_hint": lr.screen or "UNKNOWN",
+                    "failure_reason": "bt_failed",
+                    "previous_screen": lr.screen or "",
+                    "failed_bt": lr.failed_bt,
+                    "course_id": cs.course_id,
+                },
+                bt_debug_log=lr.bt_debug_tail or "",
             )
-            if result:
-                from spark.tasks.skeleton import extract_skeleton, skeleton_hash as _s3r_hash
-                retry_sig_hash = _s3r_hash(extract_skeleton(tree))
-                return _store_and_return_bt(result, platform, tree, retry_sig_hash, course_id=cs.course_id)
-            logger.error("Step 3: Gemini retry with failure context also failed — stopping")
+            return _consultation_or_wait(consult_result)
 
         # ── Screen mismatch recovery ──
         # Record failure to prevent reclassify loops
@@ -1675,8 +1595,7 @@ def _next_action_impl(request: NextActionRequest):
     from spark.tasks.skeleton import extract_skeleton, skeleton_hash as _skel_hash
     from spark.tasks.variant_cache import (
         lookup_by_hash, lookup_variant_bt, register_hash, delete_hash,
-        store_variant_bt, is_non_deterministic, mark_variant_validated,
-        mark_hash_validated,
+        mark_variant_validated, mark_hash_validated,
     )
 
     skel = extract_skeleton(tree)  # web_content_only=True by default
@@ -1708,27 +1627,24 @@ def _next_action_impl(request: NextActionRequest):
             except Exception:
                 logger.exception("Step 4 record_pending failed (non-fatal)")
 
-        # For deterministic variants, try to reuse stored BT
-        if not is_non_deterministic(platform, variant):
-            bt_entry = lookup_variant_bt(platform, variant)
-            if bt_entry and bt_entry.get("behavior_tree"):
-                stored_bt = bt_entry["behavior_tree"]
-                bt_json = json.dumps(stored_bt, indent=2)
-                logger.info(f"  Step 4: REUSING BT for {variant} (hash={skel_hash[:12]})")
-                logger.info(f"  Stored BT:\n{bt_json}")
-                return _with_chat({
-                    "directive": "execute_tree",
-                    "directive_id": _make_directive_id(),
-                    "tree": stored_bt,
-                    "screen": variant,
-                    "skeleton_hash": skel_hash,
-                    "extract": bt_entry.get("extract"),
-                    "expected_next": bt_entry.get("expected_next", []),
-                    "course_id": cs.course_id,
-                }, platform, [build_status(f"Executing {variant} automation")])
+        bt_entry = lookup_variant_bt(platform, variant)
+        if bt_entry and bt_entry.get("behavior_tree"):
+            stored_bt = bt_entry["behavior_tree"]
+            bt_json = json.dumps(stored_bt, indent=2)
+            logger.info(f"  Step 4: REUSING BT for {variant} (hash={skel_hash[:12]})")
+            logger.info(f"  Stored BT:\n{bt_json}")
+            return _with_chat({
+                "directive": "execute_tree",
+                "directive_id": _make_directive_id(),
+                "tree": stored_bt,
+                "screen": variant,
+                "skeleton_hash": skel_hash,
+                "extract": bt_entry.get("extract"),
+                "expected_next": bt_entry.get("expected_next", []),
+                "course_id": cs.course_id,
+            }, platform, [build_status(f"Executing {variant} automation")])
 
-        # Non-deterministic variant (EXERCISE) or no stored BT — need Pro
-        logger.info(f"  Step 4B: Hash known as {variant} but needs fresh BT")
+        logger.info(f"  Step 4B: Hash known as {variant} but no stored BT exists")
         validated = hash_result.get("validated", False)
         if not validated:
             logger.warning(
@@ -1952,8 +1868,8 @@ def _next_action_impl(request: NextActionRequest):
     except Exception as e:
         logger.warning(f"  Step 5B: fingerprint logging failed (non-blocking): {e}")
 
-    # Step 5C: Check variant BT cache (deterministic variants only)
-    if variant != "UNKNOWN" and not is_non_deterministic(platform, variant):
+    # Step 5C: Check variant BT cache
+    if variant != "UNKNOWN":
         bt_entry = lookup_variant_bt(platform, variant)
         if bt_entry and bt_entry.get("behavior_tree"):
             stored_bt = bt_entry["behavior_tree"]
@@ -1971,55 +1887,23 @@ def _next_action_impl(request: NextActionRequest):
                 "course_id": cs.course_id,
             }, platform, [build_status(f"Executing {variant} automation")])
 
-    # Step 5D: Pro builds BT (new variant or non-deterministic)
-    logger.info(f"  Step 5D: Pro building BT for {variant}")
+    # Step 5D: Worker consultation is the only BT build path now
+    logger.info(f"  Step 5D: requesting worker consultation for {variant}")
     store_message(platform, build_status(f"Identified screen as {variant}"))
 
     if screen_type == "UNKNOWN":
-        # UNKNOWN — try Pro BT builder, escalate if it fails
-        logger.warning("  Step 5D: UNKNOWN screen — trying Gemini Pro BT builder")
-        from spark.tasks.classify_screen import build_bt_from_tree, _describe_screen
-        result = build_bt_from_tree(
+        consult_result = request_consultation(
+            platform=platform,
             tree=tree,
             screenshot_b64=request.screenshot_b64,
-            platform=platform,
-            screen_type="UNKNOWN",
+            context={
+                "screen_type": "UNKNOWN",
+                "screen_type_hint": "UNKNOWN",
+                "course_id": cs.course_id,
+            },
         )
-        if result:
-            result_variant = result.get("screen_type", "UNKNOWN")
-            logger.info(f"  Step 5D: Pro built BT for UNKNOWN → {result_variant}")
-            # Store variant BT if deterministic
-            if not is_non_deterministic(platform, result_variant):
-                store_variant_bt(platform, result_variant, result["tree"],
-                                 result.get("extract"), result.get("expected_next"))
-            register_hash(platform, skel_hash, result_variant)
-            return _store_and_return_bt(result, platform, tree, skel_hash, course_id=cs.course_id)
+        return _consultation_or_wait(consult_result)
 
-        # Pro failed — escalate
-        logger.warning("  Step 5D: Pro BT builder failed — requesting user input")
-        _reason = ("Unknown screen type. Gemini could not build a behavior tree. "
-                   "Tell me what to do on this screen.")
-        return _with_chat({
-            "directive": "user_input_needed",
-            "directive_id": _make_directive_id(),
-            "reason": _reason,
-            "screen_type": "UNKNOWN",
-            "screen_description": _describe_screen(tree),
-            "confidence_note": classification.get("confidence_note", ""),
-        }, platform, [
-            build_status("Unknown screen — could not build automation"),
-            build_question(_reason),
-        ])
-
-    # Known type — build BT via Pro, store for variant
-    result = _build_screen_directive(request, platform, tree, screen_type, skel_hash,
-                                     course_id=cs.course_id)
-
-    # If Pro built a BT successfully, store it under the variant for reuse
-    if result.get("directive") == "execute_tree" and not is_non_deterministic(platform, variant):
-        bt = result.get("tree")
-        if bt:
-            store_variant_bt(platform, variant, bt,
-                             result.get("extract"), result.get("expected_next"))
-
-    return result
+    return _build_screen_directive(
+        request, platform, tree, screen_type, skel_hash, course_id=cs.course_id
+    )
