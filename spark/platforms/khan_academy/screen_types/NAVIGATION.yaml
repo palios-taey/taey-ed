@@ -4,24 +4,23 @@ classify: >
   (lessons with completed/proficient/mastered markers), lesson list. 15+
   AXLinks, no answer widgets, no player. LLM-DRIVEN by ruling (Jesse
   2026-05-19): never replace the navigate call with server-side rule resolvers.
-recipe:                              # THE type-BT — intelligence steps embedded
+recipe:                              # THE type-BT — the PROVEN pre-rebuild pattern.
+  # NO custom `question`: passing one routes the server into a different prompt
+  # branch and the LLM returns topic-word FRAGMENTS ("Forces"/"Waves") instead
+  # of full link names (live RCA 2026-06-12 — my recipe regressed this). The
+  # default NAVIGATE_PROMPT already picks the FIRST INCOMPLETE item (it reads
+  # completion markers) and returns the exact DESCRIPTION text, so $nav.answer
+  # is the full AXLink name and the exact-match click lands.
   - find_all: {role: AXLink, store: links}
   - send_to_llm:
       question_type: navigate
       items: $links
-      question: >                    # vc=13 rule — NEVER let the LLM pick
-        Identify the user's NEXT progress item: the FIRST item that is NOT      # blindly from all links: without
-        completed/proficient/mastered. Markers mean done; "Take quiz again"     # this question it picked an
-        means done (a re-do, never click). Prefer un-completed VIDEOS and       # already-watched intro video
-        ARTICLES before any Quiz/Unit test/Course challenge — enter a test
-        ONLY when no other incomplete content remains in this unit.
-        Return EXACTLY ONE of the provided link names VERBATIM.
       store: nav
   - find_and_click:
-      target: $nav.answer            # the server PROMOTES answer to the full
-      role: AXLink                   # matched description (exact AXLink name);
-      strategy: mouse_click          # it does the fragment->full-name matching
-      match_mode: exact              # server-side, so this text is reliable.
+      target: $nav.answer
+      role: AXLink
+      strategy: mouse_click
+      match_mode: exact
       post_delay: 3.0
 contracts:
   - CLICK BY TEXT ($nav.answer), NOT element ref (live RCA 2026-06-12): the
