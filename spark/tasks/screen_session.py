@@ -215,6 +215,8 @@ def render_for_prompt(platform: str, skel_hash: str,
     data = get_session(platform, skel_hash, fingerprint)
     if not (data["attempts"] or data["facts"] or data["plan"] or data["lessons"]):
         return ""
+    attempts = list(data["attempts"][-_MAX_LIVE_ATTEMPTS:])
+    lessons = list(data["lessons"][-_MAX_LIVE_LESSONS:])
     parts = ["=== THIS SCREEN'S SESSION (working memory — READ BEFORE PLANNING) ===",
              "Prior attempts on THIS exact screen/question, measured facts, and the",
              "standing plan. RESUME the plan and REUSE the facts — do not re-derive,",
@@ -232,17 +234,17 @@ def render_for_prompt(platform: str, skel_hash: str,
         )
         parts.append(f"  {json.dumps(data['plan']['value'], indent=2)}")
         parts.append("")
-    if data["attempts"]:
-        parts.append(f"ATTEMPT HISTORY (live window: newest {len(data['attempts'])}, older entries archived):")
-        for i, a in enumerate(data["attempts"], 1):
+    if attempts:
+        parts.append(f"ATTEMPT HISTORY (live window: newest {len(attempts)}, older entries archived):")
+        for i, a in enumerate(attempts, 1):
             acts = ",".join(a["bt_actions"]) if a["bt_actions"] else "?"
             author = a.get("author", "unknown")
             parts.append(f"  {i}. [{a['at']}] author={author} actions=[{acts}] -> {a['outcome']}"
                          + (f" | {a['detail']}" if a["detail"] else ""))
         parts.append("")
-    if data["lessons"]:
+    if lessons:
         parts.append("LESSONS ON THIS SCREEN:")
-        for l in data["lessons"]:
+        for l in lessons:
             author = l.get("author", "unknown")
             parts.append(f"  - {l['lesson']} (author={author})")
         parts.append("")

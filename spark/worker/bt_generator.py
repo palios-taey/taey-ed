@@ -20,7 +20,7 @@ from spark.tasks.claude_runner import (
 )
 from spark.tasks.screen_type_assembler import (
     ScreenTypeAssemblerError,
-    assemble_worker_prompt,
+    create_worker_handoff,
     validate_worker_bt_response,
 )
 
@@ -49,19 +49,17 @@ def _load_consult_context(consultation_id: str) -> tuple[dict, dict]:
     return tree, metadata
 
 
-def _build_user_instruction(consultation_id: str, has_failure_log: bool) -> str:
+def _build_user_instruction(tree_path: str) -> str:
     """The user-facing instruction. The screenshot Read directive is injected
     automatically by call_claude_cli when we pass screenshot_path."""
-    failure_note = (
-        f"\nIMPORTANT: a bt_debug.log exists in /tmp/taey-ed-consult/{consultation_id}/. "
-        f"Read it FIRST — it tells you why the prior BT failed. Adjust accordingly.\n"
-        if has_failure_log else ""
-    )
     return f"""Generate a behavior tree (BT) JSON to advance the screen described in your system prompt.
 
 The accessibility tree for the current screen is at:
-  /tmp/taey-ed-consult/{consultation_id}/tree.json
-{failure_note}
+  {tree_path}
+
+Use your Read tool on that tree file before answering. Do not attempt to read any
+other files or directories.
+
 Shape:
 {{
   "tree": <BT root node>,
@@ -212,28 +210,28 @@ def generate_bt(
         "screen_type": metadata.get("screen_type_hint", "UNKNOWN"),
     }
     kb_chunks = metadata.get("relevant_kb_chunks") or []
+    screenshot_path = consult_dir / "screenshot.png"
+    if not screenshot_path.exists():
+        raise BTGenerationError(
+            f"Screenshot missing for {consultation_id}: {screenshot_path}"
+        )
     try:
-        system_prompt, prompt_meta = assemble_worker_prompt(
+        handoff_dir, prompt_meta = create_worker_handoff(
             tree=tree,
             platform=platform,
             consultation_id=consultation_id,
             screen_type=context["screen_type"],
+            screenshot_path=screenshot_path,
             kb_chunks=kb_chunks,
         )
     except ScreenTypeAssemblerError as e:
         raise BTGenerationError(f"Prompt assembly failed for {consultation_id}: {e}") from e
-    logger.info(
-        "bt_generator: assembled prompt for %s (%s chars, artifact=%s, kb_chunks=%s)",
-        consultation_id,
-        prompt_meta["prompt_chars"],
-        prompt_meta["artifact_path"],
-        prompt_meta["kb_chunks_included"],
-    )
-
-    has_failure_log = (consult_dir / "bt_debug.log").exists()
-    user_instruction = _build_user_instruction(consultation_id, has_failure_log)
+    user_instruction = _build_user_instruction(prompt_meta["tree_path"])
     try:
-        (consult_dir / "prompt.txt").write_text(system_prompt, encoding="utf-8")
+        (consult_dir / "prompt.txt").write_text(
+            Path(prompt_meta["system_prompt_path"]).read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
         (consult_dir / "user_instruction.txt").write_text(
             user_instruction,
             encoding="utf-8",
@@ -245,11 +243,14 @@ def generate_bt(
             e,
         )
 
-    screenshot_path = consult_dir / "screenshot.png"
-    if not screenshot_path.exists():
-        raise BTGenerationError(
-            f"Screenshot missing for {consultation_id}: {screenshot_path}"
-        )
+    logger.info(
+        "bt_generator: assembled prompt for %s (%s chars, artifact=%s, kb_chunks=%s, handoff=%s)",
+        consultation_id,
+        prompt_meta["prompt_chars"],
+        prompt_meta["artifact_path"],
+        prompt_meta["kb_chunks_included"],
+        prompt_meta["handoff_dir"],
+    )
 
     logger.info(
         f"bt_generator: invoking claude for consult={consultation_id} "
@@ -257,12 +258,16 @@ def generate_bt(
     )
     try:
         raw_text, meta = call_claude_cli(
-            system_prompt=system_prompt,
+            system_prompt=Path(prompt_meta["system_prompt_path"]).read_text(encoding="utf-8"),
             user_message=user_instruction,
-            screenshot_path=str(screenshot_path),
+            screenshot_path=prompt_meta["screenshot_path"],
             timeout_s=timeout_s,
             max_budget_usd=max_budget_usd,
             require_screenshot_read=True,
+            permission_mode="dontAsk",
+            tools=["Read"],
+            add_dirs=[prompt_meta["handoff_dir"]],
+            working_dir=prompt_meta["handoff_dir"],
         )
     except ClaudeCallError as e:
         raise BTGenerationError(

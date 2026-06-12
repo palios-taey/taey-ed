@@ -20,7 +20,8 @@ import os
 import subprocess
 import tempfile
 import time
-from typing import Optional
+from pathlib import Path
+from typing import Optional, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +83,10 @@ def call_claude_cli(
     timeout_s: float = DEFAULT_TIMEOUT_S,
     max_budget_usd: float = DEFAULT_MAX_BUDGET_USD,
     require_screenshot_read: bool = True,
+    permission_mode: str = "bypassPermissions",
+    tools: Optional[Sequence[str]] = None,
+    add_dirs: Optional[Sequence[str]] = None,
+    working_dir: Optional[str] = None,
 ) -> tuple[str, dict]:
     """Invoke `claude --print` and return (result_text, metadata).
 
@@ -137,6 +142,10 @@ def call_claude_cli(
             timeout_s=timeout_s,
             max_budget_usd=max_budget_usd,
             require_screenshot_read=require_screenshot_read,
+            permission_mode=permission_mode,
+            tools=tools,
+            add_dirs=add_dirs,
+            working_dir=working_dir,
         )
     finally:
         if temp_path:
@@ -154,6 +163,10 @@ def _do_call(
     timeout_s: float,
     max_budget_usd: float,
     require_screenshot_read: bool,
+    permission_mode: str,
+    tools: Optional[Sequence[str]],
+    add_dirs: Optional[Sequence[str]],
+    working_dir: Optional[str],
 ) -> tuple[str, dict]:
     """The actual subprocess invocation + parsing. Split from call_claude_cli
     so the b64-temp-file lifecycle can wrap it cleanly."""
@@ -172,11 +185,16 @@ def _do_call(
         _resolve_claude_bin(),
         "--print",
         "--output-format", "json",
-        "--permission-mode", "bypassPermissions",
+        "--permission-mode", permission_mode,
         "--model", model,
         "--max-budget-usd", str(max_budget_usd),
         "--system-prompt-file", sys_path,
     ]
+    if tools:
+        cmd.extend(["--tools", ",".join(tools)])
+    if add_dirs:
+        for path in add_dirs:
+            cmd.extend(["--add-dir", path])
 
     # Isolated HOME: hook-free settings + symlinked credentials. The fleet's
     # stop-engine hooks otherwise fire INSIDE headless calls — observed live
@@ -199,6 +217,7 @@ def _do_call(
             timeout=timeout_s,
             input=full_user,
             env=worker_env,
+            cwd=working_dir,
         )
     except subprocess.TimeoutExpired as e:
         raise ClaudeCallError(
@@ -241,6 +260,10 @@ def _do_call(
         "session_id": outer.get("session_id", ""),
         "model": model,
         "elapsed_wall_s": elapsed,
+        "permission_mode": permission_mode,
+        "tools": list(tools or []),
+        "add_dirs": [str(Path(p)) for p in (add_dirs or [])],
+        "working_dir": str(Path(working_dir)) if working_dir else "",
     }
 
     # Verify the model actually invoked Read on the screenshot. A single-turn

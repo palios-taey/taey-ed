@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import logging
 import re
+import shutil
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -14,6 +16,7 @@ logger = logging.getLogger(__name__)
 MAX_TOTAL_PROMPT_CHARS = 25_000
 UNIVERSAL_CHAR_BUDGET = 5_000
 KB_CHAR_BUDGET = 5_000
+HANDOFF_ROOT = Path("/tmp/taey-ed-worker-handoff")
 
 KNOWN_ACTIONS = {
     "click",
@@ -249,6 +252,54 @@ def assemble_worker_prompt(
         "kb_chars": len(kb_block),
         "kb_chunks_included": kb_block.count("--- chunk "),
     }
+
+
+def _sanitize_tree_for_worker(tree: dict) -> dict:
+    return json.loads(json.dumps(tree))
+
+
+def create_worker_handoff(
+    *,
+    tree: dict,
+    platform: str,
+    consultation_id: str,
+    screen_type: str,
+    screenshot_path: Path,
+    kb_chunks: Optional[list[dict]] = None,
+) -> tuple[Path, dict]:
+    system_prompt, prompt_meta = assemble_worker_prompt(
+        tree=tree,
+        platform=platform,
+        consultation_id=consultation_id,
+        screen_type=screen_type,
+        kb_chunks=kb_chunks,
+    )
+    if not screenshot_path.exists():
+        raise ScreenTypeAssemblerError(f"Screenshot missing for handoff: {screenshot_path}")
+    HANDOFF_ROOT.mkdir(parents=True, exist_ok=True)
+    handoff_dir = Path(
+        tempfile.mkdtemp(prefix=f"{consultation_id}_", dir=str(HANDOFF_ROOT))
+    )
+    tree_path = handoff_dir / "tree.json"
+    screenshot_target = handoff_dir / screenshot_path.name
+    system_prompt_path = handoff_dir / "system_prompt.txt"
+    try:
+        tree_path.write_text(
+            json.dumps(_sanitize_tree_for_worker(tree), ensure_ascii=True, indent=2),
+            encoding="utf-8",
+        )
+        system_prompt_path.write_text(system_prompt, encoding="utf-8")
+        shutil.copy2(screenshot_path, screenshot_target)
+    except OSError as e:
+        raise ScreenTypeAssemblerError(f"Failed to stage worker handoff: {e}") from e
+    handoff_meta = {
+        **prompt_meta,
+        "handoff_dir": str(handoff_dir),
+        "tree_path": str(tree_path),
+        "screenshot_path": str(screenshot_target),
+        "system_prompt_path": str(system_prompt_path),
+    }
+    return handoff_dir, handoff_meta
 
 
 def _split_top_level_sections(text: str) -> dict[str, str]:
