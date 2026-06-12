@@ -52,7 +52,9 @@ def load_knowledge(platform: str) -> dict:
             return _knowledge_cache[cache_key]
 
         knowledge = json.loads(knowledge_path.read_text(encoding="utf-8"))
-        required_keys = ["platform", "schema_version", "global", "screen_types"]
+        # screen_types removed 2026-06-12 (scr1-knowledge-shrink): screen knowledge
+        # now lives in screen_types/*.yaml; knowledge.json is identity+quirks+guide.
+        required_keys = ["platform", "schema_version", "global"]
         missing = [k for k in required_keys if k not in knowledge]
         if missing:
             logger.error(
