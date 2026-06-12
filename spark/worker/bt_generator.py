@@ -152,6 +152,34 @@ def _strip_code_fences(text: str) -> str:
     return _extract_json_object(text)
 
 
+def _normalize_bt_nodes(node) -> None:
+    """Hoist node-level keys the Mac BT engine reads from the NODE, not params.
+
+    The Mac engine (app/tasks/bt_core.py:227) reads `node_def.get("store")` —
+    node level. Workers sometimes bury `store`/`store_to_current` inside params
+    (the per-type recipe format writes them inline, e.g. `find_all: {role:
+    AXLink, store: links}`), so node_def.get("store") returns None, the result
+    is never stored, and `$links` resolves empty — the whole find_all -> $var
+    -> send_to_llm chain silently loses its data. Live RCA 2026-06-12: nav
+    `items=$links` arrived EMPTY at the server, the LLM read garbage off the
+    screenshot. Hoist deterministically so the BT is correct regardless of where
+    the worker wrote the key.
+    """
+    if isinstance(node, dict):
+        params = node.get("params")
+        if isinstance(params, dict):
+            for key in ("store", "store_to_current"):
+                if key in params and key not in node:
+                    node[key] = params.pop(key)
+        for child in node.get("children") or []:
+            _normalize_bt_nodes(child)
+        for nested_key in ("do", "then", "else"):
+            _normalize_bt_nodes(node.get(nested_key))
+    elif isinstance(node, list):
+        for item in node:
+            _normalize_bt_nodes(item)
+
+
 def _validate_bt(parsed: dict, consultation_id: str) -> None:
     """Validate the parsed BT response has the required shape.
 
@@ -287,6 +315,9 @@ def generate_bt(
         raise BTGenerationError(
             f"BT JSON for {consultation_id} parse failed: {e}; head: {inner_text[:300]}"
         ) from e
+
+    # Correct the store-in-params defect before validation / send (live RCA).
+    _normalize_bt_nodes(bt.get("tree", bt))
 
     _validate_bt(bt, consultation_id)
     try:
