@@ -1,0 +1,47 @@
+screen_type: NAVIGATION
+classify: >
+  Content-list pages: course overview (units grid + mastery %), unit page
+  (lessons with completed/proficient/mastered markers), lesson list. 15+
+  AXLinks, no answer widgets, no player. LLM-DRIVEN by ruling (Jesse
+  2026-05-19): never replace the navigate call with server-side rule resolvers.
+recipe:                              # THE type-BT — intelligence steps embedded
+  - find_all: {role: AXLink, store: links}
+  - send_to_llm:
+      question_type: navigate
+      items: $links
+      question: >                    # vc=13 rule — NEVER let the LLM pick
+        Identify the user's NEXT progress item: the FIRST item that is NOT      # blindly from all links: without
+        completed/proficient/mastered. Markers mean done; "Take quiz again"     # this question it picked an
+        means done (a re-do, never click). Prefer un-completed VIDEOS and       # already-watched intro video
+        ARTICLES before any Quiz/Unit test/Course challenge — enter a test
+        ONLY when no other incomplete content remains in this unit.
+        Return EXACTLY ONE of the provided link names VERBATIM.
+      store: nav
+  - find_and_click:
+      target: $nav.answer            # the verbatim full name, prefix+suffix
+      role: AXLink
+      strategy: mouse_click
+      match_mode: exact
+      post_delay: 3.0
+contracts:
+  - ANSWER CONTRACT (failure 2026-06-12: bare "Wave properties" matched
+    nothing): the find_all link NAMES are the options list; the LLM returns ONE
+    of them VERBATIM — full prefix/suffix ("Understand: Wave properties:
+    unfamiliar"), never a fragment. Same contract as exercise choices.
+  - NEVER hardcode link text — names change between units/courses
+actuation:
+  strategy: mouse_click on AXLink; post_delay 3.0 (SPA load)
+verification:
+  - tree/URL changes to a content screen (VIDEO/ARTICLE/EXERCISE/deeper list)
+completion:
+  - n/a — navigation succeeds when it lands on the next incomplete content
+failure_modes:
+  - exact-name click returns None when a status suffix is a separate child
+    text node: fall back to ELEMENT REF — match the LLM's answer to the
+    find_all item server-side and click $links[i].element directly (no text
+    re-search, and never a substring match)
+  - whole unit mastered ("Great work!" banner): navigate to the next
+    unfamiliar/started UNIT via the left rail or the banner's suggestion
+  - tests are sequential and high-stakes (wrong answers level skills DOWN, no
+    going back) — "Take unit test to level up!" is marketing, not an ordering
+    instruction

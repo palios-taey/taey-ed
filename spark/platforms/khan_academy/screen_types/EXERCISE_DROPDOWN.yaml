@@ -22,7 +22,9 @@ recipe:                              # THE type-BT — HARD BAN (vc=3): solved b
         returns column headers / sentence garbage, NEVER rely on it>
       options: <discovered menu items per popup>
       store: matches
-  - for each visible popup i (UNROLLED, one node per row):
+  - for each visible popup i (UNROLLED at build/replay time from the CURRENT
+    capture's find_all count — if a stored BT's popup count mismatches the
+    current find_all, REBUILD from this template, never replay blind):
       lookup_match: {key: <popup i's key>, store: chosen_i}   # key = what
       # parse_matching_response used — popup_desc/label text, or index if the
       # question explicitly indexed the blanks

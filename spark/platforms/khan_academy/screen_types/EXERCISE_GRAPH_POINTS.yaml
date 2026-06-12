@@ -13,9 +13,14 @@ recipe:                              # THE type-BT — KEYBOARD ONLY (mouse drag
       question: $q.question_text     # ranges; return TARGET (x,y) per point and
       store: plan                    # CURRENT (x,y) parsed from live point names
       # LLM PRE-COMPUTES signed integer press counts per point — the BT engine
-      # has NO runtime arithmetic. PROVEN calibration: X_STEP 0.5/press,
-      # Y_STEP 1/press, PLAIN arrows (modifiers unnecessary).
+      # has NO runtime arithmetic. EXPECTED calibration: X_STEP 0.5/press,
+      # Y_STEP 1/press, PLAIN arrows (proven 2026-06-11 — but VERIFY, below).
   - find_and_click: {target: <graph container>, strategy: mouse_click}  # focus entry
+  - CALIBRATE FIRST (MANDATORY, not optional): focus Point 1, ONE press right,
+    re-read its name — the X delta IS this graph's step (repeat once for Y).
+    Press counts are computed from the MEASURED step; 0.5/1 is the expectation
+    to confirm, never an assumption to skip the probe (a prior run moved dots
+    correctly but placed wrong VALUES on a misjudged scale).
   - for each point:
       - press_key Tab REPEATEDLY until the focused element's description starts
         "Point N at" for THIS point (points alternate with 48x48 interstitial
@@ -32,9 +37,9 @@ contracts:
     names via re-extraction, never match them
   - points do NOT reset between attempts — read CURRENT positions from live
     names first; never assume 0,0
-  - if the calibrated step ever disagrees with 0.5/1: re-calibrate empirically
-    (one press, read the name delta — the readback names are the scale oracle,
-    pixels are not; a scale misjudgment placed wrong values on a live run)
+  - the readback names are the scale oracle, pixels are not — press counts
+    always derive from the recipe's MANDATORY calibration probe, never from
+    the screenshot axes alone and never from a remembered 0.5/1
 actuation:
   keyboard only; focus = container click + Tab-until-name-matches
 verification:

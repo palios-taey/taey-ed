@@ -21,7 +21,9 @@ recipe:                              # THE type-BT — intelligence steps embedd
         element: $tf.element         # MUST pass the element ref — all cells
         text: <that row's value>     # share name "Your answer:" and a bare
                                      # find_and_type always hits the FIRST cell
-  - for each visible popup i (UNROLLED):
+  - for each visible popup i (UNROLLED from the CURRENT find_all count — a
+    stored BT whose cell/popup count mismatches the current capture is
+    REBUILT from this template, never replayed blind):
       lookup_match -> select_dropdown_option:
         trigger_element: $popups.<i>.element
         option: $chosen_i
@@ -45,8 +47,10 @@ completion:
   - "Next question" / "Show summary" AXButton = correct, advance
 failure_modes:
   - wrong answer -> FULL STOP, escalate (R3)
-  - PARTIAL SUBMISSION is recoverable, NOT a wrong answer: Check with empty
-    cells shows a soft modal "You're almost there... Give it another try!" —
-    fills are PRESERVED; find_and_click "Try again" (exact), wait 1.5s, resume
-    filling the remaining cells in the SAME BT
+  - PARTIAL SUBMISSION is recoverable, NOT a wrong answer — but ONLY when the
+    modal text matches "You're almost there... still more parts" AND no
+    red/incorrect feedback is shown. "Not quite" / red = WRONG ANSWER = R3
+    full stop, regardless of any Try-again button. When the partial carve-out
+    applies: fills are PRESERVED; find_and_click "Try again" (exact), wait
+    1.5s, resume filling the remaining cells in the SAME BT
   - find_and_type without element ref silently refills cell 1 repeatedly

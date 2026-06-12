@@ -1,20 +1,43 @@
 screen_type: VIDEO
 classify: >
   Embedded player (YouTube Video Player group / Play-Pause-Replay buttons).
-recipe:
+  WARNING: "Play video" and "Up next" are ALWAYS present on video screens,
+  started or not — neither indicates state. State comes from the completion
+  indicators below.
+recipe:                              # THE type-BT — IDEMPOTENT (the playing
+  # screen re-matches the unstarted hash; a bare click-play BT toggles
+  # pause/play forever — root-caused live 2026-06-11):
   - fallback:
       - find_and_click: {target: "Play video", role: AXButton,
                          strategy: mouse_click, match_mode: exact}
-      - wait 0.1                   # already playing -> harmless no-op
-  - video_poll                     # 30s human-paced wait, loop re-checks
-contracts: []
+      - wait 0.1                     # already playing ("Pause video") -> no-op
+  - video_poll                       # MUST be the ONLY other node; 30s
+                                     # human-paced wait, loop re-checks
+contracts:
+  - watch IN FULL — completion comes from the indicators, never from elapsed
+    time, never from skipping
+  - extract config rides along (AXStaticText min_length 5 + window image) so
+    transcript/description text lands in the local KB
 actuation:
-  never: coordinate clicks on the player (blind pause/play toggle)
+  never: coordinate clicks on the player (blind pause/play toggle); if the
+    Play button is inside the nested YouTube iframe and name-resolution fails,
+    click_at the Play button's CENTER from the current capture — once
 verification:
   playing: "Play video" button ABSENT (renamed "Pause video")
-completion:
-  any of: "Replay Video" button; seek slider >= 99.5; sidebar
-  "completed Video <title>" link  ->  server advances via Up-next
+completion:                          # checked EVERY poll server-side — a
+  # completed video's tree FREEZES (hash stops changing), so completion must
+  # never live behind a tree-changed branch:
+  any of:
+    - "Replay Video" button present
+    - seek slider >= 99.5
+    - sidebar AXLink "completed Video <WebArea title>" (and/or adjacent
+      AXImage "completed")
+  on completion: SERVER advances — it builds the advance BT clicking the
+  exact "Up next: <X>" AXLink from the current tree. The type-BT itself never
+  clicks Up-next (mid-content skip ban) and NEVER clicks "Replay Video".
 failure_modes:
-  - completed video's tree FREEZES (hash stops changing) — completion is
-    read from indicators, never from movement
+  - re-playing a completed video (an hour lost to this once): if any
+    completion indicator is present on FIRST encounter, the video is DONE —
+    advance, do not press play
+  - tree frozen + no completion indicator -> genuine stall, escalate; never
+    re-click play to "unstick"

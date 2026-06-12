@@ -1,0 +1,41 @@
+screen_type: TRANSITION
+classify: >
+  Buttons/links but no assessment signals (no answer widgets, no player):
+  quiz/test intro ("Let's go", "Start quiz"), post-set summary card (mastery
+  points + "Up next"), end-of-set review state ("(Choice X, Correct)" markers +
+  "Show summary"), interstitial modals ("Don't give up yet!" / welcome).
+recipe:                              # THE type-BT — one verbatim click
+  - read the SCREENSHOT + tree: which single affordance advances?
+      intro page        -> its start button ("Let's go" — note the CURLY
+                           apostrophe U+2019, copied from the tree)
+      review state with "(Choice X, Correct)" markers
+                        -> "Show summary" AXButton (NEVER re-click choices —
+                           already answered)
+      summary card      -> "Up next: <X>" AXLink (exact name at decision time;
+                           the suffix varies)
+      "Don't give up yet!" modal -> "Keep going" AXButton
+  - find_and_click:
+      target: <EXACT string copied character-by-character from the AX tree>
+      role: <AXButton or AXLink as found>
+      strategy: mouse_click
+      match_mode: exact
+      post_delay: 3.0
+contracts:
+  - COPY BUTTON TEXT VERBATIM from the tree — Khan uses typographic Unicode:
+    curly apostrophe U+2019 ("Let's go" with ' fails exact-match), curly
+    quotes, em dashes, ellipses. Never auto-correct typography.
+  - post-completion "Up next:" AXLink is the CANONICAL advance HERE — the
+    "never click Up next" rule applies to MID-CONTENT skipping, not to
+    completion/transition screens (Up-next present = this item is DONE)
+actuation:
+  strategy: mouse_click; post_delay 3.0 (SPA)
+verification:
+  - tree changes to the expected next screen (exercise intro -> first question;
+    summary -> next content item)
+completion:
+  - n/a — the click IS the screen's entire purpose
+failure_modes:
+  - "Try again" on a summary card re-does the COMPLETED set — never click it
+  - "Skip" is never a target
+  - exact-name miss on a link with a separate status-suffix text node: click by
+    ELEMENT REF from find_all (no substring matching)
