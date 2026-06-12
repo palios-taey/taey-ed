@@ -18,16 +18,20 @@ recipe:                              # THE type-BT — intelligence steps embedd
         Return EXACTLY ONE of the provided link names VERBATIM.
       store: nav
   - find_and_click:
-      target: $nav.answer            # the verbatim full name, prefix+suffix
-      role: AXLink
-      strategy: mouse_click
-      match_mode: exact
-      post_delay: 3.0
+      element: $nav.answer_element   # CLICK BY ELEMENT REF — the navigate
+      strategy: mouse_click          # handler matches the LLM's pick back to
+      post_delay: 3.0                # the find_all item and returns its stable
+                                     # element; text-match ($nav.answer) is
+                                     # fragile (status suffixes are separate
+                                     # child nodes) and crashed live 2026-06-12.
 contracts:
-  - ANSWER CONTRACT (failure 2026-06-12: bare "Wave properties" matched
-    nothing): the find_all link NAMES are the options list; the LLM returns ONE
-    of them VERBATIM — full prefix/suffix ("Understand: Wave properties:
-    unfamiliar"), never a fragment. Same contract as exercise choices.
+  - CLICK BY ELEMENT, NOT TEXT (live RCA 2026-06-12): the server navigate
+    handler returns answer_element (it matches the LLM pick — even a stripped
+    fragment like "Waves" — back to the find_all item via exact+substring).
+    The BT MUST use element=$nav.answer_element; target=$nav.answer crashes
+    ('NoneType not subscriptable') when the answer is a fragment or empty.
+  - the LLM may return a fragment; the server's match_to_option recovers the
+    element, so the recipe does NOT depend on a verbatim answer
   - NEVER hardcode link text — names change between units/courses
 actuation:
   strategy: mouse_click on AXLink; post_delay 3.0 (SPA load)
