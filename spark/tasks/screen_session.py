@@ -34,6 +34,8 @@ logger = logging.getLogger(__name__)
 
 _BASE = Path("/home/user/taey-ed-data/screen_sessions")
 _ALLOWED_AUTHORS = {"worker", "machine"}
+_MAX_LIVE_ATTEMPTS = 6
+_MAX_LIVE_LESSONS = 6
 
 
 def _path(platform: str, skel_hash: str) -> Path:
@@ -68,6 +70,47 @@ def _load(platform: str, skel_hash: str) -> dict:
 def _save(platform: str, skel_hash: str, data: dict) -> None:
     from spark.tasks.atomic_write import atomic_write_json
     atomic_write_json(_path(platform, skel_hash), data)
+
+
+def _archive_log_path(platform: str, skel_hash: str) -> Path:
+    d = _BASE / platform / "archive"
+    d.mkdir(parents=True, exist_ok=True)
+    return d / f"{skel_hash}.jsonl"
+
+
+def _append_archive_entry(platform: str, skel_hash: str, entry: dict) -> None:
+    from spark.tasks.atomic_write import atomic_write_text
+
+    path = _archive_log_path(platform, skel_hash)
+    existing = ""
+    if path.exists():
+        try:
+            existing = path.read_text(encoding="utf-8")
+        except OSError as e:
+            logger.warning(f"screen_session: unreadable archive log {path}: {e}")
+    line = json.dumps(entry, ensure_ascii=True)
+    content = f"{existing}{line}\n" if existing else f"{line}\n"
+    atomic_write_text(path, content)
+
+
+def _roll_live_window(platform: str, skel_hash: str, data: dict) -> None:
+    rolled_attempts = []
+    while len(data["attempts"]) > _MAX_LIVE_ATTEMPTS:
+        rolled_attempts.append(data["attempts"].pop(0))
+    rolled_lessons = []
+    while len(data["lessons"]) > _MAX_LIVE_LESSONS:
+        rolled_lessons.append(data["lessons"].pop(0))
+    if rolled_attempts or rolled_lessons:
+        _append_archive_entry(
+            platform,
+            skel_hash,
+            {
+                "reason": "live_window_roll",
+                "rolled_at": _now(),
+                "attempts": rolled_attempts,
+                "lessons": rolled_lessons,
+            },
+        )
 
 
 def _require_author(author: str) -> str:
@@ -112,6 +155,7 @@ def record_attempt(platform: str, skel_hash: str, *,
         "outcome": outcome,
         "detail": detail,
     })
+    _roll_live_window(platform, skel_hash, data)
     _save(platform, skel_hash, data)
 
 
@@ -136,6 +180,7 @@ def add_lesson(platform: str, skel_hash: str, lesson: str, *, author: str) -> No
     author_name = _require_author(author)
     data = _load(platform, skel_hash)
     data["lessons"].append({"at": _now(), "lesson": lesson, "author": author_name})
+    _roll_live_window(platform, skel_hash, data)
     _save(platform, skel_hash, data)
 
 
@@ -144,11 +189,18 @@ def archive(platform: str, skel_hash: str, reason: str = "advanced") -> None:
     p = _path(platform, skel_hash)
     if not p.exists():
         return
-    arch_dir = _BASE / platform / "archive"
-    arch_dir.mkdir(parents=True, exist_ok=True)
-    dest = arch_dir / f"{skel_hash}_{int(time.time())}_{reason}.json"
     try:
-        p.rename(dest)
+        payload = json.loads(p.read_text(encoding="utf-8"))
+        _append_archive_entry(
+            platform,
+            skel_hash,
+            {
+                "reason": reason,
+                "archived_at": _now(),
+                "session": payload,
+            },
+        )
+        p.unlink()
         logger.info(f"screen_session: archived {platform}/{skel_hash[:12]} ({reason})")
     except OSError as e:
         logger.warning(f"screen_session: archive failed for {p}: {e}")
@@ -181,7 +233,7 @@ def render_for_prompt(platform: str, skel_hash: str,
         parts.append(f"  {json.dumps(data['plan']['value'], indent=2)}")
         parts.append("")
     if data["attempts"]:
-        parts.append(f"ATTEMPT HISTORY ({len(data['attempts'])} so far):")
+        parts.append(f"ATTEMPT HISTORY (live window: newest {len(data['attempts'])}, older entries archived):")
         for i, a in enumerate(data["attempts"], 1):
             acts = ",".join(a["bt_actions"]) if a["bt_actions"] else "?"
             author = a.get("author", "unknown")

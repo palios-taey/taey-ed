@@ -18,6 +18,11 @@ from spark.tasks.claude_runner import (
     ClaudeCallError,
     DEFAULT_MAX_BUDGET_USD,
 )
+from spark.tasks.screen_type_assembler import (
+    ScreenTypeAssemblerError,
+    assemble_worker_prompt,
+    validate_worker_bt_response,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -60,10 +65,17 @@ The accessibility tree for the current screen is at:
 Shape:
 {{
   "tree": <BT root node>,
-  "screen_type": "<NAVIGATION | VIDEO | ARTICLE | EXERCISE | TRANSITION | UNKNOWN>",
+  "screen_type": "<canonical screen_type from the selected YAML, or UNKNOWN-guide classification>",
   "expected_next": ["<screen_type>", ...],
-  "extract": null
+  "extract": null,
+  "_session": {{
+    "facts": {{}},
+    "plan": null,
+    "lesson": ""
+  }}
 }}
+
+Only emit "_session" if you learned something the next cycle must retain for THIS screen.
 
 Never click "Skip" mid-exercise; "Up next" only on post-completion transitions.
 
@@ -163,6 +175,10 @@ def _validate_bt(parsed: dict, consultation_id: str) -> None:
         raise BTGenerationError(
             f"BT response for {consultation_id}: tree missing 'type' field"
         )
+    if "_session" in parsed and not isinstance(parsed["_session"], dict):
+        raise BTGenerationError(
+            f"BT response for {consultation_id}: '_session' must be a dict when present"
+        )
 
 
 def generate_bt(
@@ -188,9 +204,6 @@ def generate_bt(
     tree, metadata = _load_consult_context(consultation_id)
     platform = metadata.get("platform", "khan_academy")
 
-    # Build the comprehensive system prompt with platform knowledge, handler
-    # reference, operational notes (exactly what the original Gemini path used).
-    from spark.tasks.prompt_codex import analyze_tree, compile_prompt
     context = {
         "escalation_level": metadata.get("escalation_level", "spark_claude"),
         "course_id": metadata.get("course_id", "unknown"),
@@ -198,53 +211,24 @@ def generate_bt(
         "previous_screen": metadata.get("previous_screen_type", ""),
         "screen_type": metadata.get("screen_type_hint", "UNKNOWN"),
     }
-    system_prompt = compile_prompt(
-        tree=tree,
-        platform=platform,
-        consultation_id=consultation_id,
-        context=context,
-        spark_attempts=metadata.get("spark_attempts", 0),
-        is_reconsultation=bool(metadata.get("failure_reason")),
-    )
-
-    # Inject relevant KB chunks (DeepTutor retrieval) if the Mac attached any.
-    # Local KB lives on the user's Mac; only top-K chunks selected by local
-    # similarity search travel here. Per LAUNCH_PLAN v4 §0 user-sovereignty.
-    exercise_tags = {"HAS_RADIO", "HAS_CHECKBOX", "HAS_TEXT_INPUT", "HAS_COMBOBOX"}
-    present_tags = set(analyze_tree(tree))
-    is_exercise_like = bool(present_tags & exercise_tags)
     kb_chunks = metadata.get("relevant_kb_chunks") or []
-    if kb_chunks and is_exercise_like:
-        kb_section_lines = [
-            "",
-            "=== RELEVANT COURSE CONTEXT (from user's local DeepTutor KB) ===",
-            "",
-            f"The user has been studying this course. {len(kb_chunks)} chunk(s) "
-            "from prior screens (videos / articles) matched this question by "
-            "semantic similarity. Use these as supporting context when generating "
-            "the BT — especially for EXERCISE screens where send_to_llm needs to "
-            "be told what the user has been taught:",
-            "",
-        ]
-        for i, chunk in enumerate(kb_chunks[:5]):
-            src_type = chunk.get("source_screen_type", "?")
-            score = chunk.get("score")
-            score_str = f" (score={score:.3f})" if isinstance(score, float) else ""
-            text = chunk.get("text", "").strip()[:1500]
-            kb_section_lines.append(f"--- chunk {i+1} [{src_type}]{score_str} ---")
-            kb_section_lines.append(text)
-            kb_section_lines.append("")
-        system_prompt = system_prompt + "\n".join(kb_section_lines)
-        logger.info(
-            f"bt_generator: injected {len(kb_chunks)} KB chunk(s) for {consultation_id}"
+    try:
+        system_prompt, prompt_meta = assemble_worker_prompt(
+            tree=tree,
+            platform=platform,
+            consultation_id=consultation_id,
+            screen_type=context["screen_type"],
+            kb_chunks=kb_chunks,
         )
-    elif kb_chunks:
-        logger.info(
-            "bt_generator: dropped %d KB chunk(s) for %s; non-exercise tags=%s",
-            len(kb_chunks),
-            consultation_id,
-            sorted(present_tags),
-        )
+    except ScreenTypeAssemblerError as e:
+        raise BTGenerationError(f"Prompt assembly failed for {consultation_id}: {e}") from e
+    logger.info(
+        "bt_generator: assembled prompt for %s (%s chars, artifact=%s, kb_chunks=%s)",
+        consultation_id,
+        prompt_meta["prompt_chars"],
+        prompt_meta["artifact_path"],
+        prompt_meta["kb_chunks_included"],
+    )
 
     has_failure_log = (consult_dir / "bt_debug.log").exists()
     user_instruction = _build_user_instruction(consultation_id, has_failure_log)
@@ -300,6 +284,12 @@ def generate_bt(
         ) from e
 
     _validate_bt(bt, consultation_id)
+    try:
+        validate_worker_bt_response(bt, platform=platform, screen_type=context["screen_type"])
+    except ScreenTypeAssemblerError as e:
+        raise BTGenerationError(
+            f"BT recipe-conformance validation failed for {consultation_id}: {e}"
+        ) from e
 
     # Screen session: absorb the worker's _session contribution (facts/plan/
     # lesson) so the NEXT cycle on this screen resumes with what this build
