@@ -47,6 +47,8 @@ completion:
   - "Next question" / "Show summary" AXButton = correct, advance
 failure_modes:
   - wrong answer -> FULL STOP, escalate (R3)
+  # R3-EXCEPTION: partial-submission soft modal is NOT a wrong answer (grok
+  # adversarial pass could not invalidate the discriminator; see next lines)
   - PARTIAL SUBMISSION is recoverable, NOT a wrong answer — but ONLY when the
     modal text matches "You're almost there... still more parts" AND no
     red/incorrect feedback is shown. "Not quite" / red = WRONG ANSWER = R3
