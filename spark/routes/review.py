@@ -52,10 +52,10 @@ def respond_action_review(
         platform=platform,
         resolution=request.resolution,
         retry=request.retry,
-        corrected_answer=request.corrected_answer,
         yaml_updates=request.yaml_updates,
         message=request.message,
     )
     if "error" in result:
-        raise HTTPException(status_code=404, detail=result["error"])
+        status = 400 if "disabled" in result["error"] else 404
+        raise HTTPException(status_code=status, detail=result["error"])
     return result

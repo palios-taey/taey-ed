@@ -180,7 +180,8 @@ def dispatch_body_for_tier(
             f"DR MODE: confirm 'pressed' state on the Deep Research toggle before submit.\n\n"
             f"SUGGESTED RESPONSE STRUCTURE (prose is fine):\n"
             f"## Diagnosis (what's going wrong, source-cited)\n"
-            f"## Proposed BT (one or more JSON blocks the worker can adopt)\n"
+            f"## Definition fixes (classification, YAML edits, operational_notes, quirks)\n"
+            f"## Handler/schema gaps (only if existing definitions cannot express the fix)\n"
             f"## Confidence (LOW/MED/HIGH and why)\n"
             f"## Open Questions\n\n"
             f"{response_routing}"
@@ -392,12 +393,12 @@ def build_packet(
 
     if specific_ask is None:
         specific_ask = (
-            f"Produce a working BT for this {platform} screen "
+            f"Improve the DEFINITION path for this {platform} screen "
             f"(variant: {screen_type_hint}). Prior attempts have failed in the "
-            f"manner shown in section 5. Use the system capabilities in section 3 — "
-            f"do NOT propose changes that would require new handlers unless the "
-            f"existing 25-handler set is genuinely insufficient (in which case "
-            f"say so and propose the minimal handler addition)."
+            f"manner shown in section 5. Recommend classification fixes, YAML edits, "
+            f"operational_notes, platform quirks, or minimal handler/schema gaps if "
+            f"the current definition surface cannot express the correct behavior. "
+            f"Do NOT propose or return a behavior tree."
         )
 
     packet = f"""# Escalation Packet — {esc_id}
@@ -455,8 +456,11 @@ exist yet — that itself is signal.
 ## Diagnosis
 (what's going wrong and why, source-cited where possible)
 
-## Proposed BT
-(one or more JSON blocks the worker can adopt; or 'no viable BT — recommend handler change X')
+## Definition fixes
+(classification, YAML edits, operational_notes, quirks, and exact provenance)
+
+## Handler/schema gaps
+(only if no definition-only fix is sufficient)
 
 ## Confidence
 (LOW / MED / HIGH and why)

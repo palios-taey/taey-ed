@@ -29,8 +29,6 @@ class ConsultRequest(BaseModel):
 class ConsultResponseRequest(BaseModel):
     """For Spark Claude to respond to a consultation."""
     screen_type: str
-    action: Optional[dict] = None
-    tree: Optional[dict] = None
     requires_validation: bool = True
     extract: Optional[dict] = None
     course_id: Optional[str] = None
@@ -132,7 +130,6 @@ class ActionReviewResponseRequest(BaseModel):
     """Spark Claude responds to action review."""
     resolution: str
     retry: bool = False
-    corrected_answer: Optional[str] = ""
     yaml_updates: Optional[str] = ""
     message: Optional[str] = ""
 

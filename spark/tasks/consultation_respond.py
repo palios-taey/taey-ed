@@ -22,11 +22,9 @@ CONSULT_DIR = Path("/tmp/taey-ed-consult")
 def respond_to_consultation(
     consultation_id: str,
     screen_type: str,
-    action: dict = None,
     requires_validation: bool = True,
     yaml_created: bool = False,
     extract: dict = None,
-    tree: dict = None,
     expected_next: list = None,
 ) -> dict:
     """
@@ -35,11 +33,9 @@ def respond_to_consultation(
     Args:
         consultation_id: The consultation ID
         screen_type: Name of the screen type
-        action: Legacy action dict (prefer tree:)
         requires_validation: Whether Mac should send validation request after
         yaml_created: Whether YAML config was created/updated
         extract: Phase 5 extraction config (text criteria, image bbox, etc.)
-        tree: V9 behavior tree for Mac to execute
         expected_next: List of screen_types that should follow this BT
 
     Returns:
@@ -57,14 +53,6 @@ def respond_to_consultation(
         "requires_validation": requires_validation,
         "responded_at": datetime.now().isoformat()
     }
-
-    # V9: Include behavior tree if provided
-    if tree:
-        response["tree"] = tree
-
-    # Legacy: include action if provided
-    if action:
-        response["action"] = action
 
     # Include Phase 5 extraction config if provided
     if extract:
@@ -92,7 +80,7 @@ def respond_to_consultation(
     state = get_consultation_state(consultation_id)
     if state:
         state.spark_attempts += 1
-        state.add_attempt("spark_claude", {"screen_type": screen_type, "action": action})
+        state.add_attempt("spark_claude", {"screen_type": screen_type})
 
     logger.info(f"Consultation responded: {consultation_id} → {screen_type}")
 

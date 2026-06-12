@@ -33,6 +33,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 _BASE = Path("/home/user/taey-ed-data/screen_sessions")
+_ALLOWED_AUTHORS = {"worker", "machine"}
 
 
 def _path(platform: str, skel_hash: str) -> Path:
@@ -69,6 +70,15 @@ def _save(platform: str, skel_hash: str, data: dict) -> None:
     atomic_write_json(_path(platform, skel_hash), data)
 
 
+def _require_author(author: str) -> str:
+    author_name = str(author or "").strip()
+    if author_name == "supervisor":
+        raise ValueError("screen_session rejects author=supervisor; supervisor learning must go through YAML")
+    if author_name not in _ALLOWED_AUTHORS:
+        raise ValueError(f"screen_session rejected unknown author={author_name!r}")
+    return author_name
+
+
 def get_session(platform: str, skel_hash: str,
                 fingerprint: Optional[dict] = None) -> dict:
     """Load the screen's session; reset it if the question content changed
@@ -90,11 +100,14 @@ def get_session(platform: str, skel_hash: str,
 def record_attempt(platform: str, skel_hash: str, *,
                    bt_actions: Optional[list] = None,
                    outcome: str = "",
-                   detail: str = "") -> None:
+                   detail: str = "",
+                   author: str) -> None:
     """Append an executed-BT outcome to the screen's history."""
+    author_name = _require_author(author)
     data = _load(platform, skel_hash)
     data["attempts"].append({
         "at": _now(),
+        "author": author_name,
         "bt_actions": bt_actions or [],
         "outcome": outcome,
         "detail": detail,
@@ -102,24 +115,27 @@ def record_attempt(platform: str, skel_hash: str, *,
     _save(platform, skel_hash, data)
 
 
-def record_fact(platform: str, skel_hash: str, key: str, value) -> None:
+def record_fact(platform: str, skel_hash: str, key: str, value, *, author: str) -> None:
     """Store a durable measured fact (calibration, topology, positions)."""
+    author_name = _require_author(author)
     data = _load(platform, skel_hash)
-    data["facts"][key] = {"value": value, "at": _now()}
+    data["facts"][key] = {"value": value, "at": _now(), "author": author_name}
     _save(platform, skel_hash, data)
 
 
-def set_plan(platform: str, skel_hash: str, plan) -> None:
+def set_plan(platform: str, skel_hash: str, plan, *, author: str) -> None:
     """Store/replace the in-flight multi-step plan (any JSON shape the worker
     chooses — typically {'steps': [...], 'done': [...], 'next': ...})."""
+    author_name = _require_author(author)
     data = _load(platform, skel_hash)
-    data["plan"] = {"value": plan, "at": _now()}
+    data["plan"] = {"value": plan, "at": _now(), "author": author_name}
     _save(platform, skel_hash, data)
 
 
-def add_lesson(platform: str, skel_hash: str, lesson: str) -> None:
+def add_lesson(platform: str, skel_hash: str, lesson: str, *, author: str) -> None:
+    author_name = _require_author(author)
     data = _load(platform, skel_hash)
-    data["lessons"].append({"at": _now(), "lesson": lesson})
+    data["lessons"].append({"at": _now(), "lesson": lesson, "author": author_name})
     _save(platform, skel_hash, data)
 
 
@@ -154,23 +170,29 @@ def render_for_prompt(platform: str, skel_hash: str,
     if data["facts"]:
         parts.append("MEASURED FACTS (trust these — empirically verified on this screen):")
         for k, v in data["facts"].items():
-            parts.append(f"  - {k}: {json.dumps(v['value'])} (at {v['at']})")
+            author = v.get("author", "unknown")
+            parts.append(f"  - {k}: {json.dumps(v['value'])} (at {v['at']}, author={author})")
         parts.append("")
     if data["plan"]:
-        parts.append(f"STANDING PLAN (set {data['plan']['at']} — resume, don't restart):")
+        plan_author = data["plan"].get("author", "unknown")
+        parts.append(
+            f"STANDING PLAN (set {data['plan']['at']} by {plan_author} — resume, don't restart):"
+        )
         parts.append(f"  {json.dumps(data['plan']['value'], indent=2)}")
         parts.append("")
     if data["attempts"]:
         parts.append(f"ATTEMPT HISTORY ({len(data['attempts'])} so far):")
         for i, a in enumerate(data["attempts"], 1):
             acts = ",".join(a["bt_actions"]) if a["bt_actions"] else "?"
-            parts.append(f"  {i}. [{a['at']}] actions=[{acts}] -> {a['outcome']}"
+            author = a.get("author", "unknown")
+            parts.append(f"  {i}. [{a['at']}] author={author} actions=[{acts}] -> {a['outcome']}"
                          + (f" | {a['detail']}" if a["detail"] else ""))
         parts.append("")
     if data["lessons"]:
         parts.append("LESSONS ON THIS SCREEN:")
         for l in data["lessons"]:
-            parts.append(f"  - {l['lesson']}")
+            author = l.get("author", "unknown")
+            parts.append(f"  - {l['lesson']} (author={author})")
         parts.append("")
     parts.append("TO UPDATE THE SESSION: include a top-level \"_session\" object in your")
     parts.append("response JSON: {\"facts\": {...}, \"plan\": {...}, \"lesson\": \"...\"} —")
@@ -184,9 +206,9 @@ def absorb_worker_session(platform: str, skel_hash: str, response: dict) -> None
     if not isinstance(s, dict):
         return
     for k, v in (s.get("facts") or {}).items():
-        record_fact(platform, skel_hash, k, v)
+        record_fact(platform, skel_hash, k, v, author="worker")
     if s.get("plan") is not None:
-        set_plan(platform, skel_hash, s["plan"])
+        set_plan(platform, skel_hash, s["plan"], author="worker")
     if s.get("lesson"):
-        add_lesson(platform, skel_hash, str(s["lesson"]))
+        add_lesson(platform, skel_hash, str(s["lesson"]), author="worker")
     logger.info(f"screen_session: absorbed worker _session for {platform}/{skel_hash[:12]}")

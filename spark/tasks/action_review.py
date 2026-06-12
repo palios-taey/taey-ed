@@ -147,16 +147,18 @@ def respond_to_review(
     platform: str,
     resolution: str,
     retry: bool = False,
-    corrected_answer: str = "",
     yaml_updates: str = "",
     message: str = "",
 ) -> dict:
     """
     Spark Claude responds to a review.
 
-    resolution: "yaml_updated" | "answer_corrected" | "escalated" | "acknowledged"
-    retry: True = Mac should retry the action (with corrected_answer if provided)
+    resolution: "yaml_updated" | "escalated" | "acknowledged"
+    retry: True = Mac should retry the action without supervisor-provided answers
     """
+    if resolution == "answer_corrected":
+        return {"error": "corrected_answer channel disabled; supervisor cannot hand answers to Mac"}
+
     review_dir = os.path.join(REVIEWS_DIR, platform, review_id)
     metadata_path = os.path.join(review_dir, "metadata.json")
 
@@ -166,7 +168,6 @@ def respond_to_review(
     response = {
         "resolution": resolution,
         "retry": retry,
-        "corrected_answer": corrected_answer,
         "yaml_updates": yaml_updates,
         "message": message,
         "responded_at": time.time(),

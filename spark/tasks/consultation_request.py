@@ -34,6 +34,7 @@ from .escalation import (
     notify_fleet,
     UNSOLVED_LOG,
 )
+from spark.worker.consultation_worker import use_worker_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,13 @@ PENDING_TTL_SECONDS = 600
 
 # ONE consultation at a time. Period.
 # If one is pending, every code path returns it instead of creating another.
+
+
+def _require_worker_mode() -> None:
+    if not use_worker_enabled():
+        raise RuntimeError(
+            "TAEY_ED_USE_WORKER is required for consultation builds; tmux/primary fallback is disabled"
+        )
 
 
 def _pending_consult_is_blocking(meta: dict, consult_path: Path) -> bool:
@@ -103,6 +111,7 @@ def request_consultation(
     Returns:
         {"consultation_id": str, "status": "pending"|"existing"|"user_required"}
     """
+    _require_worker_mode()
     CONSULT_DIR.mkdir(parents=True, exist_ok=True)
 
     # ONE AT A TIME: If any consultation is pending AND not yet responded AND
@@ -263,9 +272,10 @@ def request_consultation(
             f"  Call MCP tool: taey_quick_extract(platform='perplexity', complete=True)\n"
             f"  Parse the research into structured knowledge.json format.\n"
             f"  Save to: spark/platforms/{platform}/knowledge.json\n\n"
-            f"STEP 7: NOW create consultation response using the research findings\n"
-            f"  Create a FUNDAMENTALLY DIFFERENT tree based on the research.\n"
-            f"  Respond to the consultation as normal.\n\n"
+            f"STEP 7: NOW respond with definition improvements only\n"
+            f"  Update the screen definition path: classification, YAML edits,\n"
+            f"  platform quirks, or operational_notes guidance informed by the research.\n"
+            f"  Do NOT propose or return a behavior tree.\n\n"
             f"=== END RUNBOOK ===\n\n"
         )
 
@@ -513,18 +523,9 @@ def request_consultation(
             f"\"{consultation_details}\""
         )
 
-    # When the headless worker is enabled, skip the tmux notify. The worker
-    # polls /tmp/taey-ed-consult/ for pending consultations and processes them
-    # via claude --print subprocess. Per LAUNCH_PLAN.md Phase 2 — replaces the
-    # tmux-to-interactive-Claude path for production scale.
-    from spark.worker.consultation_worker import use_worker_enabled
-    if use_worker_enabled():
-        logger.info(
-            f"Consultation created: {consultation_id} (worker mode — no tmux notify)"
-        )
-    else:
-        notify_spark_claude(notification)
-        logger.info(f"Consultation created: {consultation_id} at {consult_path}")
+    logger.info(
+        f"Consultation created: {consultation_id} (worker mode — no tmux notify)"
+    )
 
     # Rolling cleanup: keep only 2 most recent completed consultations
     _cleanup_old_consultations(keep=2)
@@ -532,10 +533,7 @@ def request_consultation(
     return {
         "consultation_id": consultation_id,
         "status": "pending",
-        "message": (
-            "Worker picks up via poll" if use_worker_enabled()
-            else "Spark Claude notified via tmux"
-        ),
+        "message": "Worker picks up via poll",
         "path": str(consult_path),
     }
 
@@ -556,6 +554,7 @@ def request_minimal_consultation(
     the codebase loaded (CLAUDE.md, BT handler reference) so we send pointers,
     not embedded documentation.
     """
+    _require_worker_mode()
     CONSULT_DIR.mkdir(parents=True, exist_ok=True)
 
     # ONE AT A TIME: if any consultation is pending AND not yet responded AND
@@ -648,25 +647,17 @@ def request_minimal_consultation(
         f"helper in spark/tasks/knowledge_loader.py if writing programmatically)."
     )
 
-    # When the headless worker is enabled, skip tmux notify.
-    from spark.worker.consultation_worker import use_worker_enabled
-    if use_worker_enabled():
-        logger.info(
-            f"Minimal consultation created: {consultation_id} "
-            f"(worker mode — no tmux notify)"
-        )
-    else:
-        notify_spark_claude(notification)
-        logger.info(
-            f"Minimal consultation created: {consultation_id} at {consult_path}"
-        )
+    logger.info(
+        f"Minimal consultation created: {consultation_id} "
+        f"(worker mode — no tmux notify)"
+    )
 
     _cleanup_old_consultations(keep=2)
 
     return {
         "consultation_id": consultation_id,
         "status": "pending",
-        "message": "Spark Claude notified (minimal prompt)",
+        "message": "Worker picks up via poll",
         "path": str(consult_path),
     }
 

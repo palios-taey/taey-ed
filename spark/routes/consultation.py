@@ -52,43 +52,14 @@ def poll_consultation(consultation_id: str):
 def respond_consultation(consultation_id: str, request: ConsultResponseRequest):
     """
     Respond to consultation (Spark Claude calls this).
-    Rejects trees containing fallback nodes.
+    Supervisor responses are definitions/classifications only.
     """
-    # Reject fallback nodes
-    if request.tree:
-        from spark.tasks.validate_config import validate_tree_no_fallbacks
-        fallback_errors = validate_tree_no_fallbacks(request.tree)
-        if fallback_errors:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Tree rejected: {'; '.join(str(e) for e in fallback_errors)}. "
-                       f"Use strict sequences — every action must succeed or escalate."
-            )
-
-    # Content list check — warn but don't block
-    if request.tree:
-        try:
-            from spark.tasks.validate_config import validate_bt_for_screen
-            tree_file = Path(f"/tmp/taey-ed-consult/{consultation_id}/tree.json")
-            if tree_file.exists():
-                ax_tree = json.loads(tree_file.read_text())
-                bt_errors = validate_bt_for_screen(request.tree, ax_tree)
-                if bt_errors:
-                    logger.warning(
-                        f"BT content list warning (allowing): "
-                        f"{'; '.join(str(e) for e in bt_errors)}"
-                    )
-        except Exception as e:
-            logger.warning(f"BT validation check failed (non-fatal): {e}")
-
     result = respond_to_consultation(
         consultation_id=consultation_id,
         screen_type=request.screen_type,
-        action=request.action,
         requires_validation=request.requires_validation,
         yaml_created=True,
         extract=request.extract,
-        tree=request.tree,
         expected_next=request.expected_next,
     )
     if "error" in result:

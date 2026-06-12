@@ -27,19 +27,24 @@ tier is the synthesis.
    state until you touch it; touching it early makes the retry run WITHOUT
    the research.
 
-3. Synthesize the responses into a unified PROVISIONAL operational_note update
-   for `knowledge.json`. Write it with `verified_count: 0` — Family synthesis
-   is unproven until a real run succeeds with it (the credit path promotes it
-   automatically). Cite which Family member contributed which insight
-   (cannot-lie provenance). REPLACE or REMOVE the prior note(s) that produced
-   the failing attempts — failed provisional answers are discarded. Re-register
-   the screen's hash if a failure path deleted it.
+3. Synthesize the responses into a unified PROVISIONAL DEFINITION update for
+   `knowledge.json`. That can include classification fixes, YAML-aligned
+   operational_notes, and platform quirks. Write it with `verified_count: 0`
+   — Family synthesis is unproven until a real run succeeds with it (the
+   credit path promotes it automatically). Cite which Family member
+   contributed which insight (cannot-lie provenance). REPLACE or REMOVE the
+   prior note(s) that produced the failing attempts — failed provisional
+   answers are discarded. Re-register the screen's hash if a failure path
+   deleted it.
 
-4. ONLY AFTER the fold: touch `diagnosis_done.flag`. The worker generates a
+4. Never hand the Mac a proposed answer or BT from this tier. The supervisor
+   role here is to improve definitions, not to execute as the worker.
+
+5. ONLY AFTER the fold: touch `diagnosis_done.flag`. The worker generates a
    fresh BT with the synthesized note. The note stays provisional until a real
    validated run proves it (then it graduates per the 3-success rule).
 
-5. If the screen STILL fails after this round, the system auto-triggers
+6. If the screen STILL fails after this round, the system auto-triggers
    Terminal on the next escalation. You do not give up manually.
 
 ## Anti-patterns

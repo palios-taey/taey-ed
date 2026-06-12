@@ -22,21 +22,25 @@ synthesis.
    state until you touch it; touching it early makes the retry run WITHOUT
    the research.
 
-3. Incorporate the findings into a PROVISIONAL operational_note in
-   `knowledge.json` for this screen. Write it with `verified_count: 0` —
-   research is unproven until a real run succeeds with it (the 0→1→2→3
-   credit path is automatic on validated successes). Only notes you have
-   personally OBSERVED working get the verified_count=1 default. While
-   folding, also REPLACE or REMOVE the prior note(s) that produced the
-   failing attempts — a failed provisional answer is discarded, not kept
-   alongside the new one. Re-register the screen's hash if a failure path
-   deleted it.
+3. Incorporate the findings into a PROVISIONAL DEFINITION update in
+   `knowledge.json` for this screen. That can include classification fixes,
+   YAML-aligned operational_notes, and platform quirks. Write any new note
+   with `verified_count: 0` — research is unproven until a real run succeeds
+   with it (the 0→1→2→3 credit path is automatic on validated successes).
+   Only notes you have personally OBSERVED working get the verified_count=1
+   default. While folding, also REPLACE or REMOVE the prior note(s) that
+   produced the failing attempts — a failed provisional answer is discarded,
+   not kept alongside the new one. Re-register the screen's hash if a failure
+   path deleted it.
 
-4. ONLY AFTER the fold: touch `diagnosis_done.flag`. The server releases the
+4. Never hand the Mac a proposed answer or BT from this tier. The supervisor
+   role here is to improve definitions, not to execute as the worker.
+
+5. ONLY AFTER the fold: touch `diagnosis_done.flag`. The server releases the
    Mac with the fresh knowledge.json in hand. The note stays provisional until
    a real validated run proves it (then it graduates per the 3-success rule).
 
-5. If the screen still fails after this Tier 2 cycle, the system will trigger
+6. If the screen still fails after this Tier 2 cycle, the system will trigger
    Tier 3 (full Family, one round) on the next escalation attempt — also
    auto-dispatched. Don't pre-escalate.
 
