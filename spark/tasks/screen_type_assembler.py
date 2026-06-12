@@ -61,6 +61,67 @@ SIGNATURE_ACTIONS = {
     "video_poll",
 }
 FLAT_DRAG_KEYS = {"start_x", "start_y", "from_x", "from_y", "to_x", "to_y", "end_x", "end_y"}
+TREE_VALUE_CHAR_LIMIT = 2_000
+_ALLOWED_TREE_KEYS = {
+    "ChromeAXNodeId",
+    "aRIACurrent",
+    "aRIAPosInSet",
+    "aRIASetSize",
+    "activationPoint",
+    "autocompleteValue",
+    "blockQuoteLevel",
+    "children",
+    "childrenInNavigationOrder",
+    "description",
+    "disclosureLevel",
+    "document",
+    "edited",
+    "elementBusy",
+    "enabled",
+    "expanded",
+    "focused",
+    "frame",
+    "fullScreen",
+    "hasPopup",
+    "help",
+    "insertionPointLineNumber",
+    "invalid",
+    "keyShortcutsValue",
+    "language",
+    "linkedUIElements",
+    "loaded",
+    "loadingProgress",
+    "main",
+    "maxValue",
+    "minValue",
+    "minimized",
+    "modal",
+    "name",
+    "numberOfCharacters",
+    "placeholderValue",
+    "popupValue",
+    "position",
+    "required",
+    "role",
+    "roleDescription",
+    "rows",
+    "sections",
+    "selected",
+    "selectedChildren",
+    "selectedRows",
+    "selectedText",
+    "selectedTextRange",
+    "selectedTextRanges",
+    "size",
+    "startTextMarker",
+    "subrole",
+    "title",
+    "uRL",
+    "value",
+    "valueDescription",
+    "visibleCharacterRange",
+    "visited",
+}
 
 
 class ScreenTypeAssemblerError(RuntimeError):
@@ -255,7 +316,27 @@ def assemble_worker_prompt(
 
 
 def _sanitize_tree_for_worker(tree: dict) -> dict:
-    return json.loads(json.dumps(tree))
+    def _sanitize_value(value):
+        if isinstance(value, dict):
+            sanitized = {}
+            for key, child in value.items():
+                if key not in _ALLOWED_TREE_KEYS:
+                    continue
+                sanitized[key] = _sanitize_value(child)
+            return sanitized
+        if isinstance(value, list):
+            sanitized_items = [_sanitize_value(item) for item in value]
+            return [item for item in sanitized_items if item not in (None, {}, [])]
+        if isinstance(value, str):
+            if len(value) > TREE_VALUE_CHAR_LIMIT:
+                return value[:TREE_VALUE_CHAR_LIMIT] + "…[truncated]"
+            return value
+        return value
+
+    sanitized = _sanitize_value(tree)
+    if not isinstance(sanitized, dict):
+        raise ScreenTypeAssemblerError("sanitized tree must remain a dict")
+    return sanitized
 
 
 def create_worker_handoff(

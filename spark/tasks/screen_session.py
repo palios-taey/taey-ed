@@ -36,6 +36,7 @@ _BASE = Path("/home/user/taey-ed-data/screen_sessions")
 _ALLOWED_AUTHORS = {"worker", "machine"}
 _MAX_LIVE_ATTEMPTS = 6
 _MAX_LIVE_LESSONS = 6
+_SESSION_RENDER_CHAR_BUDGET = 9_000
 
 
 def _path(platform: str, skel_hash: str) -> Path:
@@ -111,6 +112,84 @@ def _roll_live_window(platform: str, skel_hash: str, data: dict) -> None:
                 "lessons": rolled_lessons,
             },
         )
+
+
+def _render_session_text(data: dict, attempts: list[dict], lessons: list[dict]) -> str:
+    parts = ["=== THIS SCREEN'S SESSION (working memory — READ BEFORE PLANNING) ===",
+             "Prior attempts on THIS exact screen/question, measured facts, and the",
+             "standing plan. RESUME the plan and REUSE the facts — do not re-derive,",
+             "do not repeat an approach that already failed below.", ""]
+    if data["facts"]:
+        parts.append("MEASURED FACTS (trust these — empirically verified on this screen):")
+        for k, v in data["facts"].items():
+            author = v.get("author", "unknown")
+            parts.append(f"  - {k}: {json.dumps(v['value'])} (at {v['at']}, author={author})")
+        parts.append("")
+    if data["plan"]:
+        plan_author = data["plan"].get("author", "unknown")
+        parts.append(
+            f"STANDING PLAN (set {data['plan']['at']} by {plan_author} — resume, don't restart):"
+        )
+        parts.append(f"  {json.dumps(data['plan']['value'], indent=2)}")
+        parts.append("")
+    if attempts:
+        parts.append(f"ATTEMPT HISTORY (live window: newest {len(attempts)}, older entries archived):")
+        for i, a in enumerate(attempts, 1):
+            acts = ",".join(a["bt_actions"]) if a["bt_actions"] else "?"
+            author = a.get("author", "unknown")
+            parts.append(f"  {i}. [{a['at']}] author={author} actions=[{acts}] -> {a['outcome']}"
+                         + (f" | {a['detail']}" if a["detail"] else ""))
+        parts.append("")
+    if lessons:
+        parts.append("LESSONS ON THIS SCREEN:")
+        for l in lessons:
+            author = l.get("author", "unknown")
+            parts.append(f"  - {l['lesson']} (author={author})")
+        parts.append("")
+    parts.append("TO UPDATE THE SESSION: include a top-level \"_session\" object in your")
+    parts.append("response JSON: {\"facts\": {...}, \"plan\": {...}, \"lesson\": \"...\"} —")
+    parts.append("anything you measure or decide that the NEXT cycle must know.")
+    return "\n".join(parts)
+
+
+def _roll_render_bloat(platform: str, skel_hash: str, data: dict) -> tuple[list[dict], list[dict]]:
+    attempts = list(data["attempts"][-_MAX_LIVE_ATTEMPTS:])
+    lessons = list(data["lessons"][-_MAX_LIVE_LESSONS:])
+    rendered = _render_session_text(data, attempts, lessons)
+    if len(rendered) <= _SESSION_RENDER_CHAR_BUDGET:
+        return attempts, lessons
+
+    rolled_attempts = []
+    rolled_lessons = []
+    while len(rendered) > _SESSION_RENDER_CHAR_BUDGET and (attempts or lessons):
+        next_attempt_at = attempts[0]["at"] if attempts else None
+        next_lesson_at = lessons[0]["at"] if lessons else None
+        if next_attempt_at is not None and (next_lesson_at is None or next_attempt_at <= next_lesson_at):
+            entry = attempts.pop(0)
+            rolled_attempts.append(entry)
+            if data["attempts"] and data["attempts"][0] == entry:
+                data["attempts"].pop(0)
+        else:
+            entry = lessons.pop(0)
+            rolled_lessons.append(entry)
+            if data["lessons"] and data["lessons"][0] == entry:
+                data["lessons"].pop(0)
+        rendered = _render_session_text(data, attempts, lessons)
+
+    if rolled_attempts or rolled_lessons:
+        _append_archive_entry(
+            platform,
+            skel_hash,
+            {
+                "reason": "render_budget_roll",
+                "rolled_at": _now(),
+                "attempts": rolled_attempts,
+                "lessons": rolled_lessons,
+                "budget_chars": _SESSION_RENDER_CHAR_BUDGET,
+            },
+        )
+        _save(platform, skel_hash, data)
+    return attempts, lessons
 
 
 def _require_author(author: str) -> str:
@@ -215,43 +294,17 @@ def render_for_prompt(platform: str, skel_hash: str,
     data = get_session(platform, skel_hash, fingerprint)
     if not (data["attempts"] or data["facts"] or data["plan"] or data["lessons"]):
         return ""
-    attempts = list(data["attempts"][-_MAX_LIVE_ATTEMPTS:])
-    lessons = list(data["lessons"][-_MAX_LIVE_LESSONS:])
-    parts = ["=== THIS SCREEN'S SESSION (working memory — READ BEFORE PLANNING) ===",
-             "Prior attempts on THIS exact screen/question, measured facts, and the",
-             "standing plan. RESUME the plan and REUSE the facts — do not re-derive,",
-             "do not repeat an approach that already failed below.", ""]
-    if data["facts"]:
-        parts.append("MEASURED FACTS (trust these — empirically verified on this screen):")
-        for k, v in data["facts"].items():
-            author = v.get("author", "unknown")
-            parts.append(f"  - {k}: {json.dumps(v['value'])} (at {v['at']}, author={author})")
-        parts.append("")
-    if data["plan"]:
-        plan_author = data["plan"].get("author", "unknown")
-        parts.append(
-            f"STANDING PLAN (set {data['plan']['at']} by {plan_author} — resume, don't restart):"
+    attempts, lessons = _roll_render_bloat(platform, skel_hash, data)
+    rendered = _render_session_text(data, attempts, lessons)
+    if len(rendered) > _SESSION_RENDER_CHAR_BUDGET:
+        logger.warning(
+            "screen_session: render still exceeds budget for %s/%s (%s > %s)",
+            platform,
+            skel_hash[:12],
+            len(rendered),
+            _SESSION_RENDER_CHAR_BUDGET,
         )
-        parts.append(f"  {json.dumps(data['plan']['value'], indent=2)}")
-        parts.append("")
-    if attempts:
-        parts.append(f"ATTEMPT HISTORY (live window: newest {len(attempts)}, older entries archived):")
-        for i, a in enumerate(attempts, 1):
-            acts = ",".join(a["bt_actions"]) if a["bt_actions"] else "?"
-            author = a.get("author", "unknown")
-            parts.append(f"  {i}. [{a['at']}] author={author} actions=[{acts}] -> {a['outcome']}"
-                         + (f" | {a['detail']}" if a["detail"] else ""))
-        parts.append("")
-    if lessons:
-        parts.append("LESSONS ON THIS SCREEN:")
-        for l in lessons:
-            author = l.get("author", "unknown")
-            parts.append(f"  - {l['lesson']} (author={author})")
-        parts.append("")
-    parts.append("TO UPDATE THE SESSION: include a top-level \"_session\" object in your")
-    parts.append("response JSON: {\"facts\": {...}, \"plan\": {...}, \"lesson\": \"...\"} —")
-    parts.append("anything you measure or decide that the NEXT cycle must know.")
-    return "\n".join(parts)
+    return rendered
 
 
 def absorb_worker_session(platform: str, skel_hash: str, response: dict) -> None:

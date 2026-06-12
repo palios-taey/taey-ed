@@ -113,6 +113,8 @@ async def extract_image_content(
                 user_message=prompt,
                 screenshot_b64=image_b64,
                 require_screenshot_read=True,
+                permission_mode="dontAsk",
+                tools=["Read"],
             )
         except ClaudeCallError as e:
             return None, {"error": str(e)}

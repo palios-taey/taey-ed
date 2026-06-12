@@ -121,6 +121,7 @@ def call_claude_cli(
 
     # If we were handed b64, write to a temp file so the model can Read it.
     temp_path = None
+    temp_dir = None
     if screenshot_b64:
         try:
             image_data = base64.b64decode(screenshot_b64)
@@ -128,7 +129,8 @@ def call_claude_cli(
             raise ClaudeCallError(f"bad screenshot_b64: {e}") from e
         is_png = image_data[:8] == b"\x89PNG\r\n\x1a\n"
         suffix = ".png" if is_png else ".jpg"
-        fd, temp_path = tempfile.mkstemp(prefix="taey-claude-", suffix=suffix, dir="/tmp")
+        temp_dir = tempfile.mkdtemp(prefix="taey-claude-image-", dir="/tmp")
+        fd, temp_path = tempfile.mkstemp(prefix="image-", suffix=suffix, dir=temp_dir)
         with os.fdopen(fd, "wb") as f:
             f.write(image_data)
         screenshot_path = temp_path
@@ -153,6 +155,11 @@ def call_claude_cli(
                 os.unlink(temp_path)
             except OSError:
                 pass
+        if temp_dir:
+            try:
+                Path(temp_dir).rmdir()
+            except OSError:
+                pass
 
 
 def _do_call(
@@ -171,6 +178,8 @@ def _do_call(
     """The actual subprocess invocation + parsing. Split from call_claude_cli
     so the b64-temp-file lifecycle can wrap it cleanly."""
     full_user = _build_user_message(user_message, screenshot_path)
+    if add_dirs is None and screenshot_path and permission_mode != "bypassPermissions":
+        add_dirs = [str(Path(screenshot_path).resolve().parent)]
 
     # NOTHING big rides argv: Linux caps a single argv at 128KB
     # (MAX_ARG_STRLEN) — hit live TWICE on 2026-06-11 (user message 16:33,
@@ -190,7 +199,7 @@ def _do_call(
         "--max-budget-usd", str(max_budget_usd),
         "--system-prompt-file", sys_path,
     ]
-    if tools:
+    if tools is not None:
         cmd.extend(["--tools", ",".join(tools)])
     if add_dirs:
         for path in add_dirs:

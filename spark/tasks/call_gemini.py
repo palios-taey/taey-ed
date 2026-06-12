@@ -390,6 +390,8 @@ async def _solve_with_claude_cli(prompt: str, timeout: int = 120) -> Optional[st
                 system_prompt="You are answering an educational quiz question. Reply with ONLY the answer in the exact format the user prompt requests — no preamble, no markdown fences.",
                 user_message=prompt,
                 timeout_s=timeout,
+                permission_mode="dontAsk",
+                tools=[],
             )
             return raw
         except ClaudeCallError as e:
@@ -422,6 +424,8 @@ async def _solve_with_claude_cli_image(
                     screenshot_b64=screenshot_b64,
                     timeout_s=timeout,
                     require_screenshot_read=bool(screenshot_b64),
+                    permission_mode="dontAsk",
+                    tools=["Read"] if screenshot_b64 else [],
                 )
                 if raw:
                     return raw

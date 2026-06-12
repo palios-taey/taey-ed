@@ -142,6 +142,8 @@ def _llm_call(prompt: str, screenshot_b64: Optional[str] = None) -> Optional[str
             user_message=prompt,
             screenshot_b64=screenshot_b64,
             require_screenshot_read=bool(screenshot_b64),
+            permission_mode="dontAsk",
+            tools=["Read"] if screenshot_b64 else [],
         )
         return raw.strip()
     except ClaudeCallError as e:
