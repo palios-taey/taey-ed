@@ -583,6 +583,58 @@ def _build_screen_directive(request, platform: str, tree: dict, screen_type: str
             "directive_id": _make_directive_id(),
             "reason": f"{screen_type.lower()}_consultation_needs_screenshot",
         }
+    from spark.tasks.screen_type_util import get_master_category
+    if get_master_category(screen_type) == "NAVIGATION":
+        nav_tree = {
+            "type": "sequence",
+            "name": "navigate",
+            "children": [
+                {
+                    "type": "action",
+                    "action": "find_all",
+                    "params": {
+                        "role": "AXLink",
+                    },
+                    "store": "links",
+                },
+                {
+                    "type": "action",
+                    "action": "send_to_llm",
+                    "params": {
+                        "question_type": "navigate",
+                        "items": "$links",
+                    },
+                    "store": "nav",
+                },
+                {
+                    "type": "action",
+                    "action": "find_and_click",
+                    "params": {
+                        "target": "$nav.answer",
+                        "role": "AXLink",
+                        "strategy": "mouse_click",
+                        "match_mode": "exact",
+                        "post_delay": 3.0,
+                    },
+                },
+            ],
+        }
+        return _with_chat({
+            "directive": "execute_tree",
+            "directive_id": _make_directive_id(),
+            "tree": nav_tree,
+            "screen": screen_type,
+            "extract": _get_extract_for_type(
+                screen_type,
+                tree,
+                request.screenshot_b64,
+                platform,
+            ),
+            "course_id": course_id,
+            "lesson": "",
+            "expected_next": [],
+            "skeleton_hash": sig_hash,
+        }, platform, [build_status(f"Using fixed {screen_type} navigation automation")])
     consult_result = request_consultation(
         platform=platform,
         tree=tree,
