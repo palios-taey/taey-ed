@@ -210,6 +210,13 @@
           "NAVIGATION",
           "TRANSITION"
         ]
+      },
+      {
+        "description": "WRONG-ANSWER RESET MECHANISM (KHAN): browser refresh (press_key 'r' + cmd) is the reliable reset on wrong-answer states \u2014 it reloads the question fresh. Khan's 'Start over' button is CONFIRMED UNRELIABLE (2026-05-19: did not restore initial state). 'Try again' resets the widget in-place on practice exercises and is acceptable for drag/tile widgets where a refresh would lose scroll position; prefer Cmd+R when the form state is suspect. NEVER refresh between Check and verifying the submission registered (refresh in that window can eat the submission).",
+        "affects": [
+          "EXERCISE"
+        ],
+        "relocated_from": "_universal.json (Jesse 2026-06-12: platform-specific)"
       }
     ],
     "completion_model": {
