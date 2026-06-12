@@ -637,19 +637,25 @@ async def generate_answer(
         # list + the "copy exactly" closer so the model has both screen-level
         # context and the canonical output discipline. Falls back to the
         # generic NAVIGATE_PROMPT when no question is supplied.
-        if question and question.strip():
-            prompt = (
-                f"{question.strip()}\n\n"
-                f"Clickable items (in page order):\n{items_block}\n\n"
-                f"OUTPUT REQUIREMENTS — read carefully:\n"
-                f"- Reply with ONLY the exact description string of ONE chosen item, "
-                f"copied character-for-character from the list above.\n"
-                f"- No commentary, no quoting, no truncation, no paraphrase.\n"
-                f"- The string MUST appear verbatim in the items list. If you cannot "
-                f"identify a match from the rules, output item 1's description verbatim."
-            )
-        else:
-            prompt = NAVIGATE_PROMPT.format(items_block=items_block)
+        # NUMBER-BASED OUTPUT (live RCA 2026-06-12): the Mac always attaches the
+        # screenshot, and asking the LLM for the description STRING made it return
+        # garbage read off the image ("70%", "Forces", "Waves") that matches no
+        # link. The LLM still PICKS (LLM-driven per Jesse 2026-05-19) — it just
+        # returns the NUMBER, and the navigate return branch maps number -> the
+        # exact link name (numbered list built here is rebuilt identically there).
+        picking_rules = (
+            question.strip() if (question and question.strip())
+            else "Pick the FIRST INCOMPLETE curriculum item in page order. "
+                 "Items marked mastered/proficient/completed are DONE — skip them. "
+                 "Within a section, videos and articles come before exercises/quizzes."
+        )
+        prompt = (
+            f"{picking_rules}\n\n"
+            f"Numbered clickable items (in page order):\n{items_block}\n\n"
+            f"Reply with ONLY the NUMBER of the single item to click (e.g. 23). "
+            f"Nothing else — no words, no description, just the number from the "
+            f"list above. The screenshot is context; your answer is one number."
+        )
 
     elif question_type == "solve_assessment" and items:
         # Full assessment: items is a list of {type, question, options}
@@ -773,73 +779,36 @@ async def generate_answer(
         matches = {}
 
         if question_type == "navigate" and items:
-            # Match LLM response to one of the item descriptions, then carry
-            # the matched item's element reference through the response so the
-            # BT can click by element (not by text re-search).
-            #
-            # Why: Khan and similar platforms concatenate state suffixes into
-            # link names (e.g. "Apply: Foo: unfamiliarUp next for you!"). The
-            # LLM strips those when picking, so an exact text match downstream
-            # fails. The element ref from find_all is stable; use it instead.
-            descriptions = [
-                item.get("popup_desc", item.get("description", ""))
-                for item in items
-            ]
-            answer = match_to_option(raw_answer, descriptions) if descriptions else raw_answer
+            # NUMBER-BASED MAPPING (live RCA 2026-06-12): the prompt asks the LLM
+            # for the NUMBER of its pick. Rebuild the SAME numbered list the
+            # prompt showed (same <4-char filter, same order) and map the parsed
+            # number -> that item's exact description (= the AXLink name). This
+            # is garbage-proof: a number can't be "70%" or a stripped fragment.
+            numbered = []  # (description, item) in displayed order, 1-based
+            for item in items:
+                desc = item.get("popup_desc", item.get("description", ""))
+                if len(desc) < 4:
+                    continue
+                numbered.append((desc, item))
 
-            # Find the items[i] whose description == answer. match_to_option
-            # already returned a description-list entry, so exact-match should
-            # work first.
-            #
-            # Fallback when the LLM strips suffixes (e.g. answers "Kinetic
-            # energy" when actual description is "Apply: Kinetic energy:
-            # unfamiliar"): substring containment, preferring items with
-            # progress markers ("Up next for you!" > "unfamiliar" > others).
+            import re as _re
+            m = _re.search(r"\d+", raw_answer or "")
+            chosen = int(m.group()) if m else 0  # 1-based displayed number
+
+            answer = ""
             matched_item = None
-            answer_element = None
-            # Pass 1: exact match
-            for i, d in enumerate(descriptions):
-                if d == answer:
-                    matched_item = items[i]
-                    answer_element = items[i].get("element")
-                    break
-            # Pass 2: case-insensitive substring (answer appears inside a description)
-            if matched_item is None and answer:
-                lower_answer = answer.lower().strip()
-                candidates = []  # (priority_score, i)
-                for i, d in enumerate(descriptions):
-                    if lower_answer and lower_answer in d.lower():
-                        # priority: "Up next for you!" > "unfamiliar" > everything else
-                        if "up next for you" in d.lower():
-                            score = 0
-                        elif "unfamiliar" in d.lower():
-                            score = 1
-                        elif "not started" in d.lower():
-                            score = 2
-                        else:
-                            score = 3
-                        candidates.append((score, i))
-                if candidates:
-                    candidates.sort()
-                    _score, idx = candidates[0]
-                    matched_item = items[idx]
-                    answer_element = items[idx].get("element")
-                    # Promote `answer` to the actual description we matched so
-                    # downstream consumers see the canonical string.
-                    answer = descriptions[idx]
-                    logger.info(
-                        f"Navigate: substring-matched '{answer[:80]}' "
-                        f"(prio={_score}, picked from {len(candidates)} candidates)"
-                    )
+            if numbered and 1 <= chosen <= len(numbered):
+                answer, matched_item = numbered[chosen - 1]
+                logger.info(f"Navigate: number {chosen} -> '{answer[:80]}'")
+            else:
+                logger.warning(
+                    f"Navigate: could not parse a valid item number from "
+                    f"{raw_answer[:60]!r} (had {len(numbered)} items)"
+                )
 
-            logger.info(
-                f"Navigate: selected '{answer[:80]}' "
-                f"(element={'present' if answer_element else 'MISSING'})"
-            )
             return {
-                "success": True,
-                "answer": answer,
-                "answer_element": answer_element,  # BT: click element=$nav.answer_element
+                "success": bool(answer),
+                "answer": answer,  # exact AXLink name; BT clicks target=$nav.answer
                 "matched_item": matched_item,
                 "question_type": question_type,
                 "model": model_used,
