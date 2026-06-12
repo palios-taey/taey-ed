@@ -1362,6 +1362,33 @@ def _next_action_impl(request: NextActionRequest):
                 build_question(_reason),
             ])
 
+        elif vr.get("reason") == "not_advanced":
+            # NOT-ADVANCED IS A FAILURE, not a neutral (2026-06-12: this path
+            # was a polite infinite loop — three ranking builds in 20 minutes,
+            # each executed, each left the question unmoved, each fell through
+            # to a fresh rebuild with no attempt counted and no escalation).
+            # An exercise BT that ran 'successfully' and provably changed
+            # nothing accomplished nothing — same class as stuck: record it
+            # and climb the ladder.
+            logger.error(
+                f"Step 2: NOT-ADVANCED for {lr.screen} — exercise BT ran but the "
+                f"question did not move. Escalating (ladder counts this attempt)."
+            )
+            _record_screen_failure(platform, lr.directive_skeleton_hash,
+                                   lr.bt_debug_tail, "not_advanced",
+                                   "BT 'succeeded' but same skeleton — nothing staged/accepted")
+            return _escalate_to_claude_diagnosing(
+                platform=platform,
+                tree=tree,
+                consultation_id="",
+                reason=(f"NOT-ADVANCED on '{lr.screen}': the BT executed without "
+                        f"error but the question did not move — actions likely "
+                        f"never engaged the widget (drags missed / Check disabled)."),
+                screen_type_hint=lr.screen or "EXERCISE",
+                bt_debug_tail=lr.bt_debug_tail or "",
+                failed_bt=lr.failed_bt,
+                screenshot_b64=request.screenshot_b64,
+            )
         else:
             logger.warning(
                 f"Step 2: Validation failed for {lr.screen}: {vr.get('reason')} "
