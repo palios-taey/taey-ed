@@ -18,20 +18,20 @@ recipe:                              # THE type-BT — intelligence steps embedd
         Return EXACTLY ONE of the provided link names VERBATIM.
       store: nav
   - find_and_click:
-      element: $nav.answer_element   # CLICK BY ELEMENT REF — the navigate
-      strategy: mouse_click          # handler matches the LLM's pick back to
-      post_delay: 3.0                # the find_all item and returns its stable
-                                     # element; text-match ($nav.answer) is
-                                     # fragile (status suffixes are separate
-                                     # child nodes) and crashed live 2026-06-12.
+      target: $nav.answer            # the server PROMOTES answer to the full
+      role: AXLink                   # matched description (exact AXLink name);
+      strategy: mouse_click          # it does the fragment->full-name matching
+      match_mode: exact              # server-side, so this text is reliable.
+      post_delay: 3.0
 contracts:
-  - CLICK BY ELEMENT, NOT TEXT (live RCA 2026-06-12): the server navigate
-    handler returns answer_element (it matches the LLM pick — even a stripped
-    fragment like "Waves" — back to the find_all item via exact+substring).
-    The BT MUST use element=$nav.answer_element; target=$nav.answer crashes
-    ('NoneType not subscriptable') when the answer is a fragment or empty.
-  - the LLM may return a fragment; the server's match_to_option recovers the
-    element, so the recipe does NOT depend on a verbatim answer
+  - CLICK BY TEXT ($nav.answer), NOT element ref (live RCA 2026-06-12): the
+    Mac strips native AXUIElementRef via _json_sanitize before send_to_llm, so
+    the server NEVER receives item elements and answer_element is ALWAYS None —
+    element=$nav.answer_element gives an empty click. The server instead
+    promotes $nav.answer to the EXACT matched description (= the AXLink name),
+    so target=$nav.answer + match_mode exact is the reliable path.
+  - the LLM may return a fragment ("Waves"); the server's exact+substring
+    match_to_option promotes it to the full link name before returning answer
   - NEVER hardcode link text — names change between units/courses
 actuation:
   strategy: mouse_click on AXLink; post_delay 3.0 (SPA load)
