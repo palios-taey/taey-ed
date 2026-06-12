@@ -1,91 +1,62 @@
-# STATUS: FROZEN. Verified 2026-02-19. Do not modify.
 """
-Send tmux notification to Spark Claude session.
-Single-purpose file - FREEZE once working.
+Send notification to Spark Claude (taey-ed) session.
 
-Pattern from v6: load-buffer + paste-buffer + C-m (Enter)
-This injects message into the input box and submits it.
+Uses canonical taey-notify CLI via fire-and-forget Popen so FastAPI never blocks
+on Redis or shell IO. Handles arbitrary-length payloads (BT bodies, debug logs)
+without truncation — Redis carries the full envelope, the daemon delivers a
+short [NOTIFY] pointer if the target is idle, and PostToolUse surfaces the full
+content via additionalContext on the next tool call.
+
+Pattern confirmed by conductor (2026-05-18). Replaces the previous tmux
+load-buffer / paste-buffer / C-m approach which silently truncated long content.
 """
 
-import subprocess
 import logging
+import subprocess
 
 logger = logging.getLogger(__name__)
 
-TMUX_SESSION = "taey-ed"  # Dedicated Taey-Ed consultation session
+TAEY_NOTIFY_BIN = "/usr/local/bin/taey-notify"
+TARGET = "taey-ed"
+DEFAULT_TYPE = "escalation"
+FROM_ID = "spark"
 
 
-def notify_spark_claude(message: str) -> bool:
+def notify_spark_claude(message: str, notify_type: str = DEFAULT_TYPE) -> bool:
     """
-    Inject message into Spark Claude's tmux session and submit.
-
-    Uses the proven v6 pattern:
-    1. echo message | tmux load-buffer -  (load into buffer)
-    2. tmux paste-buffer -t session       (paste into input)
-    3. tmux send-keys -t session C-m      (press Enter to submit)
+    Send a notification to the taey-ed session via the canonical Redis-backed
+    notification system.
 
     Args:
-        message: Message to inject and submit
+        message: Arbitrary-length payload (BT JSON, debug tails, diagnoses).
+        notify_type: One of message/task/directive/escalation/defect/
+                     response_ready. Defaults to 'escalation' for CLAUDE_
+                     DIAGNOSIS_REQUIRED-class messages.
 
     Returns:
-        True if notification sent successfully
+        True if the subprocess was launched. Delivery is asynchronous; the CLI
+        owns Redis envelope construction (timestamp, msg_id, normalized shape).
     """
     try:
-        # Check if session exists
-        result = subprocess.run(
-            ["tmux", "has-session", "-t", TMUX_SESSION],
-            capture_output=True,
-            timeout=5
+        subprocess.Popen(
+            [
+                TAEY_NOTIFY_BIN,
+                TARGET,
+                "--type", notify_type,
+                "--from", FROM_ID,
+                message,
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
-
-        if result.returncode != 0:
-            logger.warning(f"tmux session '{TMUX_SESSION}' not found")
-            return False
-
-        # Step 1: Load message into tmux buffer
-        load_proc = subprocess.run(
-            ["tmux", "load-buffer", "-"],
-            input=message.encode(),
-            capture_output=True,
-            timeout=5
+        logger.info(
+            f"Notified {TARGET} via taey-notify (type={notify_type}, "
+            f"len={len(message)}): {message[:60]!r}"
         )
-        if load_proc.returncode != 0:
-            logger.error(f"Failed to load buffer: {load_proc.stderr.decode()}")
-            return False
-
-        # Step 2: Paste buffer into session's input
-        paste_proc = subprocess.run(
-            ["tmux", "paste-buffer", "-t", TMUX_SESSION],
-            capture_output=True,
-            timeout=5
-        )
-        if paste_proc.returncode != 0:
-            logger.error(f"Failed to paste buffer: {paste_proc.stderr.decode()}")
-            return False
-
-        # Pause to ensure paste completes before Enter
-        import time
-        time.sleep(0.5)
-
-        # Step 3: Send Enter (C-m) to submit, twice with gap for reliability
-        for attempt in range(2):
-            send_proc = subprocess.run(
-                ["tmux", "send-keys", "-t", TMUX_SESSION, "C-m"],
-                capture_output=True,
-                timeout=5
-            )
-            if send_proc.returncode != 0:
-                logger.error(f"Failed to send Enter: {send_proc.stderr.decode()}")
-                return False
-            if attempt == 0:
-                time.sleep(0.3)
-
-        logger.info(f"Notified Spark Claude: {message[:60]}")
         return True
-
-    except subprocess.TimeoutExpired:
-        logger.error("tmux notification timed out")
+    except FileNotFoundError:
+        logger.error(f"taey-notify binary not found at {TAEY_NOTIFY_BIN}")
         return False
     except Exception as e:
-        logger.error(f"tmux notification failed: {e}")
+        logger.error(f"taey-notify dispatch failed: {e}")
         return False

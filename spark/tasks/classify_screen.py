@@ -220,12 +220,8 @@ def classify_screen(
         }
 
 
-def _gemini_api_call(prompt: str, screenshot_b64: Optional[str] = None,
-                     model_name: str = "gemini-2.5-pro") -> Optional[str]:
-    """Single-shot LLM call. Name retained for back-compat with the original
-    Gemini callers — now routes through Claude Opus 4.7 via the CLI runner.
-
-    The model_name parameter is ignored (kept for signature stability).
+def _llm_call(prompt: str, screenshot_b64: Optional[str] = None) -> Optional[str]:
+    """Single-shot LLM call via Claude Opus 4.7 (CLI runner).
 
     Returns raw response text, or None on any failure.
     """
@@ -307,6 +303,19 @@ CRITICAL RULES:
 """
 
 
+# Screen types that should NEVER have extraction (no unique content).
+_NO_EXTRACT_TYPES = {"NAVIGATION", "TRANSITION"}
+
+
+def _should_extract(screen_type: str) -> bool:
+    """Return False for screen types that have no unique content to extract."""
+    if screen_type in _NO_EXTRACT_TYPES:
+        return False
+    from spark.tasks.screen_type_util import get_master_category
+    master = get_master_category(screen_type)
+    return master not in _NO_EXTRACT_TYPES
+
+
 def build_extract_config(
     tree: dict,
     screenshot_b64: str,
@@ -337,7 +346,7 @@ def build_extract_config(
     )
 
     logger.info(f"build_extract_config: asking Gemini for {screen_type} extraction config")
-    raw = _gemini_api_call(prompt, screenshot_b64, model_name="gemini-2.5-flash")
+    raw = _llm_call(prompt, screenshot_b64)
 
     if not raw:
         logger.warning("build_extract_config: Gemini returned nothing")
@@ -657,7 +666,8 @@ def _build_knowledge_context(
     # 3. Screen-type-specific quirks (filtered)
     if quirks:
         q_text = "\n".join(
-            f"- [{q.get('severity', 'important').upper()}] {q['description']}"
+            f"- [{q.get('severity', 'important').upper()}] "
+            f"{q.get('description') or q.get('quirk') or ''}"
             for q in quirks
         )
         parts.append(f"=== PLATFORM QUIRKS (affecting {screen_type}) ===\n{q_text}")
@@ -817,7 +827,7 @@ def build_bt_from_tree(
         or None if Gemini can't build a valid BT.
     """
     from spark.tasks.prompt_codex import (
-        analyze_tree, SCREEN_PATTERNS,
+        analyze_tree,
         get_handler_docs, get_question_type_docs,
         SECTION_5_HANDLERS_ORIGINAL, SECTION_6_QUESTION_TYPES_ORIGINAL,
         SECTION_7_STRATEGIES,
@@ -826,6 +836,8 @@ def build_bt_from_tree(
         load_knowledge, load_learned,
         get_handlers_for_screen, get_quirks_for_screen,
         get_question_types_for_screen,
+        get_operational_notes_for_screen,
+        get_prompt_block_for_screen,
     )
 
     tags = analyze_tree(tree)
@@ -840,14 +852,23 @@ def build_bt_from_tree(
         f"has_guidance={'yes' if user_guidance else 'no'}"
     )
 
-    # Build screen-specific guidance from detected tree signals (UNCHANGED)
-    screen_guidance_parts = []
-    for tag in tags:
-        if tag in SCREEN_PATTERNS:
-            screen_guidance_parts.append(SCREEN_PATTERNS[tag])
-
-    screen_specific_guidance = "\n\n".join(screen_guidance_parts) if screen_guidance_parts else \
-        "No specific assessment signals detected in the tree. Use the screenshot and tree to determine the right approach."
+    # Screen-specific canonical BT pattern is pulled VERBATIM from knowledge.json's
+    # prompt_block fields (the former SCREEN_PATTERNS strings, migrated 2026-05-19
+    # WITH FORMAT PRESERVATION — Jesse's directive). This is the directive section
+    # the worker treats as canonical. Supplementary operational_notes (anti-patterns,
+    # discovered gotchas) are appended separately as bullets.
+    if use_knowledge:
+        screen_specific_guidance = get_prompt_block_for_screen(knowledge, screen_type)
+        if not screen_specific_guidance:
+            screen_specific_guidance = (
+                "No specific assessment signals detected in the tree. Use the "
+                "screenshot and tree to determine the right approach."
+            )
+    else:
+        screen_specific_guidance = (
+            "No specific assessment signals detected in the tree. Use the "
+            "screenshot and tree to determine the right approach."
+        )
 
     # Assemble the prompt
     prompt_parts = [
@@ -869,6 +890,16 @@ def build_bt_from_tree(
         knowledge_ctx = _build_knowledge_context(knowledge, screen_type, quirks, learned)
         if knowledge_ctx:
             prompt_parts.append(knowledge_ctx)
+
+        # 3-tier operational_notes: platform / category / matched-subtype.
+        # These carry concrete BT templates and discovered-failure lessons that
+        # subtype-specific BT generation depends on (e.g. drag-engagement rules
+        # for Perseus sorter widgets). Loading must use the CLASSIFIED variant
+        # passed in via screen_type, not "UNKNOWN" — the matcher resolves the
+        # subtype by substring match against the variant suffix.
+        op_notes = get_operational_notes_for_screen(knowledge, screen_type)
+        if op_notes:
+            prompt_parts.append(op_notes)
 
         # Selective handler docs
         prompt_parts.append(get_handler_docs(handler_names))
@@ -927,7 +958,7 @@ def build_bt_from_tree(
     logger.info(f"build_bt_from_tree: prompt length={len(prompt)} chars")
 
     # Call Gemini 2.5 Pro — BT building requires deep reasoning
-    raw = _gemini_api_call(prompt, screenshot_b64, model_name="gemini-2.5-pro")
+    raw = _llm_call(prompt, screenshot_b64)
     if not raw:
         logger.error("build_bt_from_tree: Gemini 2.5 Pro returned nothing")
         return None

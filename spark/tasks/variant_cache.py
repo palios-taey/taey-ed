@@ -20,9 +20,16 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .knowledge_loader import (
+    get_verified_bt_template_entry,
+    increment_operational_note_verified_count,
+    load_knowledge,
+)
 from .paths import VARIANT_BTS_DIR, HASH_INDEX_DIR
 
 logger = logging.getLogger("taey-ed")
+
+VERIFIED_TEMPLATE_REUSE_THRESHOLD = 3
 
 # Variants where BT varies per instance (always rebuild via Pro)
 # Any EXERCISE_* variant is non-deterministic — questions change per instance.
@@ -39,14 +46,38 @@ NON_DETERMINISTIC_VARIANTS = {
 }
 
 
-def is_non_deterministic(variant: str) -> bool:
+def is_non_deterministic(platform: str, variant: str) -> bool:
     """Check if a variant needs a fresh BT every time.
     Any EXERCISE_* variant is non-deterministic (questions change per instance).
     """
-    if variant in NON_DETERMINISTIC_VARIANTS:
-        return True
-    # Catch-all: any variant starting with EXERCISE_ is non-deterministic
-    return variant.startswith("EXERCISE_")
+    # Bare "EXERCISE" included: questions change per instance regardless of
+    # subtype. Observed live 2026-06-11: a hash relabeled to bare EXERCISE
+    # was treated deterministic and replayed a stale stored BT on a test Q.
+    if (variant in NON_DETERMINISTIC_VARIANTS
+            or variant == "EXERCISE"
+            or variant.startswith("EXERCISE_")):
+        try:
+            knowledge = load_knowledge(platform)
+            template_entry = get_verified_bt_template_entry(
+                knowledge,
+                variant,
+                min_verified=VERIFIED_TEMPLATE_REUSE_THRESHOLD,
+            )
+            # Exact-subtype only (observed 2026-06-11): the template lookup
+            # falls back across ALL subtypes, so ONE subtype at the gate
+            # flipped EVERY EXERCISE_* variant to "deterministic" and
+            # replayed a stale stored BT (with a mid-test Cmd+R) against the
+            # wrong question. A foreign subtype's template is NOT a license
+            # to replay this variant.
+            if template_entry and not _subtype_matches_variant(
+                variant, template_entry.get("source") or {},
+            ):
+                template_entry = None
+            return template_entry is None
+        except Exception as e:
+            logger.warning(f"variant_cache: verified template check failed for {platform}/{variant}: {e}")
+            return True
+    return False
 
 
 # ── Atomic file I/O ──
@@ -96,7 +127,29 @@ def lookup_variant_bt(platform: str, variant: str) -> dict | None:
     data = _load_variants(platform)
     entry = data["variants"].get(variant)
     if not entry or not entry.get("behavior_tree"):
-        return None
+        knowledge = load_knowledge(platform)
+        template_entry = get_verified_bt_template_entry(
+            knowledge,
+            variant,
+            min_verified=VERIFIED_TEMPLATE_REUSE_THRESHOLD,
+        )
+        # Exact-subtype only — see is_non_deterministic (2026-06-11).
+        if template_entry and not _subtype_matches_variant(
+            variant, template_entry.get("source") or {},
+        ):
+            template_entry = None
+        if not template_entry:
+            return None
+        template = template_entry["template"]
+        return {
+            "behavior_tree": template["tree"],
+            "extract": template.get("extract"),
+            "expected_next": template.get("expected_next", []),
+            "master_type": template_entry["source"].get("master_screen_type", variant.split("_")[0]),
+            "validated": True,
+            "success_count": int(template_entry["source"].get("verified_count", 0) or 0),
+            "source": template_entry["source"],
+        }
     return {
         "behavior_tree": entry["behavior_tree"],
         "extract": entry.get("extract"),
@@ -104,6 +157,7 @@ def lookup_variant_bt(platform: str, variant: str) -> dict | None:
         "master_type": entry.get("master_type", variant.split("_")[0]),
         "validated": entry.get("validated", False),
         "success_count": entry.get("success_count", 0),
+        "source": entry.get("source"),
     }
 
 
@@ -113,7 +167,7 @@ def store_variant_bt(
     bt: dict,
     extract: dict = None,
     expected_next: list = None,
-    source: str = "gemini_pro",
+    source="gemini_pro",
 ):
     """Store or update a BT for a variant."""
     data = _load_variants(platform)
@@ -138,17 +192,71 @@ def store_variant_bt(
     logger.info(f"variant_cache: stored BT for {variant} on {platform} (source={source})")
 
 
+def _subtype_matches_variant(variant: str, source: dict) -> bool:
+    """Credit/debit attribution guard (grok task-8c8a258f counter-example,
+    observed live 2026-06-11): the template lookup falls back across ALL of a
+    master's subtypes, so first-match crediting gave checkbox/ranking
+    successes to the DROPDOWN note — inflating its verified_count to the
+    replay gate and causing a stale-template replay on a ranking question.
+    A fallback-resolved source may only be credited/debited when its subtype
+    matches the variant's subtype EXACTLY. No match -> no attribution
+    (under-crediting is safe; cross-crediting poisons the gate)."""
+    try:
+        from spark.tasks.knowledge_loader import (
+            _variant_subtype_key, _normalize_subtype_name,
+        )
+        from spark.tasks.screen_type_util import get_master_category
+        master = get_master_category(variant) or variant
+        want = _variant_subtype_key(variant, master)
+        if not want:
+            return False  # bare master — cannot attribute to any one note
+        have = _normalize_subtype_name(str(source.get("subtype_name") or ""))
+        return bool(have) and have == want
+    except Exception as e:
+        logger.warning(f"variant_cache: subtype-match check failed ({variant}): {e}")
+        return False
+
+
 def mark_variant_validated(platform: str, variant: str):
-    """Increment success count and set validated=True."""
+    """Increment success count and set validated=True.
+
+    Source-note credit resolves at min_verified=0, NOT the reuse threshold:
+    a note must accumulate verified_count 0->1->2->3 through worker-built
+    successes BEFORE it qualifies for template replay. Resolving credit
+    through the reuse gate would trap every note below 3 forever (the
+    chicken-and-egg Jesse flagged 2026-05-18).
+    """
+    source = None
+    resolved = lookup_variant_bt(platform, variant)
+    if resolved:
+        source = resolved.get("source")
+    if not isinstance(source, dict):
+        try:
+            knowledge = load_knowledge(platform)
+            template_entry = get_verified_bt_template_entry(
+                knowledge, variant, min_verified=0,
+            )
+            if template_entry and _subtype_matches_variant(
+                variant, template_entry.get("source") or {},
+            ):
+                source = template_entry["source"]
+        except Exception as e:
+            logger.warning(
+                f"variant_cache: credit-source lookup failed for {platform}/{variant}: {e}"
+            )
+
     data = _load_variants(platform)
     entry = data["variants"].get(variant)
-    if not entry:
-        return
-    entry["validated"] = True
-    entry["success_count"] = entry.get("success_count", 0) + 1
-    entry["last_success"] = datetime.now(timezone.utc).isoformat()
-    _atomic_write(_variant_path(platform), data)
-    logger.info(f"variant_cache: validated {variant} (count={entry['success_count']})")
+    if entry:
+        entry["validated"] = True
+        entry["success_count"] = entry.get("success_count", 0) + 1
+        entry["consecutive_failures"] = 0
+        entry["last_success"] = datetime.now(timezone.utc).isoformat()
+        _atomic_write(_variant_path(platform), data)
+        logger.info(f"variant_cache: validated {variant} (count={entry['success_count']})")
+
+    if isinstance(source, dict) and source.get("kind") == "operational_note":
+        increment_operational_note_verified_count(platform, source)
 
 
 def invalidate_variant_bt(platform: str, variant: str):
@@ -222,8 +330,68 @@ def mark_hash_validated(platform: str, skel_hash: str):
     entry = data["hashes"].get(skel_hash)
     if entry:
         entry["validated"] = True
+        entry["consecutive_failures"] = 0
         entry["last_seen"] = datetime.now(timezone.utc).isoformat()
         _atomic_write(_hash_index_path(platform), data)
+
+
+def record_validated_map_failure(platform: str, skel_hash: str, variant: str = None) -> bool:
+    """Demotion path (INTENDED_FLOW §E): a VALIDATED map that fails twice
+    consecutively is demoted back into the learning loop — validated=False
+    (the normal unvalidated handling applies on its next failure) and its
+    credited operational_note debited one step, dropping it below the replay
+    gate. Never deleted here; never demoted on a one-off failure.
+
+    Returns True if a demotion happened, False otherwise.
+    """
+    data = _load_hash_index(platform)
+    entry = data["hashes"].get(skel_hash)
+    if not entry or not entry.get("validated"):
+        return False
+    fails = int(entry.get("consecutive_failures", 0) or 0) + 1
+    entry["consecutive_failures"] = fails
+    if fails < 2:
+        _atomic_write(_hash_index_path(platform), data)
+        logger.info(
+            f"variant_cache: validated map {variant or skel_hash[:12]} failure "
+            f"{fails}/2 — keeping (demotes at 2 consecutive)"
+        )
+        return False
+
+    entry["validated"] = False
+    entry["consecutive_failures"] = 0
+    _atomic_write(_hash_index_path(platform), data)
+
+    source = None
+    if variant:
+        vdata = _load_variants(platform)
+        ventry = vdata["variants"].get(variant)
+        if ventry:
+            ventry["validated"] = False
+            source = ventry.get("source")
+            _atomic_write(_variant_path(platform), vdata)
+        if not isinstance(source, dict):
+            try:
+                knowledge = load_knowledge(platform)
+                template_entry = get_verified_bt_template_entry(
+                    knowledge, variant, min_verified=1,
+                )
+                if template_entry and _subtype_matches_variant(
+                    variant, template_entry.get("source") or {},
+                ):
+                    source = template_entry["source"]
+            except Exception as e:
+                logger.warning(
+                    f"variant_cache: demote-source lookup failed for {platform}/{variant}: {e}"
+                )
+    if isinstance(source, dict) and source.get("kind") == "operational_note":
+        increment_operational_note_verified_count(platform, source, increment=-1)
+
+    logger.warning(
+        f"variant_cache: DEMOTED {variant or skel_hash[:12]} after {fails} "
+        f"consecutive failures — back into the learning loop (not deleted)"
+    )
+    return True
 
 
 # ── Stats ──

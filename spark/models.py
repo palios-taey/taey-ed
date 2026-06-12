@@ -5,7 +5,7 @@ Pydantic request models for the Taey-Ed API.
 Pydantic request/response shapes for the API.
 """
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from typing import Optional, Dict, List, Union
 
 
@@ -76,6 +76,35 @@ class GenerateRequest(BaseModel):
     screen_config: Optional[Dict] = None
     items: Optional[List[Dict]] = None
     screenshot_b64: Optional[str] = None
+    # Top-K relevant chunks from the user's local KB, attached by the Mac's
+    # send_to_llm handler so the answer grounds in THIS course's own
+    # video/article content (INTENDED_FLOW §C). Forward ref — KBChunk is
+    # defined below; resolved by the model_rebuild() call after it.
+    relevant_kb_chunks: Optional[List["KBChunk"]] = None
+
+    @field_validator("relevant_kb_chunks", mode="before")
+    @classmethod
+    def _drop_malformed_chunks(cls, v):
+        """Chunks are auxiliary context — a malformed entry must NEVER 422
+        the whole question (observed live 2026-06-11 14:26: course=unknown
+        served a degenerate KB row, strict typing rejected the request, the
+        quiz question's solve died). Filter bad entries loudly, keep good."""
+        if not isinstance(v, list):
+            return v
+        good, dropped = [], 0
+        for ch in v:
+            if isinstance(ch, dict) and (ch.get("text") or "").strip():
+                ch.setdefault("source_screen_type", "UNKNOWN")
+                good.append(ch)
+            else:
+                dropped += 1
+        if dropped:
+            import logging
+            logging.getLogger(__name__).warning(
+                f"GenerateRequest: dropped {dropped} malformed relevant_kb_chunks "
+                f"(kept {len(good)})"
+            )
+        return good
 
 
 # ── Action Review (Phase 7) ──
@@ -175,6 +204,10 @@ class KBChunk(BaseModel):
     text: str  # the actual chunk text (≤1500 chars per chunk recommended)
     score: Optional[float] = None  # cosine similarity to query, 0..1
     kb_chunk_id: Optional[str] = None  # opaque local-only ID
+
+
+# Resolve the KBChunk forward reference in GenerateRequest (defined above).
+GenerateRequest.model_rebuild()
 
 
 class NextActionRequest(BaseModel):

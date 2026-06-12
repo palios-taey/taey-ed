@@ -26,6 +26,14 @@ from .consultation_state import (
 )
 from .notify_tmux import notify_spark_claude
 from .paths import is_valid_png_b64
+from .escalation import (
+    tier_for_attempt,
+    build_packet,
+    notify_body_for_tier,
+    dispatch_body_for_tier,
+    notify_fleet,
+    UNSOLVED_LOG,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -173,11 +181,17 @@ def request_consultation(
             except Exception:
                 continue
 
-        if spark_attempts >= 2:
-            escalation_level = "perplexity"
+        # ONE SHOT RULE (Jesse 2026-05-18): Any reconsultation = immediate
+        # claude_diagnosing escalation. Worker gets exactly one attempt on a
+        # screen. If the BT failed and Mac is asking again, the worker has
+        # nothing new to try — needs claude to edit knowledge.json. The
+        # spark_attempts counter is unreliable (screen_hash drift across
+        # reconsults can keep it at 0 forever), so we trust is_reconsultation
+        # as the escalation trigger.
+        escalation_level = "user"  # routed through claude_diagnosing below
         logger.info(
-            f"Reconsultation: {spark_attempts} previous attempts "
-            f"→ escalation_level={escalation_level}"
+            f"Reconsultation detected ({spark_attempts} prior counted) "
+            f"→ escalation_level=user (one-shot rule)"
         )
 
     # Save context/metadata
@@ -255,42 +269,222 @@ def request_consultation(
             f"=== END RUNBOOK ===\n\n"
         )
 
-    # Hard cap: after Perplexity attempt, next failure = user escalation
-    if escalation_level == "perplexity" and is_reconsultation and spark_attempts >= 3:
-        escalation_level = "user"
-    if spark_attempts >= 3:
+    # (Legacy perplexity/user thresholds collapsed into the single
+    # spark_attempts >= 1 → user check above. Kept here as a final safety net
+    # in case escalation_level was set by a path that bypasses the above.)
+    if spark_attempts >= 1 and escalation_level != "user":
         escalation_level = "user"
 
-    # User escalation — return directive instead of creating another consultation
+    # Hit user-escalation threshold. Before surfacing to the human user, run
+    # the claude-diagnosis loop: notify the Mira-side Claude session, pause Mac
+    # (return a wait status), let claude edit knowledge.json, then auto-retry.
+    # State is keyed by (platform, screen_hash) at a stable path so it persists
+    # across consult_id changes during reconsult cycles.
     if escalation_level == "user":
-        logger.warning(
-            f"MAX_CONSULTATION_STEPS reached ({spark_attempts} attempts). "
-            f"Escalating to user."
-        )
-        metadata["escalation_level"] = "user"
-        metadata["status"] = "user_required"
-        atomic_write_json(consult_path / "metadata.json", metadata)
+        # Use skeleton_hash to key the diagnosis state dir — must match the
+        # hash used by routes/next_action.py::_escalate_to_claude_diagnosing
+        # helper so both paths reference the SAME state dir and flag files.
+        try:
+            from spark.tasks.skeleton import (
+                extract_skeleton as _ext_sk_cr, skeleton_hash as _skel_hash_cr,
+            )
+            screen_hash = _skel_hash_cr(_ext_sk_cr(tree))
+        except Exception:
+            screen_hash = compute_tree_hash(tree)
+        diag_state_dir = Path("/tmp/taey-ed-claude-diagnosing") / f"{platform}_{screen_hash[:16]}"
+        diag_state_dir.mkdir(parents=True, exist_ok=True)
+        diagnosing_flag = diag_state_dir / "diagnosing.flag"
+        done_flag = diag_state_dir / "diagnosis_done.flag"
+        gave_up_flag = diag_state_dir / "gave_up.flag"
+        retry_count_path = diag_state_dir / "retries.txt"
 
-        notify_spark_claude(
-            f"ESCALATION TO USER: Consultation {consultation_id} for {platform} "
-            f"has exhausted all automatic resolution ({spark_attempts} attempts). "
-            f"User input required."
-        )
-        return {
-            "consultation_id": consultation_id,
-            "status": "user_required",
-            "message": f"Exhausted {spark_attempts} attempts. User input needed.",
-            "path": str(consult_path),
-        }
+        # Real user escalation: claude explicitly gave up
+        if gave_up_flag.exists():
+            logger.warning(
+                f"Claude explicitly gave up on screen_hash={screen_hash[:16]}. "
+                f"Escalating to user."
+            )
+            metadata["escalation_level"] = "user"
+            metadata["status"] = "user_required"
+            atomic_write_json(consult_path / "metadata.json", metadata)
+            notify_spark_claude(
+                f"ESCALATION TO USER: Consultation {consultation_id} for {platform} "
+                f"— claude gave up after diagnosis attempts. User input required."
+            )
+            return {
+                "consultation_id": consultation_id,
+                "status": "user_required",
+                "message": f"Exhausted {spark_attempts} attempts + claude diagnosis. User input needed.",
+                "path": str(consult_path),
+            }
+
+        # Diagnosis retry count: number of COMPLETED diagnosis cycles for this
+        # (platform, screen_hash). 0 = first ever, 1 = one cycle finished, etc.
+        retry_count = 0
+        if retry_count_path.exists():
+            try:
+                retry_count = int(retry_count_path.read_text().strip())
+            except (ValueError, OSError):
+                retry_count = 0
+
+        # Resolve which tier this attempt belongs to (see escalation.py for ladder).
+        tier = tier_for_attempt(retry_count)
+
+        # Terminal tier: full ladder exhausted. Auto-mark unsolvable, log to
+        # UNSOLVED.md, return user_required. claude-primary does not give up
+        # manually — the system does, per Jesse 2026-05-18 ladder.
+        if tier == "terminal":
+            logger.warning(
+                f"Escalation ladder exhausted ({retry_count} cycles) for "
+                f"screen_hash={screen_hash[:16]}. Auto-marking unsolvable."
+            )
+            gave_up_flag.touch()
+            try:
+                UNSOLVED_LOG.parent.mkdir(parents=True, exist_ok=True)
+                with UNSOLVED_LOG.open("a") as fh:
+                    fh.write(
+                        f"\n## {datetime.utcnow().isoformat()}Z — {platform} {screen_hash[:16]}\n"
+                        f"- consultation_id: {consultation_id}\n"
+                        f"- attempts_exhausted: {retry_count}\n"
+                        f"- state_dir: {diag_state_dir}\n"
+                        f"- last_consult: {consult_path}\n"
+                    )
+            except Exception as e:
+                logger.error(f"UNSOLVED.md append failed: {e}")
+            metadata["escalation_level"] = "terminal"
+            metadata["status"] = "user_required"
+            atomic_write_json(consult_path / "metadata.json", metadata)
+            notify_spark_claude(
+                f"TERMINAL ESCALATION — {platform} screen_hash {screen_hash[:16]} "
+                f"marked unsolvable after ladder exhaustion. "
+                f"Logged to {UNSOLVED_LOG}.",
+                notify_type="defect",
+            )
+            return {
+                "consultation_id": consultation_id,
+                "status": "user_required",
+                "message": f"Escalation ladder exhausted ({retry_count} cycles). Marked unsolvable.",
+                "path": str(consult_path),
+            }
+
+        # Diagnosis just completed: increment retry_count, reset escalation,
+        # fall through to a fresh worker consult that picks up updated
+        # knowledge.json via hot-reload.
+        if done_flag.exists():
+            logger.info(
+                f"Diagnosis cycle complete for screen_hash={screen_hash[:16]}. "
+                f"retry_count {retry_count} -> {retry_count + 1}. "
+                f"Next tier: {tier_for_attempt(retry_count + 1)}."
+            )
+            retry_count_path.write_text(str(retry_count + 1))
+            done_flag.unlink()
+            diagnosing_flag.unlink(missing_ok=True)
+            spark_attempts = 0
+            escalation_level = "spark_claude"
+            metadata["spark_attempts"] = 0
+            metadata["escalation_level"] = "spark_claude"
+            metadata["claude_diagnosis_cycles"] = retry_count + 1
+            atomic_write_json(consult_path / "metadata.json", metadata)
+            # Fall through to normal worker dispatch below
+
+        else:
+            # First entry to diagnosing for this cycle, or already-pending.
+            # Notify once per cycle; build the rich-context escalation packet
+            # so the recipient (claude-primary) and any Tier 2/3 dispatch has
+            # everything it needs in one document.
+            if not diagnosing_flag.exists():
+                diagnosing_flag.touch()
+                screen_type_hint = metadata.get("screen_type_hint", "UNKNOWN")
+
+                # Build the packet. Operational notes rendering deferred to
+                # caller knowledge if available; here we pass empty string and
+                # let the worker prompt include them at BT-gen time.
+                try:
+                    from .knowledge_loader import (
+                        load_knowledge as _lk, get_operational_notes_for_screen,
+                    )
+                    knowledge = _lk(platform)
+                    notes_md = get_operational_notes_for_screen(knowledge, screen_type_hint)
+                except Exception as e:
+                    logger.warning(f"escalation packet: ops-notes load failed: {e}")
+                    knowledge = {}
+                    notes_md = ""
+
+                try:
+                    packet_path = build_packet(
+                        platform=platform,
+                        screen_hash=screen_hash,
+                        consult_path=consult_path,
+                        diag_state_dir=diag_state_dir,
+                        retry_count=retry_count,
+                        knowledge=knowledge,
+                        operational_notes_rendered=notes_md,
+                        screen_type_hint=screen_type_hint,
+                    )
+                except Exception as e:
+                    logger.error(f"escalation packet build failed: {e}")
+                    packet_path = diag_state_dir / "(packet_build_failed)"
+
+                body = notify_body_for_tier(
+                    tier=tier,
+                    packet_path=packet_path,
+                    platform=platform,
+                    screen_hash=screen_hash,
+                    retry_count=retry_count,
+                    consult_path=consult_path,
+                    diag_state_dir=diag_state_dir,
+                )
+                notify_spark_claude(body, notify_type="escalation")
+
+                # Auto-climb (INTENDED_FLOW §D): Tier 2/3 dispatch goes to
+                # taeys-hands DIRECTLY from the server. claude-primary's
+                # notification above is the synthesis/fold assignment, not a
+                # relay instruction.
+                dispatch_body = dispatch_body_for_tier(
+                    tier=tier,
+                    packet_path=packet_path,
+                    platform=platform,
+                    screen_hash=screen_hash,
+                    retry_count=retry_count,
+                    bt_debug_tail=bt_debug_log,
+                )
+                if dispatch_body:
+                    notify_fleet("taeys-hands", dispatch_body, notify_type="task")
+                logger.warning(
+                    f"Escalation triggered for {consultation_id} "
+                    f"({platform}, {screen_type_hint}, hash={screen_hash[:16]}, "
+                    f"tier={tier}, retry_count={retry_count}, "
+                    f"auto_dispatched={'yes' if dispatch_body else 'n/a'})"
+                )
+            metadata["status"] = "claude_diagnosing"
+            metadata["escalation_level"] = f"diagnosing_{tier}"
+            atomic_write_json(consult_path / "metadata.json", metadata)
+            return {
+                "consultation_id": consultation_id,
+                "status": "claude_diagnosing",
+                "message": f"Escalation tier={tier} active — Mac will retry automatically.",
+                "path": str(consult_path),
+            }
 
     # Comprehensive self-contained prompt via prompt_codex
     from .prompt_codex import compile_prompt
 
+    # Pass screen_type to prompt builder so it can inject subtype-specific
+    # operational_notes from knowledge.json. Falls back to "UNKNOWN" only when
+    # we genuinely have no hint; the prompt builder treats UNKNOWN as "include
+    # all subtype notes since we don't know which applies yet" via the
+    # master-category fallback in get_operational_notes_for_screen.
+    screen_type_for_prompt = (
+        context.get("screen_type")
+        or metadata.get("screen_type_hint")
+        or "UNKNOWN"
+    )
     consultation_context = {
         "escalation_level": escalation_level,
         "course_id": context.get("course_id", "unknown"),
         "failure_reason": context.get("failure_reason", ""),
         "previous_screen_type": context.get("previous_screen", ""),
+        "screen_type": screen_type_for_prompt,
     }
 
     consultation_details = compile_prompt(

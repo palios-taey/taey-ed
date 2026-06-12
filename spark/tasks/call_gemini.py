@@ -201,7 +201,9 @@ async def _solve_complex_with_gemini(
                 "model": CLAUDE_CLI_MODEL,
             }
 
-        # Parse response: same as solve_checkbox (letter-based)
+        # Parse response: letter-based when options provided, free-text otherwise.
+        # No substring-match fallback — if letter parsing fails on a letter-format
+        # request, fail explicitly rather than guessing.
         if options:
             letter_to_opt = {letters[i]: opt for i, opt in enumerate(options) if i < len(letters)}
             selected = []
@@ -209,13 +211,24 @@ async def _solve_complex_with_gemini(
                 part = part.strip().upper()
                 if len(part) == 1 and part in letter_to_opt:
                     selected.append(letter_to_opt[part])
-            # Fallback: try matching raw text to options
             if not selected:
-                for opt in options:
-                    if opt.lower() in raw_answer.lower():
-                        selected.append(opt)
+                return {
+                    "success": False,
+                    "error": (
+                        "solve_complex with options expected letter response (A, B, C, ...), "
+                        f"got: {raw_answer[:80]!r}"
+                    ),
+                    "answer": "",
+                    "question_type": "solve_complex",
+                    "model": CLAUDE_CLI_MODEL,
+                }
         else:
             selected = [raw_answer]
+
+        # Universal response contract: `answer` carries the canonical single-value
+        # answer for any caller that reads $llm.answer. `selected` retained for
+        # explicit multi-select callers using $llm.selected / for_each.
+        canonical_answer = selected[0] if len(selected) == 1 else ", ".join(selected)
 
         logger.info(
             f"solve_complex: selected {len(selected)} answers: "
@@ -224,7 +237,7 @@ async def _solve_complex_with_gemini(
 
         return {
             "success": True,
-            "answer": "complex_complete",
+            "answer": canonical_answer,
             "selected": selected,
             "raw_response": raw_answer,
             "question_type": "solve_complex",
@@ -278,11 +291,18 @@ async def _solve_matching_with_gemini(
     Returns matches dict like the legacy Ollama/Gemini path.
     """
     try:
+        # Mac sends RAW AX text as of bt_helpers commit 946d450 (2026-05-18).
+        # No server-side compensation needed here — the Mac-side select_dropdown_option
+        # handler's norm() function strips ARIA suffixes (" selected" / " not selected")
+        # at click-time, matching wanted-vs-menu after normalization. Per Jesse's
+        # architectural principle (Mac stays dumb capture/execute, server interprets),
+        # we don't pre-process options on the server side either when Mac sends raw.
         items_block_parts = []
         for i, item in enumerate(items):
             label = item.get("label", f"Item {i+1}")
-            item_options = item.get("options", [])
-            opts_str = ", ".join(f'"{o}"' for o in item_options)
+            raw_options = item.get("options", [])
+            # Normalize dict-shaped options (from discover_menu) to display text.
+            opts_str = ", ".join(f'"{_option_text(o)}"' for o in raw_options)
             items_block_parts.append(f"{i+1}. {label} — Options: [{opts_str}]")
         items_block = "\n".join(items_block_parts)
 
@@ -391,18 +411,26 @@ async def _solve_with_claude_cli_image(
     import asyncio as _aio
 
     def _do():
-        try:
-            raw, _meta = call_claude_cli(
-                system_prompt="You are answering an educational quiz question using both the screenshot and the prompt below. Reply with ONLY the answer in the exact format the prompt requests — no preamble, no markdown fences.",
-                user_message=prompt,
-                screenshot_b64=screenshot_b64,
-                timeout_s=timeout,
-                require_screenshot_read=bool(screenshot_b64),
-            )
-            return raw
-        except ClaudeCallError as e:
-            logger.error(f"_solve_with_claude_cli_image: {e}")
-            return None
+        # Transient claude CLI failures (exit 1, empty stderr) observed twice
+        # live on 2026-06-11 (11:02, 11:36) and not reproducible immediately
+        # after — each cost a full Mac cycle. One retry absorbs the blip.
+        for attempt in (1, 2):
+            try:
+                raw, _meta = call_claude_cli(
+                    system_prompt="You are answering an educational quiz question using both the screenshot and the prompt below. Reply with ONLY the answer in the exact format the prompt requests — no preamble, no markdown fences.",
+                    user_message=prompt,
+                    screenshot_b64=screenshot_b64,
+                    timeout_s=timeout,
+                    require_screenshot_read=bool(screenshot_b64),
+                )
+                if raw:
+                    return raw
+                logger.error(
+                    f"_solve_with_claude_cli_image: empty response (attempt {attempt}/2)"
+                )
+            except ClaudeCallError as e:
+                logger.error(f"_solve_with_claude_cli_image (attempt {attempt}/2): {e}")
+        return None
 
     return await _aio.get_event_loop().run_in_executor(None, _do)
 
@@ -500,6 +528,7 @@ async def generate_answer(
     screen_config: Optional[Dict] = None,
     items: Optional[List[Dict]] = None,
     screenshot_b64: Optional[str] = None,
+    relevant_kb_chunks: Optional[List[Dict]] = None,
 ) -> dict:
     """
     Generate answer for educational question.
@@ -529,6 +558,29 @@ async def generate_answer(
     """
     # Build context block from KB + image descriptions
     context_parts = []
+    if relevant_kb_chunks:
+        # INTENDED_FLOW §C: chunks retrieved from THIS course's own
+        # videos/articles on the user's Mac — the answer must ground here.
+        chunk_texts = [
+            (ch.get("text") or "").strip()
+            for ch in relevant_kb_chunks
+            if isinstance(ch, dict) and (ch.get("text") or "").strip()
+        ]
+        if chunk_texts:
+            context_parts.append(
+                "Course content (from this course's own videos/articles — "
+                "ground your answer in this material):\n"
+                + "\n---\n".join(chunk_texts)
+            )
+        else:
+            # Fail loud (grok task-8c8a258f): chunks arrived but none carried
+            # usable 'text' — wire-format drift would otherwise silently
+            # degrade to "No reference material available."
+            logger.warning(
+                f"relevant_kb_chunks present ({len(relevant_kb_chunks)}) but "
+                f"NO usable 'text' fields — KBChunk wire-format drift? "
+                f"keys={[list(ch.keys()) if isinstance(ch, dict) else type(ch).__name__ for ch in relevant_kb_chunks[:3]]}"
+            )
     if context:
         context_parts.append("Reference material:\n" + "\n".join(context))
     if image_descriptions:
@@ -576,7 +628,24 @@ async def generate_answer(
             logger.info(f"navigate: filtered {len(items)} items to {idx}")
         items_block = "\n".join(items_parts)
 
-        prompt = NAVIGATE_PROMPT.format(items_block=items_block)
+        # If the BT author supplied screen-specific picking rules in the
+        # `question` field, use those AS the picking rules — append the items
+        # list + the "copy exactly" closer so the model has both screen-level
+        # context and the canonical output discipline. Falls back to the
+        # generic NAVIGATE_PROMPT when no question is supplied.
+        if question and question.strip():
+            prompt = (
+                f"{question.strip()}\n\n"
+                f"Clickable items (in page order):\n{items_block}\n\n"
+                f"OUTPUT REQUIREMENTS — read carefully:\n"
+                f"- Reply with ONLY the exact description string of ONE chosen item, "
+                f"copied character-for-character from the list above.\n"
+                f"- No commentary, no quoting, no truncation, no paraphrase.\n"
+                f"- The string MUST appear verbatim in the items list. If you cannot "
+                f"identify a match from the rules, output item 1's description verbatim."
+            )
+        else:
+            prompt = NAVIGATE_PROMPT.format(items_block=items_block)
 
     elif question_type == "solve_assessment" and items:
         # Full assessment: items is a list of {type, question, options}
@@ -588,10 +657,10 @@ async def generate_answer(
             letters = "ABCDEFGHIJ"
 
             if q_type == "radio":
-                opts_str = "\n".join(f"  {letters[j]}) {o}" for j, o in enumerate(opts) if j < len(letters))
+                opts_str = "\n".join(f"  {letters[j]}) {_option_text(o)}" for j, o in enumerate(opts) if j < len(letters))
                 q_parts.append(f"Question {i} [RADIO - select ONE]:\n{q_text}\n{opts_str}")
             elif q_type == "checkbox":
-                opts_str = "\n".join(f"  {letters[j]}) {o}" for j, o in enumerate(opts) if j < len(letters))
+                opts_str = "\n".join(f"  {letters[j]}) {_option_text(o)}" for j, o in enumerate(opts) if j < len(letters))
                 q_parts.append(f"Question {i} [CHECKBOX - select ALL correct]:\n{q_text}\n{opts_str}")
 
         questions_block = "\n\n".join(q_parts)
@@ -606,7 +675,8 @@ async def generate_answer(
         for i, item in enumerate(items):
             label = item.get("label", f"Item {i+1}")
             item_options = item.get("options", [])
-            opts_str = ", ".join(f'"{o}"' for o in item_options)
+            # Normalize dict-shaped options (from discover_menu) to display text.
+            opts_str = ", ".join(f'"{_option_text(o)}"' for o in item_options)
             items_block_parts.append(f"{i+1}. {label} — Options: [{opts_str}]")
         items_block = "\n".join(items_block_parts)
 
@@ -699,16 +769,74 @@ async def generate_answer(
         matches = {}
 
         if question_type == "navigate" and items:
-            # Match LLM response to one of the item descriptions
+            # Match LLM response to one of the item descriptions, then carry
+            # the matched item's element reference through the response so the
+            # BT can click by element (not by text re-search).
+            #
+            # Why: Khan and similar platforms concatenate state suffixes into
+            # link names (e.g. "Apply: Foo: unfamiliarUp next for you!"). The
+            # LLM strips those when picking, so an exact text match downstream
+            # fails. The element ref from find_all is stable; use it instead.
             descriptions = [
                 item.get("popup_desc", item.get("description", ""))
                 for item in items
             ]
             answer = match_to_option(raw_answer, descriptions) if descriptions else raw_answer
-            logger.info(f"Navigate: selected '{answer[:80]}'")
+
+            # Find the items[i] whose description == answer. match_to_option
+            # already returned a description-list entry, so exact-match should
+            # work first.
+            #
+            # Fallback when the LLM strips suffixes (e.g. answers "Kinetic
+            # energy" when actual description is "Apply: Kinetic energy:
+            # unfamiliar"): substring containment, preferring items with
+            # progress markers ("Up next for you!" > "unfamiliar" > others).
+            matched_item = None
+            answer_element = None
+            # Pass 1: exact match
+            for i, d in enumerate(descriptions):
+                if d == answer:
+                    matched_item = items[i]
+                    answer_element = items[i].get("element")
+                    break
+            # Pass 2: case-insensitive substring (answer appears inside a description)
+            if matched_item is None and answer:
+                lower_answer = answer.lower().strip()
+                candidates = []  # (priority_score, i)
+                for i, d in enumerate(descriptions):
+                    if lower_answer and lower_answer in d.lower():
+                        # priority: "Up next for you!" > "unfamiliar" > everything else
+                        if "up next for you" in d.lower():
+                            score = 0
+                        elif "unfamiliar" in d.lower():
+                            score = 1
+                        elif "not started" in d.lower():
+                            score = 2
+                        else:
+                            score = 3
+                        candidates.append((score, i))
+                if candidates:
+                    candidates.sort()
+                    _score, idx = candidates[0]
+                    matched_item = items[idx]
+                    answer_element = items[idx].get("element")
+                    # Promote `answer` to the actual description we matched so
+                    # downstream consumers see the canonical string.
+                    answer = descriptions[idx]
+                    logger.info(
+                        f"Navigate: substring-matched '{answer[:80]}' "
+                        f"(prio={_score}, picked from {len(candidates)} candidates)"
+                    )
+
+            logger.info(
+                f"Navigate: selected '{answer[:80]}' "
+                f"(element={'present' if answer_element else 'MISSING'})"
+            )
             return {
                 "success": True,
                 "answer": answer,
+                "answer_element": answer_element,  # BT: click element=$nav.answer_element
+                "matched_item": matched_item,
                 "question_type": question_type,
                 "model": model_used,
             }
@@ -903,15 +1031,30 @@ def parse_choice_with_text(raw: str) -> tuple:
 
 def parse_matching_response(raw: str, items: List[Dict]) -> dict:
     """
-    Parse LLM matching response into {popup_desc: selected_option} dict.
+    Parse LLM matching response into {key: selected_option} dict.
 
     Expected format from LLM:
         1: Option text for item 1
         2: Option text for item 2
         ...
 
-    Returns dict keyed by popup_desc (what Mac uses to find the AXPopUpButton).
+    Returns dict keyed by:
+        - popup_desc (only if UNIQUE across items)
+        - label (only if UNIQUE across items)
+        - str(idx) (ALWAYS — canonical disambiguator)
+
+    Per Clarity Tier 2 DR (2026-05-20): Khan Perseus dropdowns where the
+    author omits ariaLabel + visibleLabel ALL render with aria-label='Select
+    an answer' (i18n fallback). Previously this code unconditionally keyed by
+    popup_desc → the second item's entry overwrote the first under the shared
+    'Select an answer' key, leaving lookup_match key='0' returning an
+    out-of-position value. Now we skip popup_desc/label keys when they
+    collide; str(idx) keys always win.
     """
+    from collections import Counter
+    popup_desc_counts = Counter(item.get("popup_desc", "") for item in items)
+    label_counts = Counter(item.get("label", "") for item in items)
+
     matches = {}
     lines = raw.strip().split("\n")
 
@@ -932,20 +1075,53 @@ def parse_matching_response(raw: str, items: List[Dict]) -> dict:
             item_options = item.get("options", [])
             # Match to exact option text (handles minor LLM variations)
             best = match_to_option(selected, item_options) if item_options else selected
-            # Key by popup_desc (legacy handler) AND label (behavior tree)
-            if popup_desc:
+
+            # Key by popup_desc / label ONLY when unique across items.
+            # Collision case (Khan placeholder 'Select an answer' on every
+            # popup) → skip these keys; str(idx) is the canonical key.
+            if popup_desc and popup_desc_counts[popup_desc] == 1:
                 matches[popup_desc] = best
-            if label:
+            if label and label_counts[label] == 1:
                 matches[label] = best
+            # ALWAYS key by stringified zero-based index.
+            matches[str(idx)] = best
 
     return matches
 
 
-def match_to_option(raw_answer: str, options: List[str]) -> str:
+def _option_text(opt) -> str:
+    """Extract the display text from an option that may be a string or a dict.
+
+    Mac's discover_menu (post-de-filter patch a40b932) emits options as dicts:
+        {"text": "yes not selected", "ax": {"role": "AXMenuItem", "value": "yes not selected", "name": "", ...}}
+    Older callsites used dicts with `name`/`description`/`title`. solve_choice
+    gets a flat list of raw strings. This helper unifies all shapes so callers
+    don't crash with `'dict' object has no attribute 'lower'` AND surfaces the
+    actual menu text (not empty `name`) to downstream matching.
+
+    Priority: `text` (new wire shape) > `ax.value` (raw AX) > `ax.name` >
+    legacy `name` > `description` > `title`. Empty strings fall through.
+    """
+    if isinstance(opt, dict):
+        if opt.get("text"):
+            return opt["text"]
+        ax = opt.get("ax") or {}
+        if isinstance(ax, dict):
+            if ax.get("value"):
+                return ax["value"]
+            if ax.get("name"):
+                return ax["name"]
+        return (opt.get("name") or opt.get("description") or opt.get("title") or "")
+    return str(opt) if opt is not None else ""
+
+
+def match_to_option(raw_answer: str, options: List) -> str:
     """
     Match LLM output to the closest option text.
 
     Handles: letter responses (A, B, C), exact text, substring, word overlap.
+    Options may be strings (legacy) or dicts (discover_menu / find_all output);
+    `_option_text` normalizes both shapes.
     """
     raw_lower = raw_answer.lower().strip().strip('"\'.-')
     letters = "abcdefghij"
@@ -954,18 +1130,18 @@ def match_to_option(raw_answer: str, options: List[str]) -> str:
     if len(raw_lower) == 1 and raw_lower in letters:
         idx = letters.index(raw_lower)
         if idx < len(options):
-            return options[idx]
+            return _option_text(options[idx])
 
     # Letter with parenthesis or period: "A)" or "A."
     if len(raw_lower) >= 2 and raw_lower[0] in letters and raw_lower[1] in ").]":
         idx = letters.index(raw_lower[0])
         if idx < len(options):
-            return options[idx]
+            return _option_text(options[idx])
 
     # Exact match
     for opt in options:
-        if opt.lower().strip() == raw_lower:
-            return opt
+        if _option_text(opt).lower().strip() == raw_lower:
+            return _option_text(opt)
 
     # No match — return raw answer with warning. No fuzzy matching.
     logger.warning(f"Could not match '{raw_answer}' to options (letter and exact match failed): {options}")

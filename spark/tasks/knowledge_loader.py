@@ -6,10 +6,14 @@ Provides JIT context assembly for build_bt_from_tree().
 import json
 import logging
 import os
+import re
 import tempfile
 import time
 from pathlib import Path
 from typing import Optional
+
+from spark.tasks.atomic_write import atomic_write_json
+from spark.tasks.screen_type_util import get_master_category
 
 logger = logging.getLogger("taey-ed")
 
@@ -58,6 +62,30 @@ def load_knowledge(platform: str) -> dict:
                 f"Falling back to empty knowledge."
             )
             return {}
+
+        # Merge platform-agnostic universal operational_notes from
+        # spark/platforms/_universal.json (Jesse 2026-05-19: cross-platform
+        # rules like "WRONG-ANSWER RESET FIRST" live in one place and apply
+        # to every platform via this merge).
+        try:
+            universal_path = _platforms_dir() / "_universal.json"
+            if universal_path.exists():
+                universal = json.loads(universal_path.read_text())
+                universal_notes = universal.get("operational_notes") or []
+                if universal_notes:
+                    knowledge.setdefault("global", {}).setdefault("operational_notes", [])
+                    # Prepend so universal rules render BEFORE platform-specific
+                    # ones in get_operational_notes_for_screen output.
+                    knowledge["global"]["operational_notes"] = (
+                        list(universal_notes)
+                        + knowledge["global"]["operational_notes"]
+                    )
+                    logger.info(
+                        f"Merged {len(universal_notes)} universal operational_notes "
+                        f"into {platform}'s global notes"
+                    )
+        except Exception:
+            logger.exception("Failed to merge _universal.json (non-fatal)")
 
         _knowledge_cache[cache_key] = knowledge
         _knowledge_cache_mtime[cache_key] = current_mtime
@@ -216,55 +244,437 @@ def save_learned_observation(platform: str, screen_type: str, observation: dict)
         logger.error(f"Failed to save learned observation: {e}")
 
 
-def get_operational_notes_for_screen(knowledge: dict, screen_type: str) -> str:
-    """Return markdown-formatted operational notes for all subtypes of a screen type.
+def _render_operational_notes(notes: list) -> list:
+    """Render a list of operational_note dicts to markdown lines."""
+    lines = []
+    for n in notes:
+        disc = n.get("discovered_at", "")
+        by = n.get("by", "")
+        note = n.get("note", "")
+        template = n.get("bt_template_hint", "")
+        disambig = n.get("disambiguator", "")
+        handler_req = n.get("handler_required", "")
+        prior = n.get("prior_workaround", "")
+        verified = n.get("verified_count", 0)
+        rule = n.get("rule", "")
 
-    Operational notes are concrete lessons-learned from previous claude-primary
-    consultations — exact roles, casing quirks, depth gotchas, BT templates that
-    worked. Injected into consultation prompts so next-Claude reads what
-    last-Claude figured out instead of rediscovering from scratch.
+        header = f"- *(discovered {disc} by {by}, verified×{verified})*"
+        lines.append(header)
+        if rule:
+            lines.append(f"  **Rule:** {rule}")
+        if note:
+            lines.append(f"  **Note:** {note}")
+        if template:
+            lines.append(f"  **BT template hint:** {template}")
+        if disambig:
+            lines.append(f"  **Disambiguator:** {disambig}")
+        if handler_req:
+            lines.append(f"  **Requires handler:** {handler_req}")
+        if prior:
+            lines.append(f"  **Prior workaround:** {prior}")
+    return lines
 
-    Returns empty string if no notes exist (caller can skip the section).
+
+def _match_subtype_for_variant(screen_type: str, master_type: str, subtypes: list) -> dict | None:
+    """Pick the subtype whose name (or alias) matches the variant suffix.
+
+    Examples:
+      EXERCISE_DROPDOWN              -> subtype name "dropdown"      (direct)
+      KA_EXERCISE_CHOICE_CHECKBOX    -> subtype "multiple_select" via alias "checkbox"
+      EXERCISE_RADIO_WRONG_ANSWER    -> subtype "multiple_choice" via alias "radio"
+
+    Subtypes may declare `aliases: [str, ...]` in knowledge.json — each alias is
+    checked alongside the canonical `name`. Aliases let the canonical subtype
+    name stay descriptive (multiple_choice) while still matching whatever the
+    classifier returns (RADIO, CHOICE_RADIO, etc.).
+
+    Returns None when no clean match found (caller decides whether to fall back).
     """
-    screen_info = knowledge.get("screen_types", {}).get(screen_type, {})
-    subtypes = screen_info.get("subtypes", [])
-    if not subtypes:
-        return ""
+    if screen_type == master_type:
+        return None
+    prefix = f"{master_type}_"
+    suffix = screen_type[len(prefix):] if screen_type.startswith(prefix) else screen_type
+    # Normalize: strip non-alphanumerics, lowercase
+    suffix_norm = re.sub(r"[^a-z0-9]+", "", suffix.lower()) if suffix else ""
+    if not suffix_norm:
+        return None
+
+    def _check(candidate: str) -> bool:
+        c_norm = re.sub(r"[^a-z0-9]+", "", candidate.lower())
+        return bool(c_norm) and (
+            c_norm == suffix_norm
+            or suffix_norm in c_norm
+            or c_norm in suffix_norm
+        )
+
+    for s in subtypes:
+        if _check(str(s.get("name", ""))):
+            return s
+        for alias in s.get("aliases", []) or []:
+            if _check(str(alias)):
+                return s
+    return None
+
+
+def _resolve_master_via_subtypes(screen_types_map: dict, screen_type: str) -> str | None:
+    """Data-driven master resolution for platform-prefixed variants.
+
+    When get_master_category can't derive the master from the variant string
+    (e.g. "KA_COURSE_OVERVIEW" doesn't carry "NAVIGATION_" prefix), scan all
+    masters' subtypes in this platform's knowledge.json. If any subtype name
+    or alias matches the variant via substring, return that subtype's owning
+    master. Returns None on no match.
+
+    Per Jesse 2026-05-19: classifier returns platform-specific variants like
+    "KA_COURSE_OVERVIEW" that resolve to NAVIGATION via the course_overview
+    subtype defined under NAVIGATION.subtypes. The relationship lives in
+    knowledge.json, not in a hardcoded mapping table.
+    """
+    if not screen_type:
+        return None
+    suffix_norm = re.sub(r"[^a-z0-9]+", "", screen_type.lower())
+    if not suffix_norm:
+        return None
+
+    def _check(candidate: str) -> bool:
+        c_norm = re.sub(r"[^a-z0-9]+", "", candidate.lower())
+        return bool(c_norm) and (
+            c_norm == suffix_norm
+            or suffix_norm in c_norm
+            or c_norm in suffix_norm
+        )
+
+    for master_name, master_info in screen_types_map.items():
+        if not isinstance(master_info, dict):
+            continue
+        for s in master_info.get("subtypes", []) or []:
+            if _check(str(s.get("name", ""))):
+                return master_name
+            for alias in s.get("aliases", []) or []:
+                if _check(str(alias)):
+                    return master_name
+    return None
+
+
+def get_prompt_block_for_screen(knowledge: dict, screen_type: str) -> str:
+    """Return VERBATIM prompt_block text(s) for the matched screen type.
+
+    The `prompt_block` field on a category/subtype carries the canonical BT
+    pattern as the worker should see it — same bytes the pre-migration
+    SCREEN_PATTERNS dict used to inject. No markdown wrapping, no bullet
+    rendering. The worker treats this as a directive section.
+
+    Resolution mirrors get_operational_notes_for_screen:
+      1. Master resolution via get_master_category, then data-driven subtype lookup
+      2. Category-level prompt_block (e.g. VIDEO, NAVIGATION, TRANSITION)
+      3. Matched subtype's prompt_block (e.g. EXERCISE.dropdown, EXERCISE.multiple_choice)
+      4. When screen_type == master (no variant), include ALL subtypes' prompt_blocks
+         since the worker doesn't yet know which variant applies.
+
+    Returns the concatenated prompt_block text, or empty string if none exist.
+    """
+    screen_types_map = knowledge.get("screen_types", {})
+
+    try:
+        master = get_master_category(screen_type) or "UNKNOWN"
+    except Exception:
+        master = "UNKNOWN"
+    if master == "UNKNOWN":
+        resolved = _resolve_master_via_subtypes(screen_types_map, screen_type)
+        if resolved:
+            master = resolved
+    if master == "UNKNOWN":
+        master = screen_type
+
+    blocks: list[str] = []
+
+    master_info = screen_types_map.get(master, {})
+
+    # Category-level prompt_block (e.g. VIDEO has 3-state block, TRANSITION single)
+    cat_block = master_info.get("prompt_block")
+    if cat_block:
+        blocks.append(cat_block)
+
+    # Subtype prompt_block
+    subtypes = master_info.get("subtypes", []) or []
+    matched_subtype = _match_subtype_for_variant(screen_type, master, subtypes)
+    if matched_subtype:
+        sub_block = matched_subtype.get("prompt_block")
+        if sub_block:
+            blocks.append(sub_block)
+    elif screen_type == master:
+        # Master-only consult — include all subtype prompt_blocks
+        for s in subtypes:
+            b = s.get("prompt_block")
+            if b:
+                blocks.append(b)
+
+    return "\n\n".join(blocks)
+
+
+def get_operational_notes_for_screen(knowledge: dict, screen_type: str) -> str:
+    """Return markdown-formatted operational notes following Jesse's 3-tier tree:
+
+      1. Platform-level (always)        — knowledge['global']['operational_notes'] (if present)
+      2. Category-level (always)        — screen_types.{master}.operational_notes
+      3. Sub-category-level (matched)   — screen_types.{master}.subtypes.{variant_match}.operational_notes
+
+    Sibling subtypes are NOT included. Push rules to the lowest applicable level
+    to avoid noise. Returns empty string if nothing relevant exists.
+
+    NOTE (2026-05-19): the canonical screen pattern (former SCREEN_PATTERNS
+    inline templates) now lives in the `prompt_block` field on each subtype/
+    master and is delivered via get_prompt_block_for_screen — that function
+    returns the verbatim directive text. This function only handles the
+    operational_notes array which carries supplementary diagnostic learnings
+    (discovered gotchas, anti-patterns specific to a screen variant, etc.).
+
+    Master resolution: first tries get_master_category (handles MASTER_VARIANT
+    and KA_ prefix-strip), then falls back to data-driven subtype lookup in
+    this platform's knowledge.json for variants like "KA_COURSE_OVERVIEW" that
+    don't carry the master in their name.
+    """
+    screen_types_map = knowledge.get("screen_types", {})
+
+    # Resolve master category. Try the string-pattern route first, then fall
+    # back to data-driven lookup against subtypes defined in knowledge.json.
+    try:
+        master = get_master_category(screen_type) or "UNKNOWN"
+    except Exception:
+        master = "UNKNOWN"
+    if master == "UNKNOWN":
+        resolved = _resolve_master_via_subtypes(screen_types_map, screen_type)
+        if resolved:
+            master = resolved
+    if master == "UNKNOWN":
+        master = screen_type
 
     sections = []
-    for subtype in subtypes:
-        notes = subtype.get("operational_notes") or []
-        if not notes:
-            continue
-        name = subtype.get("name", "unknown")
-        lines = [f"### {name}"]
-        for n in notes:
-            disc = n.get("discovered_at", "")
-            by = n.get("by", "")
-            note = n.get("note", "")
-            template = n.get("bt_template_hint", "")
-            disambig = n.get("disambiguator", "")
-            handler_req = n.get("handler_required", "")
-            prior = n.get("prior_workaround", "")
-            verified = n.get("verified_count", 0)
 
-            header = f"- *(discovered {disc} by {by}, verified×{verified})*"
-            lines.append(header)
-            if note:
-                lines.append(f"  **Note:** {note}")
-            if template:
-                lines.append(f"  **BT template hint:** {template}")
-            if disambig:
-                lines.append(f"  **Disambiguator:** {disambig}")
-            if handler_req:
-                lines.append(f"  **Requires handler:** {handler_req}")
-            if prior:
-                lines.append(f"  **Prior workaround:** {prior}")
+    # Tier 1: platform-level operational_notes (always included if present)
+    platform_notes = knowledge.get("global", {}).get("operational_notes") or []
+    if platform_notes:
+        lines = ["### platform (always applies)"] + _render_operational_notes(platform_notes)
         sections.append("\n".join(lines))
+
+    master_info = screen_types_map.get(master, {})
+
+    # Tier 2: category-level (master screen type's top-level operational_notes)
+    category_notes = master_info.get("operational_notes") or []
+    if category_notes:
+        lines = [f"### {master} (category-level)"] + _render_operational_notes(category_notes)
+        sections.append("\n".join(lines))
+
+    # Tier 3: matched subtype (only the variant's specific subtype, NOT siblings)
+    subtypes = master_info.get("subtypes", [])
+    matched_subtype = _match_subtype_for_variant(screen_type, master, subtypes)
+    if matched_subtype:
+        sub_notes = matched_subtype.get("operational_notes") or []
+        if sub_notes:
+            name = matched_subtype.get("name", "unknown")
+            lines = [f"### {master}.{name} (subtype-level — matched on variant {screen_type})"]
+            lines += _render_operational_notes(sub_notes)
+            sections.append("\n".join(lines))
+    elif screen_type == master:
+        # JIT via agentic Read (Jesse 2026-06-11: "you can't send everything —
+        # why would all knowledge be sent instead of screen specific?"): the
+        # old behavior shipped EVERY subtype's notes whenever the subtype was
+        # unknown — which on collision-prone assessment pages was every build,
+        # ballooning prompts past 130KB. Now each subtype's notes are written
+        # to a file and the prompt carries only a classification table; the
+        # worker identifies the subtype from the CURRENT answer widgets, then
+        # Reads exactly that one file.
+        from pathlib import Path as _P
+        plat = knowledge.get("platform", "unknown")
+        notes_dir = _P(f"/home/user/taey-ed-data/knowledge_notes/{plat}")
+        notes_dir.mkdir(parents=True, exist_ok=True)
+        table = [f"### {master} subtypes — classify by CURRENT widgets, then Read the matching notes file",
+                 "Identify the subtype from the ANSWER WIDGETS in this capture (never from",
+                 "page history). Then INVOKE THE Read TOOL on that subtype's notes file",
+                 "BEFORE designing the BT — it contains the proven recipes and gotchas:"]
+        for s in subtypes:
+            name = s.get("name", "unknown")
+            sub_notes = s.get("operational_notes") or []
+            desc = (s.get("description") or "").strip()
+            fpath = notes_dir / f"{master}.{name}.md"
+            try:
+                content = [f"# {plat} / {master}.{name}", desc, ""]
+                content += _render_operational_notes(sub_notes) if sub_notes else ["(no notes yet)"]
+                fpath.write_text("\n".join(content))
+            except OSError:
+                logger.exception(f"notes-file write failed for {fpath}")
+            table.append(f"- {name}: {desc[:120]}  ->  Read {fpath}")
+        sections.append("\n".join(table))
 
     if not sections:
         return ""
     return "## Operational notes (lessons from prior consultations)\n\n" + "\n\n".join(sections)
+
+
+def _normalize_subtype_name(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(name).lower())
+
+
+def _variant_subtype_key(screen_type: str, master_type: str) -> str:
+    if screen_type == master_type:
+        return ""
+    prefix = f"{master_type}_"
+    suffix = screen_type[len(prefix):] if screen_type.startswith(prefix) else screen_type
+    return _normalize_subtype_name(suffix)
+
+
+def _parse_bt_template_hint_json(bt_template_hint: str) -> dict | None:
+    if not isinstance(bt_template_hint, str):
+        return None
+    matches = re.findall(r"```json\s*(\{.*?\})\s*```", bt_template_hint, flags=re.DOTALL)
+    candidates = list(reversed(matches))
+    stripped = bt_template_hint.strip()
+    if stripped.startswith("{") and stripped.endswith("}"):
+        candidates.append(stripped)
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return None
+
+
+def _coerce_bt_template(template: dict | None) -> dict | None:
+    if not isinstance(template, dict):
+        return None
+    if isinstance(template.get("tree"), dict):
+        return template
+    if isinstance(template.get("behavior_tree"), dict):
+        return {
+            "tree": template["behavior_tree"],
+            "extract": template.get("extract"),
+            "expected_next": template.get("expected_next", []),
+        }
+    if template.get("type") in {"action", "sequence", "selector", "parallel", "conditional"}:
+        return {
+            "tree": template,
+            "extract": None,
+            "expected_next": [],
+        }
+    return None
+
+
+def _iter_verified_bt_templates(knowledge: dict, screen_type: str, min_verified: int = 1) -> list[dict]:
+    master_type = get_master_category(screen_type) or screen_type
+    screen_info = knowledge.get("screen_types", {}).get(master_type, {})
+    subtypes = screen_info.get("subtypes", [])
+    subtype_key = _variant_subtype_key(screen_type, master_type)
+
+    ordered_subtypes = []
+    if subtype_key:
+        exact = [
+            subtype for subtype in subtypes
+            if _normalize_subtype_name(subtype.get("name", "")) == subtype_key
+        ]
+        ordered_subtypes.extend(exact)
+        ordered_subtypes.extend(
+            subtype for subtype in subtypes
+            if _normalize_subtype_name(subtype.get("name", "")) != subtype_key
+        )
+    else:
+        ordered_subtypes = list(subtypes)
+
+    templates = []
+    for subtype in ordered_subtypes:
+        subtype_name = subtype.get("name", "")
+        for note in subtype.get("operational_notes") or []:
+            try:
+                verified_count = int(note.get("verified_count", 0) or 0)
+            except (TypeError, ValueError):
+                verified_count = 0
+            if verified_count < min_verified:
+                continue
+
+            parsed = None
+            if isinstance(note.get("bt_template"), dict):
+                parsed = _coerce_bt_template(note.get("bt_template"))
+            if parsed is None:
+                parsed = _coerce_bt_template(
+                    _parse_bt_template_hint_json(str(note.get("bt_template_hint") or ""))
+                )
+            if parsed is None:
+                continue
+
+            templates.append({
+                "template": parsed,
+                "source": {
+                    "kind": "operational_note",
+                    "master_screen_type": master_type,
+                    "screen_type": screen_type,
+                    "subtype_name": subtype_name,
+                    "discovered_at": note.get("discovered_at", ""),
+                    "note": note.get("note", ""),
+                    "verified_count": verified_count,
+                },
+            })
+    return templates
+
+
+def get_verified_bt_template(knowledge: dict, screen_type: str, min_verified: int = 1) -> dict | None:
+    """Return the first verified operational-note BT template for a screen variant."""
+    templates = _iter_verified_bt_templates(knowledge, screen_type, min_verified=min_verified)
+    if not templates:
+        return None
+    return templates[0]["template"]
+
+
+def get_verified_bt_template_entry(knowledge: dict, screen_type: str, min_verified: int = 1) -> dict | None:
+    """Return template + source metadata for the first verified operational note."""
+    templates = _iter_verified_bt_templates(knowledge, screen_type, min_verified=min_verified)
+    return templates[0] if templates else None
+
+
+def increment_operational_note_verified_count(platform: str, source: dict, increment: int = 1) -> bool:
+    """Increment verified_count for a specific operational note source."""
+    if not isinstance(source, dict) or source.get("kind") != "operational_note":
+        return False
+
+    knowledge_path = _platforms_dir() / platform / "knowledge.json"
+    if not knowledge_path.exists():
+        return False
+
+    try:
+        knowledge = json.loads(knowledge_path.read_text())
+        master_type = source.get("master_screen_type") or source.get("screen_type") or ""
+        screen = knowledge.get("screen_types", {}).get(master_type, {})
+        subtypes = screen.get("subtypes", [])
+        subtype_name = source.get("subtype_name", "")
+        target_note = source.get("note", "")
+        discovered_at = source.get("discovered_at", "")
+
+        for subtype in subtypes:
+            if subtype.get("name") != subtype_name:
+                continue
+            notes = subtype.get("operational_notes") or []
+            for note in notes:
+                if note.get("note") != target_note:
+                    continue
+                if discovered_at and note.get("discovered_at") != discovered_at:
+                    continue
+                note["verified_count"] = max(0, int(note.get("verified_count", 0) or 0) + increment)
+                if increment > 0:
+                    note["last_verified_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                else:
+                    note["last_demoted_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                atomic_write_json(knowledge_path, knowledge)
+                cache_key = str(knowledge_path)
+                _knowledge_cache.pop(cache_key, None)
+                _knowledge_cache_mtime.pop(cache_key, None)
+                logger.info(
+                    f"increment_operational_note_verified_count: {platform}/{master_type}/{subtype_name} "
+                    f"-> {note['verified_count']}"
+                )
+                return True
+    except Exception as e:
+        logger.warning(f"increment_operational_note_verified_count failed: {e}")
+    return False
 
 
 def record_operational_note(

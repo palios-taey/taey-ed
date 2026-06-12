@@ -24,7 +24,28 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+def _resolve_claude_bin() -> str:
+    """Resolve the claude CLI robustly. /usr/local/bin/claude vanished mid-run
+    2026-06-11 (CLI update relinked to ~/.npm-global) and the worker's systemd
+    PATH lost it -> Errno 2 killed BT generation. Try PATH, then known homes;
+    fail LOUD with locations tried."""
+    import shutil
+    found = shutil.which("claude")
+    if found:
+        return found
+    for cand in ("/home/user/.npm-global/bin/claude", "/usr/local/bin/claude"):
+        if os.path.exists(cand):
+            return cand
+    raise ClaudeCallError(
+        "claude CLI not found (PATH, ~/.npm-global/bin, /usr/local/bin)"
+    )
+
+
 CLAUDE_BIN = "claude"
+# Isolated HOME for headless calls: hook-free settings.json ({}) plus
+# symlinked ~/.claude/.credentials.json and ~/.claude.json so OAuth refresh
+# propagates. Keeps the fleet's stop-engine/notify hooks out of worker calls.
+WORKER_HOME = "/home/user/.taey-worker-home"
 DEFAULT_MODEL = "claude-opus-4-7"
 DEFAULT_TIMEOUT_S = 180
 DEFAULT_MAX_BUDGET_USD = 2.50  # API-equivalent ceiling; Max subscription covers real spend
@@ -138,16 +159,36 @@ def _do_call(
     so the b64-temp-file lifecycle can wrap it cleanly."""
     full_user = _build_user_message(user_message, screenshot_path)
 
+    # NOTHING big rides argv: Linux caps a single argv at 128KB
+    # (MAX_ARG_STRLEN) — hit live TWICE on 2026-06-11 (user message 16:33,
+    # then the system prompt 16:36, which bt_generator fills with the
+    # compiled prompt). User message goes via STDIN; system prompt via
+    # --system-prompt-file. No size ceilings anywhere; no-truncation rule
+    # honored structurally.
+    sys_fd, sys_path = tempfile.mkstemp(prefix="taey-sysprompt-", suffix=".txt", dir="/tmp")
+    with os.fdopen(sys_fd, "w") as _sf:
+        _sf.write(system_prompt)
     cmd = [
-        CLAUDE_BIN,
+        _resolve_claude_bin(),
         "--print",
         "--output-format", "json",
         "--permission-mode", "bypassPermissions",
         "--model", model,
         "--max-budget-usd", str(max_budget_usd),
-        "--system-prompt", system_prompt,
-        full_user,
+        "--system-prompt-file", sys_path,
     ]
+
+    # Isolated HOME: hook-free settings + symlinked credentials. The fleet's
+    # stop-engine hooks otherwise fire INSIDE headless calls — observed live
+    # 2026-06-11 12:16: the worker emitted its BT, the Stop hook hijacked the
+    # final turn, and --print returned orchestration chatter ("taey-stop-reason
+    # status reports can_stop: true...") instead of BT JSON. Also the likely
+    # cause of today's intermittent exit-1/empty responses. (--bare would skip
+    # hooks too but drops OAuth with it.)
+    # DISABLE_AUTOUPDATER: the CLI auto-updated itself mid-run (16:09) and
+    # the binary vanished for the duration of the relink — a worker call
+    # raced it and died. Production loops must not race auto-updates.
+    worker_env = {**os.environ, "HOME": WORKER_HOME, "DISABLE_AUTOUPDATER": "1"}
 
     t0 = time.time()
     try:
@@ -156,17 +197,24 @@ def _do_call(
             capture_output=True,
             text=True,
             timeout=timeout_s,
-            stdin=subprocess.DEVNULL,
+            input=full_user,
+            env=worker_env,
         )
     except subprocess.TimeoutExpired as e:
         raise ClaudeCallError(
             f"claude --print timed out after {timeout_s}s"
         ) from e
+    finally:
+        try:
+            os.unlink(sys_path)
+        except OSError:
+            pass
     elapsed = time.time() - t0
 
     if result.returncode != 0:
         raise ClaudeCallError(
-            f"claude exit {result.returncode}: stderr={result.stderr[:500]}"
+            f"claude exit {result.returncode}: stderr={result.stderr[:500]} "
+            f"stdout={result.stdout[:500]}"
         )
 
     try:

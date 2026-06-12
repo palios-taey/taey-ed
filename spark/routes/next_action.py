@@ -54,6 +54,311 @@ router = APIRouter()
 CLAUDE_PRIMARY_PLATFORMS = {"khan_academy"}
 
 
+def _escalate_to_claude_diagnosing(
+    platform: str,
+    tree: dict | None,
+    consultation_id: str,
+    reason: str,
+    screen_type_hint: str = "UNKNOWN",
+    bt_debug_tail: str = "",
+    failed_bt: dict | None = None,
+    screenshot_b64: str | None = None,
+) -> dict:
+    """Route any failure through the Mira-side claude diagnosis loop.
+
+    Per Jesse's directive (2026-05-18): the Mac app + API do not escalate to
+    user. Everything that isn't perfectly handled goes to claude-on-Mira.
+    State is keyed by (platform, skeleton_hash) so reconsults across multiple
+    consult_ids see the same diagnosis state. Pings claude once per stuck-screen
+    cycle; returns a wait directive so Mac keeps polling without surfacing a
+    dialog. Only escalates to user_input_needed when claude EXPLICITLY touches
+    the gave_up.flag in the state dir — Mac/Spark never make that decision.
+
+    Persistence (2026-05-19 bug fix): tree and screenshot_b64 are written to
+    the diag_dir as tree.json / screenshot.png so the escalation packet
+    builder can read them. Required for the new Step 4.5 → claude-primary
+    escalation path which has no consult_id (and therefore no consult dir
+    with these artifacts).
+    """
+    try:
+        from spark.tasks.skeleton import (
+            extract_skeleton as _ext_sk, skeleton_hash as _skel_hash,
+        )
+        _screen_hash = _skel_hash(_ext_sk(tree)) if tree else "unknown"
+    except Exception:
+        _screen_hash = "unknown"
+
+    diag_dir = Path("/tmp/taey-ed-claude-diagnosing") / f"{platform}_{_screen_hash[:16]}"
+    diag_dir.mkdir(parents=True, exist_ok=True)
+    diagnosing = diag_dir / "diagnosing.flag"
+    done = diag_dir / "diagnosis_done.flag"
+    gave_up = diag_dir / "gave_up.flag"
+    retry_p = diag_dir / "retries.txt"
+
+    # Persist tree + screenshot to diag_dir — ALWAYS OVERWRITE with the
+    # current capture. The old write-once "idempotency" served STALE state:
+    # on collision pages the question changes under the same hash, and on
+    # 2026-06-11 claude-primary spent an hour mis-diagnosing a dropdown
+    # question as a checkbox one because every escalation packet carried the
+    # first-capture tree from a question answered long before ("Why are you
+    # still not reviewing screenshots?"). The packet must show NOW.
+    if tree:
+        try:
+            (diag_dir / "tree.json").write_text(json.dumps(tree, indent=2))
+        except Exception:
+            logger.exception("escalate: failed to write tree.json")
+    if screenshot_b64:
+        try:
+            import base64
+            (diag_dir / "screenshot.png").write_bytes(base64.b64decode(screenshot_b64))
+        except Exception:
+            logger.exception("escalate: failed to write screenshot.png")
+
+    # Only path to user: claude explicitly gave up by touching gave_up.flag.
+    # Mac/Spark cannot create this flag — only the Mira-side claude session can.
+    if gave_up.exists():
+        from spark.tasks.classify_screen import _describe_screen
+        # Terminal user-assist (INTENDED_FLOW §D terminal; Jesse 2026-06-11):
+        # when the system gives up on a screen, the user is notified WITH the
+        # correct answer / exact steps to do it themselves. claude-primary
+        # writes user_instructions.txt into the state dir alongside
+        # gave_up.flag; the dialog carries those instructions verbatim.
+        user_instr = ""
+        instr_p = diag_dir / "user_instructions.txt"
+        if instr_p.exists():
+            try:
+                user_instr = instr_p.read_text().strip()
+            except OSError:
+                pass
+        question_text = user_instr or f"Claude diagnosis exhausted: {reason}"
+        return _with_chat({
+            "directive": "user_input_needed",
+            "directive_id": _make_directive_id(),
+            "reason": question_text,
+            "screen_type": screen_type_hint,
+            "screen_description": _describe_screen(tree) if tree else "",
+            "consultation_id": consultation_id,
+        }, platform, [
+            build_status("This one needs your hands — exact steps in the dialog"),
+            build_question(question_text),
+        ])
+
+    retries = 0
+    if retry_p.exists():
+        try:
+            retries = int(retry_p.read_text().strip())
+        except (ValueError, OSError):
+            retries = 0
+
+    # Claude finished diagnosing (knowledge.json updated). Clear flags + abandon
+    # the stale consult so Mac's next /next_action runs the FRESH pipeline,
+    # which spawns a new worker call using the updated knowledge.json.
+    if done.exists():
+        retries += 1
+        retry_p.write_text(str(retries))
+        done.unlink()
+        diagnosing.unlink(missing_ok=True)
+        # Abandon the stale consult so its metadata.status flips off
+        # "complete" — Mac's next request will find no active consult
+        # and trigger fresh pipeline.
+        if consultation_id:
+            try:
+                _stale_path = Path("/tmp/taey-ed-consult") / consultation_id
+                _meta_p = _stale_path / "metadata.json"
+                if _meta_p.exists():
+                    _m = json.loads(_meta_p.read_text())
+                    _m["status"] = "abandoned"
+                    _m["abandoned_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                    _m["abandoned_reason"] = "claude_diagnosis_complete_retry"
+                    _meta_p.write_text(json.dumps(_m, indent=2))
+                # Remove response.json so Mac status poll won't see it as complete
+                _resp = _stale_path / "response.json"
+                if _resp.exists():
+                    _resp.unlink()
+            except Exception:
+                logger.exception("failed to abandon stale consult on diagnosis_done")
+        # A completed diagnosis means knowledge changed — stale variant
+        # failure counts predate the fix and must not preempt the retry
+        # (observed 14:48: a healthy phase-1 scroll cycle got loop-guarded
+        # by attempt-1's leftover count and climbed to a spurious Tier-2).
+        _clear_variant_failures(platform)
+        logger.info(
+            f"Claude diagnosis complete for {platform}_{_screen_hash[:16]} — "
+            f"abandoned stale consult {consultation_id}, retry cycle {retries}, "
+            f"variant failure counters cleared"
+        )
+        return _with_chat({
+            "directive": "wait",
+            "directive_id": _make_directive_id(),
+            "seconds": 3.0,
+            "reason": "claude_diagnosis_complete",
+            "message": "Claude diagnosis complete — retrying with updated knowledge.",
+            "consultation_id": "",
+        }, platform, [
+            build_status("Claude diagnosis complete — retrying with updated knowledge"),
+        ])
+
+    # Tier-aware escalation per Jesse 2026-05-19 ladder
+    # (2 me → 1 Perplexity → 1 Family → terminal). The notify body and packet
+    # both come from spark.tasks.escalation; this helper just figures out the
+    # tier from `retries`, builds the packet, and dispatches.
+    from spark.tasks.escalation import (
+        tier_for_attempt, build_packet, notify_body_for_tier, UNSOLVED_LOG,
+    )
+    tier = tier_for_attempt(retries)
+
+    # Persist Mac log in the diag state dir BEFORE building the packet so the
+    # packet's attempt-history section can pick it up.
+    if bt_debug_tail and bt_debug_tail.strip():
+        try:
+            (diag_dir / "last_bt_debug.log").write_text(bt_debug_tail)
+        except Exception:
+            pass
+
+    # Terminal tier: auto-mark unsolvable, log, return user_input_needed.
+    if tier == "terminal":
+        try:
+            gave_up.touch()
+            UNSOLVED_LOG.parent.mkdir(parents=True, exist_ok=True)
+            with UNSOLVED_LOG.open("a") as fh:
+                fh.write(
+                    f"\n## {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} "
+                    f"— {platform} {_screen_hash[:16]}\n"
+                    f"- escalation_path: live_bt_failure\n"
+                    f"- consultation_id: {consultation_id}\n"
+                    f"- attempts_exhausted: {retries}\n"
+                    f"- state_dir: {diag_dir}\n"
+                    f"- failure_reason: {reason}\n"
+                )
+        except Exception:
+            logger.exception("UNSOLVED.md append failed")
+        try:
+            from spark.tasks.notify_tmux import notify_spark_claude as _notify
+            _notify(
+                f"TERMINAL ESCALATION — {platform} screen_hash {_screen_hash[:16]} "
+                f"marked unsolvable after 4-tier exhaustion. "
+                f"Logged to {UNSOLVED_LOG}.",
+                notify_type="defect",
+            )
+        except Exception:
+            logger.exception("notify_spark_claude failed on terminal")
+        from spark.tasks.classify_screen import _describe_screen
+        return _with_chat({
+            "directive": "user_input_needed",
+            "directive_id": _make_directive_id(),
+            "reason": f"Escalation ladder exhausted: {reason}",
+            "screen_type": screen_type_hint,
+            "screen_description": _describe_screen(tree) if tree else "",
+            "consultation_id": consultation_id,
+        }, platform, [
+            build_status(f"Escalation ladder exhausted on {screen_type_hint}"),
+            build_question(f"Cannot proceed: {reason}"),
+        ])
+
+    # Non-terminal: build rich-context packet + tier-aware notify (once per
+    # stuck-screen cycle until done/gave_up).
+    if not diagnosing.exists():
+        diagnosing.touch()
+        consult_path = Path("/tmp/taey-ed-consult") / consultation_id if consultation_id else diag_dir
+        # Compose Mac BT execution log + failed BT into an attempts.jsonl-like
+        # entry inside the state dir so build_packet's attempt-history section
+        # surfaces them in the packet.
+        try:
+            attempts_path = diag_dir / "attempts.jsonl"
+            attempt_record = {
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "classification": screen_type_hint,
+                "failure_mode": reason,
+                "analysis": "",
+                "bt": failed_bt or {},
+                "mac_log_tail": (bt_debug_tail or "")[-4000:],
+            }
+            with attempts_path.open("a") as fh:
+                fh.write(json.dumps(attempt_record) + "\n")
+        except Exception:
+            logger.exception("attempts.jsonl append failed (non-fatal)")
+
+        # Resolve operational_notes for the packet's known-notes section
+        try:
+            from spark.tasks.knowledge_loader import (
+                load_knowledge, get_operational_notes_for_screen,
+            )
+            knowledge = load_knowledge(platform)
+            notes_md = get_operational_notes_for_screen(knowledge, screen_type_hint)
+        except Exception:
+            knowledge = {}
+            notes_md = ""
+
+        try:
+            packet_path = build_packet(
+                platform=platform,
+                screen_hash=_screen_hash,
+                consult_path=consult_path,
+                diag_state_dir=diag_dir,
+                retry_count=retries,
+                knowledge=knowledge,
+                operational_notes_rendered=notes_md,
+                screen_type_hint=screen_type_hint,
+            )
+        except Exception:
+            logger.exception("build_packet failed; falling back to diag_dir path")
+            packet_path = diag_dir / "(packet_build_failed)"
+
+        body = notify_body_for_tier(
+            tier=tier,
+            packet_path=packet_path,
+            platform=platform,
+            screen_hash=_screen_hash,
+            retry_count=retries,
+            consult_path=consult_path,
+            diag_state_dir=diag_dir,
+        )
+        try:
+            from spark.tasks.notify_tmux import notify_spark_claude as _notify
+            _notify(body, notify_type="escalation")
+        except Exception:
+            logger.exception("notify_spark_claude failed in escalate helper")
+
+        # Auto-climb (INTENDED_FLOW §D): Tier 2/3 packets go to taeys-hands
+        # DIRECTLY from the server. This emission site was MISSED when the
+        # auto-dispatch shipped (only consultation_request.py was wired) —
+        # both 2026-06-11 Tier-2 escalations claimed "AUTO-DISPATCHED" while
+        # nothing was sent (Jesse caught it: "Taeys-Hands isn't getting
+        # anything from you").
+        dispatch_body = None
+        try:
+            from spark.tasks.escalation import dispatch_body_for_tier, notify_fleet
+            dispatch_body = dispatch_body_for_tier(
+                tier=tier,
+                packet_path=packet_path,
+                platform=platform,
+                screen_hash=_screen_hash,
+                retry_count=retries,
+                bt_debug_tail=bt_debug_tail,
+            )
+            if dispatch_body:
+                notify_fleet("taeys-hands", dispatch_body, notify_type="task")
+        except Exception:
+            logger.exception("taeys-hands auto-dispatch failed in escalate helper")
+        logger.warning(
+            f"Escalation triggered for {consultation_id} "
+            f"({platform}, {screen_type_hint}, hash={_screen_hash[:16]}, "
+            f"tier={tier}, retry_count={retries}, "
+            f"auto_dispatched={'yes' if dispatch_body else 'n/a'}, reason={reason!r})"
+        )
+
+    return _with_chat({
+        "directive": "wait",
+        "directive_id": _make_directive_id(),
+        "seconds": 30.0,
+        "reason": "claude_diagnosing",
+        "message": f"Claude diagnosing this screen — Mac will retry automatically. ({reason})",
+        "consultation_id": consultation_id,
+    }, platform, [
+        build_status("Claude diagnosing this screen — will retry automatically"),
+    ])
+
+
 def _maybe_claude_consult(
     request,
     platform: str,
@@ -103,7 +408,7 @@ def _maybe_claude_consult(
 # Key: "{platform}:{variant}" → {"count": int, "last_failed": float}
 # Reset when a DIFFERENT variant succeeds on the same platform.
 _variant_failures: dict[str, dict] = {}
-MAX_VARIANT_FAILURES = 2  # After 2 failures for same variant, STOP
+MAX_VARIANT_FAILURES = 1  # ONE SHOT: after 1 failure, escalate to claude (was 2 — Jesse 2026-05-18)
 
 
 def _record_variant_failure(platform: str, variant: str):
@@ -138,6 +443,41 @@ def _clear_variant_failures(platform: str):
 
 def _make_directive_id() -> str:
     return f"d-{uuid.uuid4().hex[:8]}"
+
+
+def _bt_actions_from_tail(bt_debug_tail) -> list:
+    """Parse the executed action names from the Mac's BT debug tail."""
+    import re as _re
+    if not bt_debug_tail:
+        return []
+    return [a for _, a in _re.findall(r"seq step (\d+)/\d+: (\w+)", str(bt_debug_tail))]
+
+
+def _record_screen_failure(platform: str, skel_hash, bt_debug_tail, outcome: str, detail: str = ""):
+    """Screen-session hook for failure outcomes (Jesse 2026-06-11)."""
+    if not skel_hash:
+        return
+    try:
+        from spark.tasks.screen_session import record_attempt
+        record_attempt(platform, skel_hash,
+                       bt_actions=_bt_actions_from_tail(bt_debug_tail),
+                       outcome=outcome, detail=detail)
+    except Exception:
+        logger.exception("screen_session failure-record failed (continuing)")
+
+
+def _is_scroll_only_bt(bt_debug_tail) -> bool:
+    """True if the just-executed BT consisted solely of scroll/wait actions
+    (phase-1 of the two-phase drag pattern). Parsed from the Mac's BT debug
+    tail; requires step 1 visible so a truncated tail of a longer mixed BT
+    can never masquerade as scroll-only."""
+    import re as _re
+    if not bt_debug_tail:
+        return False
+    steps = _re.findall(r"seq step (\d+)/\d+: (\w+)", str(bt_debug_tail))
+    if not steps or steps[0][0] != "1":
+        return False
+    return all(action in ("scroll", "wait") for _, action in steps)
 
 
 def _get_extract_for_type(screen_type: str, tree: dict = None,
@@ -268,7 +608,7 @@ def _store_and_return_bt(result: dict, platform: str, tree: dict, sig_hash: str,
     from spark.tasks.variant_cache import store_variant_bt, is_non_deterministic, register_hash
     extract_config = result.get("extract")
     try:
-        if not is_non_deterministic(variant_type):
+        if not is_non_deterministic(platform, variant_type):
             store_variant_bt(platform, variant_type, result["tree"],
                              extract_config, result.get("expected_next"),
                              source="gemini_bt")
@@ -312,6 +652,21 @@ def _consultation_or_wait(consult_result: dict) -> dict:
             "directive": "user_input_needed",
             "directive_id": _make_directive_id(),
             "reason": consult_result.get("message", "Automatic resolution exhausted"),
+            "consultation_id": consult_result.get("consultation_id", ""),
+        }
+    if status == "claude_diagnosing":
+        # Mira-side Claude is editing knowledge.json. Mac sleeps and re-sends
+        # /next_action; once claude_diagnosis_done.flag is set, the next call
+        # falls through to a fresh worker dispatch using the updated knowledge.
+        return {
+            "directive": "wait",
+            "directive_id": _make_directive_id(),
+            "seconds": 30.0,
+            "reason": "claude_diagnosing",
+            "message": consult_result.get(
+                "message",
+                "Claude diagnosing this screen variant — Mac will retry automatically.",
+            ),
             "consultation_id": consult_result.get("consultation_id", ""),
         }
     return {
@@ -409,21 +764,98 @@ def _validate_last_action(platform: str, config: dict, lr, current_tree: dict) -
             f"after_skel_hash={after_hash[:12]})"
         )
 
-    # Wrong answer detection
+    # Wrong answer / not-advanced detection. Key on the SKELETON HASH, never
+    # variant-name equality — unit-test pages share one skeleton across
+    # question types, so the stored variant name can differ from lr.screen
+    # while the screen is in fact unchanged (observed 2026-06-11: a ranking Q
+    # reorder auto-validated as 'advanced' because EXERCISE_CHECKBOX !=
+    # EXERCISE skipped this whole block, then poisoned credits downstream).
     wrong_answer = False
-    if new_screen and new_screen == lr.screen:
-        from spark.tasks.screen_type_util import get_master_category
-        screen_master = get_master_category(new_screen)
-        if screen_master == "EXERCISE":
-            directive_hash = lr.directive_skeleton_hash or ""
-            if after_hash and directive_hash and after_hash != directive_hash:
-                logger.info(
-                    f"Step 2: Same variant {new_screen} but different skeleton hash "
-                    f"({directive_hash[:12]} → {after_hash[:12]}). "
-                    f"Progress to next question, not wrong answer."
+    not_advanced = False
+
+    # VERDICT FIRST (2026-06-11, Jesse: wrong answers sailed through as
+    # 'Validated' because the wrong-answer popover changes the tree, and
+    # movement was being read as success): Khan prints the verdict — a
+    # 'Not quite' heading in the feedback popover means WRONG, full stop,
+    # regardless of any hash/screen movement.
+    try:
+        from spark.tasks.screen_type_util import get_master_category as _gmc
+        if _gmc(lr.screen or "") == "EXERCISE":
+            def _wrong_feedback(n) -> bool:
+                if not isinstance(n, dict):
+                    return False
+                name = str(n.get("name") or n.get("title") or "")
+                if (n.get("role") in ("AXHeading", "AXGroup")
+                        and name.startswith("Not quite")):
+                    return True
+                return any(_wrong_feedback(c) for c in n.get("children") or [])
+            if _wrong_feedback(after_tree_to_match or {}):
+                logger.warning(
+                    "Step 2: WRONG-ANSWER FEEDBACK in after-tree ('Not quite') — "
+                    "verdict overrides movement."
                 )
-            else:
                 wrong_answer = True
+    except Exception:
+        logger.exception("verdict scan failed (continuing with movement checks)")
+
+    if not wrong_answer and new_screen:
+        from spark.tasks.screen_type_util import get_master_category
+        screen_master = get_master_category(new_screen) or ""
+        directive_hash = lr.directive_skeleton_hash or ""
+        if (screen_master == "EXERCISE" and after_hash and directive_hash
+                and after_hash == directive_hash):
+            if new_screen == lr.screen:
+                # Full-tree disambiguation (2026-06-11, Q8): same screen after
+                # a solve can mean WRONG ANSWER *or* CLICKS NEVER STAGED. The
+                # capture now carries value/enabled — if no answer widget is
+                # selected AND the submit button is disabled, nothing was
+                # submitted: retry the same answer, don't treat as wrong.
+                staged = None
+                try:
+                    submit_disabled = False
+                    any_selected = False
+                    def _scan(n):
+                        nonlocal submit_disabled, any_selected
+                        role = n.get("role") or ""
+                        name = n.get("name") or ""
+                        if role == "AXButton" and name == "Check" and n.get("enabled") is False:
+                            submit_disabled = True
+                        if role in ("AXCheckBox", "AXRadioButton") and name.startswith("(Choice"):
+                            if n.get("value") in (1, "1", True):
+                                any_selected = True
+                        for c in n.get("children") or []:
+                            _scan(c)
+                    _scan(after_tree_to_match or {})
+                    staged = any_selected or not submit_disabled
+                except Exception:
+                    staged = None
+                if staged is False:
+                    not_advanced = True
+                    logger.warning(
+                        "Step 2: solve produced NO staged selection (all choices "
+                        "value=0, Check disabled) — clicks did not register. "
+                        "NOT a wrong answer; rebuilding to retry."
+                    )
+                else:
+                    wrong_answer = True
+            else:
+                # Same skeleton, different label — collision territory.
+                # Without a content-fingerprint delta we cannot claim the
+                # question advanced. Neutral: no validation, no map damage.
+                not_advanced = True
+                logger.info(
+                    f"Step 2: after-skeleton equals directive skeleton "
+                    f"({after_hash[:12]}) with label mismatch "
+                    f"({lr.screen} → {new_screen}) — NOT validating "
+                    f"(cannot prove the question advanced)."
+                )
+        elif (screen_master == "EXERCISE" and after_hash and directive_hash
+                and after_hash != directive_hash):
+            logger.info(
+                f"Step 2: Exercise skeleton changed "
+                f"({directive_hash[:12]} → {after_hash[:12]}) — "
+                f"progress to next question."
+            )
 
     # Expected_next check (informational)
     expected_next = lr.directive_expected_next or []
@@ -431,21 +863,203 @@ def _validate_last_action(platform: str, config: dict, lr, current_tree: dict) -
     if expected_next and new_screen:
         expected_match = new_screen in expected_next
 
-    validated = tree_changed and not wrong_answer
+    validated = tree_changed and not wrong_answer and not not_advanced
 
     return {
         "validated": validated,
         "screen_transitioned": tree_changed,
         "new_screen": new_screen,
         "wrong_answer": wrong_answer,
+        "not_advanced": not_advanced,
         "expected_next_match": expected_match,
         "after_skeleton_hash": after_hash,
-        "reason": "validated" if validated else ("wrong_answer" if wrong_answer else "validation_failed"),
+        "reason": ("validated" if validated else
+                   ("wrong_answer" if wrong_answer else
+                    ("not_advanced" if not_advanced else "validation_failed"))),
     }
+
+
+@router.post("/session/reset")
+def session_reset(platform: str = "khan_academy"):
+    """Mac calls this when the user hits Stop on Run Continuous.
+    Clears stale spark-side state so the next session starts fresh.
+    Per Jesse 2026-05-20: 'we can't be out of sync. When user hits stop,
+    it has to clear everything for that user.'
+
+    Cleared:
+      - /tmp/taey-ed-claude-diagnosing/<platform>_*  (diagnosing flags, retry counters)
+      - /tmp/taey-ed-consult/consult_*  (open consults — abandoned)
+      - pending_validations for this platform
+
+    Preserved:
+      - hash_index (learned screen → variant mappings)
+      - variant_cache (canonical BTs)
+      - knowledge.json operational_notes
+      - signatures (learned screen signatures)
+    """
+    from pathlib import Path
+    import shutil
+    cleared = {"diag_dirs": 0, "consults": 0, "pending_validations": 0}
+
+    # 1. Diagnosing state dirs for this platform
+    diag_root = Path("/tmp/taey-ed-claude-diagnosing")
+    if diag_root.exists():
+        for d in diag_root.glob(f"{platform}_*"):
+            try:
+                shutil.rmtree(d)
+                cleared["diag_dirs"] += 1
+            except Exception:
+                logger.exception(f"failed to clear diag dir {d}")
+
+    # 2. Open consults
+    consult_root = Path("/tmp/taey-ed-consult")
+    if consult_root.exists():
+        for d in consult_root.glob("consult_*"):
+            try:
+                shutil.rmtree(d)
+                cleared["consults"] += 1
+            except Exception:
+                logger.exception(f"failed to clear consult {d}")
+
+    # 3. Pending validations for this platform
+    pv_root = Path("/home/user/taey-ed-data/pending_validations") / platform
+    if pv_root.exists():
+        for f in pv_root.glob("*.json"):
+            try:
+                f.unlink()
+                cleared["pending_validations"] += 1
+            except Exception:
+                logger.exception(f"failed to clear pending validation {f}")
+
+    logger.warning(
+        f"SESSION RESET for {platform}: cleared "
+        f"{cleared['diag_dirs']} diag dirs, "
+        f"{cleared['consults']} consults, "
+        f"{cleared['pending_validations']} pending validations. "
+        f"hash_index + variant_cache + knowledge.json PRESERVED."
+    )
+    return {"ok": True, "platform": platform, "cleared": cleared}
 
 
 @router.post("/next_action")
 def next_action(request: NextActionRequest):
+    """Production wrapper: intercept any user_input_needed at the endpoint
+    boundary and route through claude_diagnosing instead. Per Jesse 2026-05-18:
+    Mac app + API do not escalate to user. Everything that isn't perfectly
+    handled goes to the Mira-side Claude diagnosis loop.
+
+    The only path to a real user_input_needed directive is when a Mira-side
+    Claude has explicitly created a gave_up.flag in the diagnosis state dir
+    — that is handled inside _escalate_to_claude_diagnosing, not here.
+    """
+    # PRE-PIPELINE CHECK: GLOBAL "waiting on central guidance" lock.
+    #
+    # Per Jesse 2026-05-18: any time the system is waiting on central feedback
+    # — for ANY consultation or diagnosis cycle, on ANY platform — Mac should
+    # do nothing but wait. The previous per-(platform, hash) check leaked when
+    # Mac's tree mutated mid-diagnosis (animation, page auto-advance) and the
+    # new hash escaped the lock, cascading into fresh consultations.
+    #
+    # "Waiting on central guidance" = either of:
+    #   1. An open consultation: /tmp/taey-ed-consult/consult_*/ with no
+    #      response.json yet (the worker is still computing or pending).
+    #   2. An active diagnosis: /tmp/taey-ed-claude-diagnosing/*/ with a
+    #      diagnosing.flag and no diagnosis_done.flag / gave_up.flag.
+    #
+    # While either condition holds anywhere, every /next_action returns wait.
+    # Holds across platforms, screens, and tree mutations. Prevents cascade.
+    try:
+        _waiting_reasons = []
+
+        # Condition 1: open consultations (response.json missing)
+        _consult_root = Path("/tmp/taey-ed-consult")
+        if _consult_root.exists():
+            for _consult_dir in _consult_root.iterdir():
+                if not _consult_dir.is_dir() or not _consult_dir.name.startswith("consult_"):
+                    continue
+                if (_consult_dir / "response.json").exists():
+                    continue
+                # Check metadata — abandoned/stale consults shouldn't lock us
+                _meta = _consult_dir / "metadata.json"
+                if _meta.exists():
+                    try:
+                        _m = json.loads(_meta.read_text())
+                        if _m.get("status") == "abandoned":
+                            continue
+                    except Exception:
+                        pass
+                _waiting_reasons.append(f"open_consult:{_consult_dir.name}")
+                if len(_waiting_reasons) >= 4:
+                    break
+
+        # Condition 2: active diagnosis cycles
+        _diag_root = Path("/tmp/taey-ed-claude-diagnosing")
+        if _diag_root.exists():
+            for _state_dir in _diag_root.iterdir():
+                if not _state_dir.is_dir():
+                    continue
+                if (_state_dir / "diagnosing.flag").exists() \
+                        and not (_state_dir / "diagnosis_done.flag").exists() \
+                        and not (_state_dir / "gave_up.flag").exists():
+                    _waiting_reasons.append(f"diagnosing:{_state_dir.name}")
+                    if len(_waiting_reasons) >= 4:
+                        break
+
+        if _waiting_reasons:
+            logger.info(
+                f"PRE-PIPELINE: {len(_waiting_reasons)} central-feedback wait(s) active "
+                f"({', '.join(_waiting_reasons[:3])}"
+                f"{'...' if len(_waiting_reasons) > 3 else ''}) "
+                f"— returning wait, skipping pipeline"
+            )
+            return {
+                "directive": "wait",
+                "directive_id": _make_directive_id(),
+                "seconds": 30.0,
+                "reason": "central_feedback_pending",
+                "message": (
+                    f"Waiting on central guidance ({len(_waiting_reasons)} cycle(s)) — "
+                    f"Mac will retry automatically."
+                ),
+            }
+    except Exception:
+        logger.exception("PRE-PIPELINE central-feedback check failed (non-fatal)")
+
+    response = _next_action_impl(request)
+    if isinstance(response, dict) and response.get("directive") == "user_input_needed":
+        platform = request.platform
+        tree = request.tree
+        # Best-effort consultation_id from client state, then any response field
+        cs = request.client_state or ClientState()
+        consult_id = (
+            (cs.active_consultation_id or "")
+            or response.get("consultation_id", "")
+            or ""
+        )
+        reason = response.get("reason", "user_input_needed intercepted by wrapper")
+        screen_type_hint = response.get("screen_type", "UNKNOWN")
+        # Forward Mac BT execution log + failed BT into the diagnosis ping
+        lr = request.last_result
+        bt_debug_tail = (lr.bt_debug_tail or "") if lr else ""
+        failed_bt = lr.failed_bt if lr and lr.failed_bt else None
+        logger.warning(
+            f"WRAPPER: intercepted user_input_needed → claude_diagnosing "
+            f"(consult={consult_id!r}, screen={screen_type_hint!r}, "
+            f"bt_log={'yes' if bt_debug_tail else 'no'}, failed_bt={'yes' if failed_bt else 'no'})"
+        )
+        return _escalate_to_claude_diagnosing(
+            platform=platform,
+            tree=tree,
+            consultation_id=consult_id,
+            reason=reason,
+            screen_type_hint=screen_type_hint,
+            bt_debug_tail=bt_debug_tail,
+            failed_bt=failed_bt,
+        )
+    return response
+
+
+def _next_action_impl(request: NextActionRequest):
     """
     Directive Model: Mac sends state, Spark returns ONE directive.
 
@@ -463,67 +1077,27 @@ def next_action(request: NextActionRequest):
         store_message(platform, build_user_message(request.chat_message))
         logger.info(f"  Chat: stored user message: {request.chat_message[:80]}")
 
-        # ── URGENT: User message = priority override ──
-        # User messages are treated like error reports — full context, immediate action.
-        # If user is telling us something, there's something wrong that needs addressing.
-        if request.screenshot_b64:
-            logger.info("  URGENT: User sent proactive message — overriding normal flow")
-            # Build context from previous state
-            guidance_parts = [f"USER MESSAGE (URGENT — address immediately): {request.chat_message}"]
-            if lr:
-                guidance_parts.append(f"Previous screen: {lr.screen or 'unknown'}")
-                guidance_parts.append(f"Previous action: {lr.action or 'unknown'}")
-                guidance_parts.append(f"Action succeeded: {lr.success}")
-                if lr.bt_debug_tail:
-                    guidance_parts.append(f"Last BT debug:\n{lr.bt_debug_tail}")
-            user_guidance = "\n".join(guidance_parts)
-
-            # Claude-primary platforms: bypass Gemini, route to consultation.
-            _claude_directive = _maybe_claude_consult(
-                request, platform, tree,
-                screen_type=(lr.screen if lr else "UNKNOWN") or "UNKNOWN",
-                user_guidance=user_guidance,
-            )
-            if _claude_directive:
-                return _claude_directive
-
-            # Classify current screen to give Gemini context
-            from spark.tasks.classify_screen import classify_screen, build_bt_from_tree
-            classification = classify_screen(
-                tree=tree,
-                screenshot_b64=request.screenshot_b64,
-                platform=platform,
-            )
-            screen_type = classification.get("screen_type", "UNKNOWN")
-            logger.info(f"  URGENT: Current screen classified as {screen_type}")
-
-            result = build_bt_from_tree(
-                tree=tree,
-                screenshot_b64=request.screenshot_b64,
-                platform=platform,
-                screen_type=screen_type,
-                user_guidance=user_guidance,
-            )
-            if result:
-                from spark.tasks.skeleton import extract_skeleton, skeleton_hash as _urgent_hash
-                sig_hash = _urgent_hash(extract_skeleton(tree))
-                return _store_and_return_bt(result, platform, tree, sig_hash, course_id=cs.course_id)
-
-            # Gemini couldn't build BT — ask user for more specific guidance
-            logger.warning("  URGENT: Gemini couldn't build BT from user message")
-            from spark.tasks.classify_screen import _describe_screen
-            _reason = (f"I received your message but couldn't build an automation from it. "
-                       f"Can you tell me more specifically what to do on this screen?")
-            return _with_chat({
-                "directive": "user_input_needed",
-                "directive_id": _make_directive_id(),
-                "reason": _reason,
-                "screen_type": screen_type,
-                "screen_description": _describe_screen(tree),
-            }, platform, [
-                build_status(f"Received your message — need more specific guidance"),
-                build_question(_reason),
-            ])
+        # ── URGENT: User message = STOP EVERYTHING + submit to claude-primary NOW ──
+        # Jesse 2026-06-01: "If a user says something, that usually means you did
+        # something wrong and whatever is going on needs to stop immediately and
+        # be submitted to you." So a user message routes STRAIGHT to the
+        # escalate-to-claude-primary path — regardless of whether a screenshot is
+        # attached, and NEVER queued to the worker. (Old behavior gated the
+        # override on request.screenshot_b64 and routed to the worker consult,
+        # so a no-screenshot message just fell through to normal flow = "queued".)
+        _ug = [f"USER MESSAGE (URGENT — stop everything and address immediately): {request.chat_message}"]
+        if lr:
+            _ug.append(f"Previous screen: {lr.screen or 'unknown'} | action: {lr.action or 'unknown'} | success: {lr.success}")
+            if lr.bt_debug_tail:
+                _ug.append(f"Last BT debug:\n{lr.bt_debug_tail}")
+        return _escalate_to_claude_diagnosing(
+            platform=platform,
+            tree=tree,
+            consultation_id="",
+            reason="\n".join(_ug),
+            screen_type_hint=((lr.screen if lr else None) or "USER_MESSAGE"),
+            screenshot_b64=request.screenshot_b64,
+        )
 
     logger.info(
         f">>> /next_action: platform={platform} "
@@ -542,12 +1116,77 @@ def next_action(request: NextActionRequest):
         if lr.bt_debug_tail:
             logger.info(f"    bt_debug_tail:\n{lr.bt_debug_tail}")
 
+    # ── Step 0.5: Wrong-window guard ──
+    # If the platform's knowledge declares web_area_markers and the captured
+    # WebArea title matches none of them, the Mac captured a NON-course window
+    # (observed live 2026-06-11: JupyterLab captured twice, got hashed into
+    # the khan map and escalated). Junk input must not reach validation,
+    # hashing, classification, or escalation — return wait and self-heal
+    # when the course window regains focus.
+    if tree:
+        try:
+            from spark.tasks.knowledge_loader import load_knowledge as _lk_ww
+            _markers = (_lk_ww(platform) or {}).get(
+                "global", {}).get("web_area_markers") or []
+            if _markers:
+                from spark.tasks.prompt_codex import _find_web_area as _fwa_ww
+                _wa = _fwa_ww(tree) or {}
+                _wa_title = str(_wa.get("name") or "")
+                if _wa_title and not any(
+                    m.lower() in _wa_title.lower() for m in _markers
+                ):
+                    logger.warning(
+                        f"  Step 0.5: WRONG WINDOW — WebArea {_wa_title!r} matches no "
+                        f"web_area_markers for {platform}. Waiting for course window."
+                    )
+                    return _with_chat({
+                        "directive": "wait",
+                        "directive_id": _make_directive_id(),
+                        "seconds": 10.0,
+                        "reason": "wrong_window",
+                        "message": (
+                            f"Captured window is '{_wa_title[:60]}', not {platform}. "
+                            f"Bring the course window to the front."
+                        ),
+                    }, platform, [
+                        build_status(
+                            f"Wrong window focused ('{_wa_title[:40]}') — "
+                            f"bring the course window to the front"
+                        ),
+                    ])
+        except Exception as _ww_exc:
+            logger.warning(f"  Step 0.5: wrong-window guard error (continuing): {_ww_exc}")
+
     # ── Step 1: Active consultation? Check if done ──
     logger.info("  Step 1: Checking active consultation...")
     consultation_id = cs.active_consultation_id
     if consultation_id:
         consult_status = check_consultation(consultation_id)
         if consult_status.get("status") == "complete":
+            # Worker-fallback contract: when the consultation worker fails to
+            # generate a BT, it writes a response.json with _worker_fallback=True
+            # and an inert wait BT. Convert that here to a real user_input_needed
+            # directive — the Mac should prompt the user, not execute the wait.
+            if consult_status.get("_worker_fallback"):
+                _wf_reason = consult_status.get(
+                    "_worker_failure_reason", "worker failed to generate BT"
+                )
+                logger.error(
+                    f"Step 1: worker_fallback for {consultation_id} — "
+                    f"routing through claude_diagnosing helper. reason={_wf_reason}"
+                )
+                # Route through the single canonical helper. It checks done.flag
+                # (abandons stale consult, signals retry), gave_up.flag (user
+                # fallback), or notifies and returns wait if neither.
+                return _escalate_to_claude_diagnosing(
+                    platform=platform,
+                    tree=tree,
+                    consultation_id=consultation_id,
+                    reason=f"worker_fallback: {_wf_reason}",
+                    screen_type_hint=consult_status.get("screen_type", "UNKNOWN"),
+                    bt_debug_tail=(lr.bt_debug_tail or "") if lr else "",
+                    failed_bt=lr.failed_bt if lr and lr.failed_bt else None,
+                )
             tree_def = consult_status.get("tree")
             if tree_def:
                 # Bug #8: Get skeleton_hash from CURRENT tree, not stale consultation
@@ -575,9 +1214,15 @@ def next_action(request: NextActionRequest):
                     "skeleton_hash": _consult_skeleton_hash,
                 }, platform, [build_status(f"Consultation resolved — executing {_screen} automation")])
             logger.warning(f"Consultation {consultation_id} complete but no tree, re-matching")
-        elif consult_status.get("status") == "not_found":
-            logger.warning(f"Consultation {consultation_id} not found, clearing and re-matching")
-            # Fall through to Step 4 (match screen) instead of waiting forever
+        elif consult_status.get("status") in ("not_found", "abandoned"):
+            logger.warning(
+                f"Consultation {consultation_id} {consult_status.get('status')}, "
+                f"clearing and re-matching"
+            )
+            # Fall through to Step 4 (match screen) instead of waiting forever.
+            # 'abandoned' is the state set by _escalate_to_claude_diagnosing when
+            # done.flag is consumed — gets the pipeline running fresh with
+            # updated knowledge.json instead of polling the stale consult.
         else:
             return {
                 "directive": "wait",
@@ -609,6 +1254,22 @@ def next_action(request: NextActionRequest):
             # Success: clear failure tracking for this platform
             _clear_variant_failures(platform)
 
+            # Screen session: the screen ADVANCED — record + archive its
+            # working memory (Jesse 2026-06-11: stored until the screen
+            # advances).
+            if lr.directive_skeleton_hash:
+                try:
+                    from spark.tasks.screen_session import record_attempt, archive
+                    record_attempt(
+                        platform, lr.directive_skeleton_hash,
+                        bt_actions=_bt_actions_from_tail(lr.bt_debug_tail),
+                        outcome="advanced",
+                        detail=f"validated; new_screen={vr.get('new_screen')}",
+                    )
+                    archive(platform, lr.directive_skeleton_hash)
+                except Exception:
+                    logger.exception("screen_session advance-archive failed (continuing)")
+
             # Learn from successful BT execution
             # Note: lr doesn't carry the BT definition — pass empty dict.
             # submit_button detection won't fire but screen_type + success is recorded.
@@ -620,18 +1281,68 @@ def next_action(request: NextActionRequest):
                 skeleton_hash=lr.directive_skeleton_hash or "",
             )
 
+            # Pending-validation notify (Jesse 2026-05-19): if the
+            # just-executed directive came from an unvalidated screen map
+            # (variant_cache or signature), ping claude-primary with the
+            # outcome so the entry can be mark_validated / delete_screen'd.
+            try:
+                from spark.tasks.validation_tracker import (
+                    check_pending, notify_claude_for_validation,
+                    clear_pending, _summarize_tree,
+                )
+                pending = check_pending(platform, lr.directive_skeleton_hash or "")
+                if pending:
+                    notify_claude_for_validation(
+                        record=pending,
+                        last_result={
+                            "success": lr.success,
+                            "screen": lr.screen,
+                            "tree_hash_before": lr.tree_hash_before,
+                            "tree_hash_after": lr.tree_hash_after,
+                            "bt_debug_tail": lr.bt_debug_tail or "",
+                        },
+                        after_tree_summary=_summarize_tree(tree),
+                    )
+                    # Clear so we don't re-notify on the next poll. claude-
+                    # primary's response (mark_validated or delete) is the
+                    # canonical resolution; the pending file is only the
+                    # one-shot notification trigger.
+                    clear_pending(platform, lr.directive_skeleton_hash or "")
+            except Exception:
+                logger.exception("Step 2 validation notify failed (non-fatal)")
+
         elif vr["wrong_answer"]:
             # ONE TRY ONLY: Wrong answer means the action was wrong. STOP.
             logger.error(
                 f"Step 2: WRONG ANSWER for {lr.screen} — "
                 f"ONE TRY ONLY — stopping. Hash={lr.directive_skeleton_hash}"
             )
+            deleted_failed_map = False
             if lr.directive_skeleton_hash:
                 try:
-                    from spark.tasks.variant_cache import delete_hash, invalidate_variant_bt
-                    delete_hash(platform=platform, skel_hash=lr.directive_skeleton_hash)
-                    if lr.screen:
-                        invalidate_variant_bt(platform=platform, variant=lr.screen)
+                    from spark.tasks.variant_cache import (
+                        delete_hash,
+                        invalidate_variant_bt,
+                        lookup_by_hash,
+                    )
+                    _record_screen_failure(platform, lr.directive_skeleton_hash,
+                                           lr.bt_debug_tail, "wrong_answer")
+                    hash_entry = lookup_by_hash(platform, lr.directive_skeleton_hash)
+                    if hash_entry and hash_entry.get("validated"):
+                        from spark.tasks.variant_cache import record_validated_map_failure
+                        record_validated_map_failure(
+                            platform, lr.directive_skeleton_hash, lr.screen,
+                        )
+                        logger.info(
+                            f"Step 2: VALIDATED map {lr.screen} (hash "
+                            f"{lr.directive_skeleton_hash[:12]}) got a wrong answer — "
+                            f"KEEPING map (demotes at 2 consecutive) and escalating"
+                        )
+                    else:
+                        delete_hash(platform=platform, skel_hash=lr.directive_skeleton_hash)
+                        if lr.screen:
+                            invalidate_variant_bt(platform=platform, variant=lr.screen)
+                        deleted_failed_map = True
                 except Exception as e:
                     logger.warning(f"Step 2: delete_hash failed: {e}")
             from spark.tasks.classify_screen import _describe_screen
@@ -644,7 +1355,10 @@ def next_action(request: NextActionRequest):
                 "screen_type": lr.screen or "UNKNOWN",
                 "screen_description": _describe_screen(tree),
             }, platform, [
-                build_status(f"Wrong answer detected on {lr.screen} — deleted old approach"),
+                build_status(
+                    f"Wrong answer detected on {lr.screen} — "
+                    f"{'deleted unvalidated approach' if deleted_failed_map else 'kept validated map and escalated'}"
+                ),
                 build_question(_reason),
             ])
 
@@ -661,19 +1375,57 @@ def next_action(request: NextActionRequest):
     logger.info("  Step 2.5: Checking for stuck screen...")
     if lr and lr.success and not lr.continue_loop and lr.screen:
         tree_hash_changed = lr.tree_hash_before != lr.tree_hash_after
-        if not tree_hash_changed:
+        if not tree_hash_changed and _is_scroll_only_bt(lr.bt_debug_tail):
+            # Phase-1 of the two-phase drag pattern: a scroll/wait-only BT is
+            # EXPECTED to leave the screen unchanged — the point is the next
+            # capture carries on-screen coordinates for phase-2. Twice today
+            # (dropdown 14:11, matcher 14:20) this tripped stuck-detection and
+            # burned ladder attempts on a working flow. Fall through to a
+            # fresh build, no failure recorded.
+            logger.info(
+                f"  Step 2.5: scroll-only BT, unchanged screen — PHASE COMPLETE "
+                f"(not stuck). Rebuilding from post-scroll capture."
+            )
+            _record_screen_failure(platform, lr.directive_skeleton_hash,
+                                   lr.bt_debug_tail, "scroll_phase_complete",
+                                   "screen unchanged by design; phase-2 next")
+        elif not tree_hash_changed:
             logger.error(
                 f"STUCK: {lr.screen} unchanged after action. "
                 f"ONE TRY ONLY — stopping. Hash={lr.directive_skeleton_hash or 'none'}"
             )
+            _record_screen_failure(platform, lr.directive_skeleton_hash,
+                                   lr.bt_debug_tail, "stuck",
+                                   "tree unchanged after non-scroll action")
+            deleted_failed_map = False
             # Delete the failed hash mapping so it doesn't re-match next time
             if lr.directive_skeleton_hash:
                 try:
-                    from spark.tasks.variant_cache import delete_hash as _del_hash, invalidate_variant_bt as _inv_bt
-                    _del_hash(platform=platform, skel_hash=lr.directive_skeleton_hash)
-                    if lr.screen:
-                        _inv_bt(platform=platform, variant=lr.screen)
-                    logger.info(f"Step 2.5: Deleted failed hash {lr.directive_skeleton_hash[:12]}")
+                    from spark.tasks.variant_cache import (
+                        delete_hash as _del_hash,
+                        invalidate_variant_bt as _inv_bt,
+                        lookup_by_hash as _lookup_hash,
+                    )
+                    _entry = _lookup_hash(platform, lr.directive_skeleton_hash)
+                    if _entry and _entry.get("validated"):
+                        from spark.tasks.variant_cache import (
+                            record_validated_map_failure as _rec_fail,
+                        )
+                        _rec_fail(platform, lr.directive_skeleton_hash, lr.screen)
+                        logger.info(
+                            f"Step 2.5: VALIDATED map {lr.screen} (hash "
+                            f"{lr.directive_skeleton_hash[:12]}) got stuck — "
+                            f"KEEPING map (demotes at 2 consecutive) and escalating"
+                        )
+                    else:
+                        _del_hash(platform=platform, skel_hash=lr.directive_skeleton_hash)
+                        if lr.screen:
+                            _inv_bt(platform=platform, variant=lr.screen)
+                        deleted_failed_map = True
+                        logger.info(
+                            f"Step 2.5: Deleted unvalidated failed hash "
+                            f"{lr.directive_skeleton_hash[:12]}"
+                        )
                 except Exception as e:
                     logger.warning(f"Step 2.5: delete_hash failed: {e}")
             from spark.tasks.classify_screen import _describe_screen
@@ -686,27 +1438,66 @@ def next_action(request: NextActionRequest):
                 "screen_type": lr.screen or "UNKNOWN",
                 "screen_description": _describe_screen(tree),
             }, platform, [
-                build_status(f"Screen unchanged after action on {lr.screen} — need your help"),
+                build_status(
+                    f"Screen unchanged after action on {lr.screen} — "
+                    f"{'deleted unvalidated approach' if deleted_failed_map else 'kept validated map and need your help'}"
+                ),
                 build_question(_reason),
             ])
 
     # ── Step 2.7: Polling completion detection ──
     logger.info("  Step 2.7: Checking polling completion...")
     if lr and lr.continue_loop and lr.tree_hash_before and lr.tree_hash_after:
-        if lr.tree_hash_before != lr.tree_hash_after:
-            # For VIDEO screens: tree hash ALWAYS changes during playback
-            # (timestamps, progress bar). Check if video is actually done
-            # by looking for video signals in the current tree.
-            is_video = lr.screen and "VIDEO" in (lr.screen or "").upper()
-            # TODO(V20): Consider using get_master_category() here for robustness.
-            # Currently works because all video screen types contain "VIDEO".
+        # 2026-05-15: Deleted the unchanged-tree unconditional re-poll branch.
+        # That branch (introduced 2026-05-14 in 5f5485f) had no exit condition
+        # and would loop forever on Khan video screens where the SKELETON is
+        # stable across video states (Pause -> Replay is a text-value change,
+        # not a structural change). With this branch removed, tree-unchanged
+        # falls through naturally to Step 4 exact-hash lookup, which hits the
+        # cached video_poll BT during playback (cheap) and falls to Step 5
+        # classification when the structure finally changes at completion.
+        # See consultations/04_VIDEO_POLL_ARCHAEOLOGY.md Section D1.
+        # Completion check runs on EVERY poll cycle, independent of hash
+        # movement: a FINISHED video's tree stops changing entirely (live
+        # 2026-06-11 18:04 — hash static at 4848e6f0, detector unreachable
+        # inside the tree-changed branch, poll forever). During playback the
+        # hash changes (timestamps); at completion it freezes. Either way,
+        # the indicators in the CURRENT tree are the truth.
+        _is_video_poll = lr.screen and "VIDEO" in (lr.screen or "").upper()
+        if lr.tree_hash_before != lr.tree_hash_after or _is_video_poll:
+            is_video = _is_video_poll
             if is_video:
+                # COMPLETION INDICATORS decide, not player presence: the
+                # YouTube player stays in the tree after completion, so
+                # HAS_VIDEO was true forever and a finished video polled
+                # endlessly (live 2026-06-11, Wave properties: seek at 100,
+                # 'Replay Video', sidebar 'completed Video' — still polling).
+                # Per Jesse's validated law, playing vs complete is NEVER
+                # identical — there is always an indicator.
+                def _video_complete(n) -> bool:
+                    if not isinstance(n, dict):
+                        return False
+                    name = str(n.get("name") or n.get("title") or "")
+                    role = n.get("role") or ""
+                    if role == "AXButton" and name == "Replay Video":
+                        return True
+                    if role == "AXLink" and name.startswith("completed Video"):
+                        return True
+                    if role == "AXSlider" and "seek" in name.lower():
+                        try:
+                            if float(n.get("value") or 0) >= 99.5:
+                                return True
+                        except (TypeError, ValueError):
+                            pass
+                    return any(_video_complete(c) for c in n.get("children") or [])
+
+                video_done = _video_complete(tree)
                 from spark.tasks.prompt_codex import analyze_tree as _analyze
                 current_tags = _analyze(tree)
-                if "HAS_VIDEO" in current_tags:
+                if "HAS_VIDEO" in current_tags and not video_done:
                     logger.info(
-                        f"Step 2.7: Video still playing (HAS_VIDEO in current tree). "
-                        f"Continuing poll — NOT advancing."
+                        f"Step 2.7: Video still playing (player present, no "
+                        f"completion indicator). Continuing poll — NOT advancing."
                     )
                     # Return video_poll again to keep watching
                     return {
@@ -740,7 +1531,16 @@ def next_action(request: NextActionRequest):
                 }
             return _build_screen_directive(
                 request, platform, tree, "TRANSITION", "",
-                user_guidance="Content just completed. Find and click the completion/mark-complete button if present, then the advance/next button. Look at the tree for actual button names.",
+                user_guidance=(
+                    "Content (video/article) just completed. Advance to the next item.\n"
+                    "Find the explicit forward-advancement link in the AX tree — typically:\n"
+                    "  - an AXLink whose name starts with 'Up next:' (read the FULL exact name from the tree, including the title after the colon)\n"
+                    "  - OR a button labeled 'Continue', 'Next question', 'Done', 'Mark complete'\n"
+                    "Use find_and_click with the EXACT name read from the tree + match_mode=exact + appropriate role (AXLink or AXButton). Pin the dynamic part (e.g., the video title after 'Up next:') verbatim — do NOT use match_mode=contains.\n"
+                    "DO NOT click small course-wide breadcrumb arrows named 'Next in course' / 'Previous in course' at the top of the page — those are course-wide chrome that skip past entire units, never the right advancement target.\n"
+                    "DO NOT click 'Up next for you!' algorithmic-recommendation cards — those are Khan's personalized suggestions, not linear course progression. The correct 'Up next' is the AXLink in the lower-right of the video player area.\n"
+                    "If neither an 'Up next:' link nor a Continue/Next button is visible in the tree, the next lesson item in the LEFT SIDEBAR (look for the first un-checkmarked sidebar AXLink) is the fallback target."
+                ),
                 course_id=cs.course_id,
             )
 
@@ -832,18 +1632,44 @@ def next_action(request: NextActionRequest):
         # If the BT came from a hash match and it failed (including Gemini
         # retry), the hash mapping was likely wrong. Delete it.
         # BUT: check failure count BEFORE falling through to reclassify.
+        _record_screen_failure(platform, lr.directive_skeleton_hash,
+                               lr.bt_debug_tail, "bt_failure",
+                               (lr.bt_debug_tail or "")[-200:])
         if lr.directive_skeleton_hash:
-            logger.info(
-                f"Step 3: BT failed for hash-matched screen {lr.screen} "
-                f"— deleting hash {lr.directive_skeleton_hash[:12]}"
-            )
             try:
-                from spark.tasks.variant_cache import delete_hash as _del_hash3, invalidate_variant_bt as _inv_bt3
-                _del_hash3(platform=platform, skel_hash=lr.directive_skeleton_hash)
-                if lr.screen:
-                    _inv_bt3(platform=platform, variant=lr.screen)
+                from spark.tasks.variant_cache import (
+                    delete_hash as _del_hash3, invalidate_variant_bt as _inv_bt3,
+                    lookup_by_hash as _lookup_hash3,
+                )
+                _entry3 = _lookup_hash3(platform, lr.directive_skeleton_hash)
+                if _entry3 and _entry3.get("validated"):
+                    # Root-cause guard (Jesse 2026-06-01): a VALIDATED map represents
+                    # "map once, recognized forever". A single transient/cross-state BT
+                    # failure (e.g. an advance button momentarily absent from the tree,
+                    # or the screen having moved between match and execute) must NOT
+                    # destroy it — that turns recognition into one-shot-then-forgotten.
+                    # Keep the map; escalate for review instead of deleting.
+                    # record_validated_map_failure demotes (validated=False +
+                    # note debit) at 2 consecutive failures — INTENDED_FLOW §E.
+                    from spark.tasks.variant_cache import (
+                        record_validated_map_failure as _rec_fail3,
+                    )
+                    _rec_fail3(platform, lr.directive_skeleton_hash, lr.screen)
+                    logger.info(
+                        f"Step 3: VALIDATED map {lr.screen} (hash "
+                        f"{lr.directive_skeleton_hash[:12]}) failed — KEEPING map "
+                        f"(demotes at 2 consecutive), escalating for review"
+                    )
+                else:
+                    logger.info(
+                        f"Step 3: BT failed for hash-matched screen {lr.screen} "
+                        f"— deleting unvalidated hash {lr.directive_skeleton_hash[:12]}"
+                    )
+                    _del_hash3(platform=platform, skel_hash=lr.directive_skeleton_hash)
+                    if lr.screen:
+                        _inv_bt3(platform=platform, variant=lr.screen)
             except Exception as e:
-                logger.warning(f"Step 3: delete_hash failed: {e}")
+                logger.warning(f"Step 3: delete_hash guard failed: {e}")
 
             # Check if this variant has failed too many times — DON'T reclassify
             if lr.screen and _check_variant_failed(platform, lr.screen):
@@ -913,8 +1739,28 @@ def next_action(request: NextActionRequest):
         variant = hash_result["variant"]
         logger.info(f"  Step 4: Hash hit → variant={variant}")
 
+        # Per Jesse 2026-05-19: every screen-map use of an UNVALIDATED entry
+        # must notify claude-primary for validation after Mac executes the BT.
+        # Record pending now; Step 2 on next /next_action picks it up.
+        if not hash_result.get("validated", False):
+            try:
+                from spark.tasks.validation_tracker import record_pending
+                record_pending(
+                    platform=platform,
+                    skel_hash=skel_hash,
+                    variant=variant,
+                    source="variant_cache",
+                    tree=tree,
+                )
+                logger.info(
+                    f"  Step 4: recorded pending validation for unvalidated "
+                    f"variant_cache entry {skel_hash[:12]} → {variant}"
+                )
+            except Exception:
+                logger.exception("Step 4 record_pending failed (non-fatal)")
+
         # For deterministic variants, try to reuse stored BT
-        if not is_non_deterministic(variant):
+        if not is_non_deterministic(platform, variant):
             bt_entry = lookup_variant_bt(platform, variant)
             if bt_entry and bt_entry.get("behavior_tree"):
                 stored_bt = bt_entry["behavior_tree"]
@@ -934,15 +1780,107 @@ def next_action(request: NextActionRequest):
 
         # Non-deterministic variant (EXERCISE) or no stored BT — need Pro
         logger.info(f"  Step 4B: Hash known as {variant} but needs fresh BT")
-        screen_type = variant.split("_")[0] if "_" in variant else variant
+        validated = hash_result.get("validated", False)
+        if not validated:
+            logger.warning(
+                f"  Step 4B: variant_cache entry for hash={skel_hash[:12]} is UNVALIDATED "
+                f"(variant={variant}). claude-primary should mark_validated or "
+                f"delete after observed-success on this screen."
+            )
         if not request.screenshot_b64:
             return {
                 "directive": "need_screenshot",
                 "directive_id": _make_directive_id(),
                 "reason": f"bt_build_for_{variant}",
             }
-        return _build_screen_directive(request, platform, tree, screen_type, skel_hash,
+        # Pass the FULL variant string (e.g. "NAVIGATION_COURSE_OVERVIEW")
+        # downstream, not just the master prefix. Was: variant.split("_")[0]
+        # which dropped the subtype info needed by knowledge.json's subtype
+        # matcher / operational_notes loader. Bug fix 2026-05-19.
+        return _build_screen_directive(request, platform, tree, variant, skel_hash,
                                        course_id=cs.course_id)
+
+    # ── Step 4.5: Signature-based fuzzy match (V19/V20 era — resurrected 2026-05-19) ──
+    # When Step 4's exact skeleton_hash misses, try signature matching BEFORE
+    # invoking the LLM classifier in Step 5. Signatures are stored per-platform
+    # in /home/user/taey-ed-data/signatures/{platform}.json. Cold-start (< 2
+    # signatures) falls back to exact-hash within the signature matcher. Once
+    # 2+ signatures are learned, Jaccard similarity on discriminative markers
+    # (signature - platform_common_chrome) at threshold 0.70 catches screens
+    # with the same structural identity but mutated tree (different question
+    # text, different timer values, different option strings).
+    #
+    # Empty signatures dir = always matched:False = pure passthrough, current
+    # Step 5 behavior unchanged. Behavior becomes deterministic + zero-LLM-cost
+    # only once learn_screen has populated entries (next commit seeds known
+    # Khan screen types).
+    from spark.tasks.screen_signatures import match_signature
+    sig_result = match_signature(platform, tree)
+    if sig_result.get("matched"):
+        variant = sig_result["screen_type"]
+        score = sig_result["match_score"]
+        sig_hash = sig_result["sig_hash"]
+        logger.info(
+            f"  Step 4.5: SIGNATURE MATCH → variant={variant} "
+            f"score={score:.2f} sig_hash={sig_hash} "
+            f"validated={sig_result.get('validated', False)}"
+        )
+        # Populate the fast-path skeleton_hash cache so future encounters with
+        # the same structural hash hit Step 4 directly (no Jaccard pass).
+        register_hash(platform, skel_hash, variant)
+
+        # Pending-validation notify hook (Jesse 2026-05-19): if the matched
+        # signature is unvalidated, record so Step 2 pings claude-primary
+        # after Mac's BT execution.
+        if not sig_result.get("validated", False):
+            try:
+                from spark.tasks.validation_tracker import record_pending
+                record_pending(
+                    platform=platform,
+                    skel_hash=skel_hash,
+                    variant=variant,
+                    source="signature",
+                    tree=tree,
+                    sig_hash=sig_hash,
+                )
+                logger.info(
+                    f"  Step 4.5: recorded pending validation for unvalidated "
+                    f"signature {sig_hash[:12]} → {variant}"
+                )
+            except Exception:
+                logger.exception("Step 4.5 record_pending failed (non-fatal)")
+
+        if sig_result.get("tree"):
+            stored_bt = sig_result["tree"]
+            bt_json = json.dumps(stored_bt, indent=2)
+            logger.info(f"  Step 4.5: REUSING signature-matched BT for {variant}")
+            logger.info(f"  Stored BT:\n{bt_json}")
+            return _with_chat({
+                "directive": "execute_tree",
+                "directive_id": _make_directive_id(),
+                "tree": stored_bt,
+                "screen": variant,
+                "skeleton_hash": skel_hash,
+                "sig_hash": sig_hash,
+                "extract": sig_result.get("extract"),
+                "course_id": cs.course_id,
+            }, platform, [build_status(f"Executing {variant} (signature match)")])
+
+        # Signature matched but no stored BT — route to BT-build with the
+        # known screen_type. Avoids the LLM classifier call in Step 5.
+        logger.info(f"  Step 4.5: Signature matched as {variant} but no stored BT — building fresh")
+        if not request.screenshot_b64:
+            return {
+                "directive": "need_screenshot",
+                "directive_id": _make_directive_id(),
+                "reason": f"bt_build_for_{variant}_via_signature",
+            }
+        return _build_screen_directive(
+            request, platform, tree, variant, skel_hash,
+            course_id=cs.course_id,
+        )
+    else:
+        logger.info(f"  Step 4.5: no signature match — falling through to Step 5")
 
     # ── Step 5: No hash match — knowledge gate, then Flash classify ──
     logger.info(f"  Step 5: No hash match — checking knowledge gate")
@@ -997,14 +1935,49 @@ def next_action(request: NextActionRequest):
         gate_flag.unlink()
         logger.info(f"  Step 5: Knowledge gate cleared for {platform}")
 
-    # Claude-primary platforms: skip Flash + Pro entirely, route to consultation.
-    # Step 4 (exact hash → reuse stored BT) still applies and stays free.
-    _claude_directive = _maybe_claude_consult(
-        request, platform, tree, screen_type="UNKNOWN",
-    )
-    if _claude_directive:
-        logger.info(f"  Step 5: Claude-primary platform — routing to consultation")
-        return _claude_directive
+    # Claude-primary platforms with no signature match: escalate to
+    # claude-primary (me) to DEFINE this screen — write the signature entry
+    # via learn_screen() so the next encounter is deterministic.
+    #
+    # Per Jesse 2026-05-19: UNKNOWN should go to claude-primary, not LLM
+    # classifier. The discovery loop:
+    #   1. New screen pattern → no Step 4 hash, no Step 4.5 signature
+    #   2. Escalation packet routes to me with raw tree + screenshot
+    #   3. I read it, decide screen_type from existing knowledge.json
+    #      subtypes (or add a new subtype if novel), call learn_screen()
+    #      with the platform's canonical bt_template for that subtype
+    #      (or None for non-deterministic variants — Step 4.5 falls to
+    #      build path with the known variant)
+    #   4. Mac retries → Step 4.5 hits signature → executes deterministically
+    # The system is "properly mapped once" per Jesse's AI-Native vision —
+    # zero recurring LLM classification cost per known platform.
+    if platform in CLAUDE_PRIMARY_PLATFORMS:
+        if not request.screenshot_b64:
+            logger.info("  Step 5: Claude-primary needs screenshot for escalation")
+            return {
+                "directive": "need_screenshot",
+                "directive_id": _make_directive_id(),
+                "reason": "claude_define_screen",
+            }
+        logger.info(
+            "  Step 5: Claude-primary no-signature-match → "
+            "escalating to claude-primary to define this screen"
+        )
+        return _escalate_to_claude_diagnosing(
+            platform=platform,
+            tree=tree,
+            consultation_id="",
+            reason=(
+                "no_signature_match — UNKNOWN screen needs definition. "
+                "Read consult tree + screenshot, determine screen_type, "
+                "call learn_screen(platform, tree, screen_type, "
+                "behavior_tree=<canonical pattern or None>) to persist."
+            ),
+            screen_type_hint="UNKNOWN_NEEDS_DEFINITION",
+            bt_debug_tail="",
+            failed_bt=None,
+            screenshot_b64=request.screenshot_b64,
+        )
 
     # Step 5A: Need screenshot for Flash classification
     if not request.screenshot_b64:
@@ -1015,17 +1988,28 @@ def next_action(request: NextActionRequest):
             "reason": "classification_needed",
         }
 
-    # Step 5B: Flash classification (screenshot only, ~$0.002)
-    from spark.tasks.flash_classify import classify_screen_flash
-    logger.info("  Step 5B: Flash classifying screen...")
-    classification = classify_screen_flash(
+    # Step 5B: Screen classification via Claude CLI (Opus 4.7).
+    # Per Jesse 2026-05-12: no Gemini in the codebase. The previous
+    # flash_classify.py path was using the Gemini API with an empty key, which
+    # silently fell back to UNKNOWN for every screen — that broke every
+    # downstream subtype-aware path (operational_notes loading, variant cache,
+    # learned observations). The replacement uses the existing
+    # classify_screen() Claude CLI path at spark.tasks.classify_screen:100.
+    from spark.tasks.classify_screen import classify_screen
+    logger.info("  Step 5B: Classifying screen via Claude CLI...")
+    classification = classify_screen(
+        tree=tree,
         screenshot_b64=request.screenshot_b64,
         platform=platform,
     )
-    variant = classification.get("variant", "UNKNOWN")
     screen_type = classification.get("screen_type", "UNKNOWN")
+    # classify_screen returns the variant under 'platform_variant'; downstream
+    # callers expect 'variant'. Fall back to master screen_type when no
+    # variant was extracted (Pro is allowed to return only the master type
+    # for genuinely ambiguous screens).
+    variant = classification.get("platform_variant") or screen_type
     logger.info(
-        f"  Step 5B: Flash result: type={screen_type} variant={variant} "
+        f"  Step 5B: Classified type={screen_type} variant={variant} "
         f"note={classification.get('confidence_note', '')}"
     )
 
@@ -1064,7 +2048,7 @@ def next_action(request: NextActionRequest):
         logger.warning(f"  Step 5B: fingerprint logging failed (non-blocking): {e}")
 
     # Step 5C: Check variant BT cache (deterministic variants only)
-    if variant != "UNKNOWN" and not is_non_deterministic(variant):
+    if variant != "UNKNOWN" and not is_non_deterministic(platform, variant):
         bt_entry = lookup_variant_bt(platform, variant)
         if bt_entry and bt_entry.get("behavior_tree"):
             stored_bt = bt_entry["behavior_tree"]
@@ -1100,7 +2084,7 @@ def next_action(request: NextActionRequest):
             result_variant = result.get("screen_type", "UNKNOWN")
             logger.info(f"  Step 5D: Pro built BT for UNKNOWN → {result_variant}")
             # Store variant BT if deterministic
-            if not is_non_deterministic(result_variant):
+            if not is_non_deterministic(platform, result_variant):
                 store_variant_bt(platform, result_variant, result["tree"],
                                  result.get("extract"), result.get("expected_next"))
             register_hash(platform, skel_hash, result_variant)
@@ -1127,7 +2111,7 @@ def next_action(request: NextActionRequest):
                                      course_id=cs.course_id)
 
     # If Pro built a BT successfully, store it under the variant for reuse
-    if result.get("directive") == "execute_tree" and not is_non_deterministic(variant):
+    if result.get("directive") == "execute_tree" and not is_non_deterministic(platform, variant):
         bt = result.get("tree")
         if bt:
             store_variant_bt(platform, variant, bt,

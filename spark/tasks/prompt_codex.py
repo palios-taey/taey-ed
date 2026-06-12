@@ -165,7 +165,15 @@ ESCALATION LEVEL: {escalation_level} (attempt {spark_attempts})
 2. Execution uses TITLE, DESCRIPTION, and ROLE to find elements, NEVER element_id.
    Element IDs in tree.json are for YOUR visual reference only.
 3. NEVER target "Skip" buttons. Exercises must be SOLVED or ESCALATED.
-4. NEVER click "Up next" on Khan Academy (mastery-adaptive, skips content).
+4. "Up next" rule on Khan is CONTEXTUAL, not absolute:
+     - ALLOWED on TRANSITION_* and *_COMPLETE / *_CORRECT screens: "Up next: exercise"
+       (or "Up next: video" / "Up next: article") is the canonical advance after
+       finishing the prior unit. Equivalent to picking the next item from the sidebar.
+     - FORBIDDEN mid-VIDEO (skips remaining content) and on NAVIGATION screens where
+       the next item should be the next NON-COMPLETED sidebar lesson (Up next might
+       jump past unfinished prerequisites — mastery-adaptive skip).
+     Heuristic: if the screen type indicates a completion/transition state, "Up next"
+     is the right click. Otherwise prefer explicit sidebar navigation.
 5. NEVER put a screen in its own expected_next (creates silent infinite loops).
 6. video_poll must be the ONLY action in its tree. No other children.
    Pipeline re-match loop handles screen transitions after video completes.
@@ -176,6 +184,42 @@ ESCALATION LEVEL: {escalation_level} (attempt {spark_attempts})
    Always build a complete, correct tree regardless.
 10. If you don't know what to do, respond with escalation rather than guessing.
     A wrong tree wastes more time than an honest "I don't know."
+11. SCREEN-SHAPE BINDS question_type. Do not override based on perceived problem
+    difficulty. The DETECTED tag in your prompt determines the call shape:
+      HAS_TEXT_INPUT  → question_type="solve"          (LLM has the screenshot, can compute)
+      HAS_RADIO       → question_type="solve_choice"   (or solve_choice + has_text_field combo)
+      HAS_CHECKBOX    → question_type="solve_checkbox"
+      HAS_COMBOBOX    → question_type="solve_choice"   with combobox handlers
+      HAS_MANY_LINKS  → question_type="navigate"
+    solve_complex is RESERVED for screens whose answer requires reading visual
+    elements NOT in the AX tree (chart data, image content). A math word problem
+    on a text-input screen is NOT solve_complex — solve already gets the screenshot.
+    Routine "this looks computational" promotion to solve_complex is forbidden.
+12. RESPONSE-KEY CONTRACT (uniform across question_types):
+      solve / solve_choice / solve_complex / navigate → read $llm.answer (string)
+      solve_checkbox                                    → read $llm.selected (list)
+      solve_matching                                    → read $llm.matches (dict)
+13. UNIVERSAL IMAGE/HIDDEN-CONTENT EXTRACTION (all platforms): when the answer
+    depends on content embedded in an image, dropdown, modal, or any element
+    NOT directly readable from the AX tree as text, the BT MUST do a two-step
+    extraction BEFORE asking the LLM to choose an answer:
+      Step A (extract): open / OCR / enumerate the hidden content into the BT's
+        blackboard. Examples: for dropdowns, click each popup and
+        discover_menu the options; for image-based questions, send_to_llm with
+        question_type='solve' asking the LLM to DESCRIBE each option's
+        diagram/text first (return structured text).
+      Step B (reason): a second send_to_llm call uses the extracted structured
+        data as `context` and asks for the actual answer.
+    If the AX tree already contains the full question + option text and no
+    image content is essential to picking the answer, single-step is fine —
+    do NOT add unnecessary two-step overhead. This rule fires when the
+    option text is degenerate (e.g., "(Choice A) A box with arrows"), when
+    diagrams carry numeric values, or when the screen has hidden menus.
+14. RESPONSE FORMAT IS JSON ONLY. Emit a single JSON object as your final
+    output — no prose before or after. The output_schema is defined per
+    consult below.
+      solve_matching                                    → read $llm.matches (dict)
+    Always read the field documented for the question_type you used. No exceptions.
 
 === WHAT NOT TO DO (Anti-Patterns from V4-V9) ===
 - Use fallback nodes for OPTIONAL steps only (e.g., try Mark Complete, skip if absent)
@@ -225,546 +269,26 @@ def build_section_2(consultation_id: str, is_reconsultation: bool,
 
 
 # =========================================================================
-# Screen Pattern Constants — one per detected signal
+# Screen Pattern Constants — MIGRATED 2026-05-19
 # =========================================================================
-
-PATTERN_HAS_RADIO = """\
-=== DETECTED: RADIO BUTTONS (multiple-choice exercise) ===
-
-Your tree has AXRadioButton elements. This is a multiple-choice exercise screen.
-
-COMPLETE BT PATTERN:
-{
-  "type": "sequence",
-  "children": [
-    {
-      "type": "action",
-      "action": "extract_question",
-      "params": {
-        "question": {"role": "AXStaticText", "parent_contains": "LOOK_AT_TREE"},
-        "options": {"role": "AXRadioButton"}
-      },
-      "store": "q"
-    },
-    {
-      "type": "action",
-      "action": "send_to_llm",
-      "params": {
-        "question": "$q.question_text",
-        "question_type": "solve_choice",
-        "options": "$q.options",
-        "context": "$q.reference_texts"
-      },
-      "store": "llm"
-    },
-    {
-      "type": "action",
-      "action": "find_and_click",
-      "params": {
-        "target": "$llm.answer",
-        "role": "AXRadioButton",
-        "strategy": "focus_space",
-        "match_mode": "exact"
-      }
-    },
-    {
-      "type": "action",
-      "action": "find_and_click",
-      "params": {
-        "target": "Check",
-        "role": "AXButton",
-        "strategy": "mouse_click",
-        "post_delay": 2.0,
-        "match_mode": "exact"
-      }
-    },
-    {
-      "type": "action",
-      "action": "store_qa",
-      "params": {
-        "question": "$q.question_text",
-        "answer": "$llm.answer",
-        "question_type": "solve_choice"
-      }
-    }
-  ]
-}
-
-HOW IT WORKS:
-1. extract_question scopes to AXWebArea, uses your params to find question text
-   and radio button options. You MUST set parent_contains to the actual container
-   name from the tree where the question lives.
-   Returns: {question_text: str, options: [str], reference_texts: [str]}
-2. send_to_llm calls Spark /api/v1/generate which routes to Gemini 2.5 Pro.
-   Maps options to A/B/C letters, asks LLM for letter, maps back to exact text.
-   Returns: {success: true, answer: "exact option text from the list"}
-3. find_and_click finds the radio button whose name contains $llm.answer.
-   Strategy focus_space: focuses element then presses Space (required for
-   browser radio buttons — mouse_click doesn't reliably toggle radio state).
-4. find_and_click("Check") submits the answer. post_delay 2.0 gives the SPA
-   time to process and load the next question.
-5. store_qa saves the Q&A pair to Mac-side SQLite for knowledge building.
-
-EXPECTED_NEXT:
-- Same screen type (next question in the exercise)
-- TRANSITION (score card or "Next" button after all questions answered)
-- NAVIGATION (if exercise completes back to content list)
-Do NOT include the current screen in expected_next (creates infinite loops).
-
-WRONG ANSWER DETECTION:
-If the Mac reports the same skeleton hash after executing this BT, it means
-the same question was re-presented — the answer was wrong. This triggers
-reconsultation with failure_reason="wrong_answer_same_question".
-
-VARIANT: If the tree also has AXTextArea (radio + text field combo):
-Use question_type="solve_choice" with has_text_field=True in params.
-LLM returns {answer: "option text", text_response: "reflection text"}.
-Add find_and_type for the text field AFTER clicking the radio button.
-
-VARIANT: If question has images/diagrams visible in screenshot:
-Use question_type="solve_complex" instead. This sends the screenshot to
-Gemini 2.5 Pro for multimodal analysis.
-
-SUBMIT BUTTON NAMES (varies by platform):
-- Khan Academy: "Check" (AXButton)
-- Coursera: "Submit" (AXButton)
-- Acellus: varies — look at the screenshot"""
-
-
-PATTERN_HAS_CHECKBOX = """\
-=== DETECTED: CHECKBOXES (multi-select exercise) ===
-
-Your tree has AXCheckBox elements. This is a multi-select exercise screen.
-
-COMPLETE BT PATTERN:
-{
-  "type": "sequence",
-  "children": [
-    {
-      "type": "action",
-      "action": "extract_question",
-      "params": {
-        "question": {"role": "AXStaticText", "parent_contains": "LOOK_AT_TREE"},
-        "options": {"role": "AXCheckBox"}
-      },
-      "store": "q"
-    },
-    {
-      "type": "action",
-      "action": "send_to_llm",
-      "params": {
-        "question": "$q.question_text",
-        "question_type": "solve_checkbox",
-        "options": "$q.options",
-        "context": "$q.reference_texts"
-      },
-      "store": "llm"
-    },
-    {
-      "type": "action",
-      "action": "for_each",
-      "items": "$llm.selected",
-      "variable": "sel",
-      "do": {
-        "type": "action",
-        "action": "find_and_click",
-        "params": {
-          "target": "$sel",
-          "role": "AXCheckBox",
-          "strategy": "focus_space",
-          "match_mode": "exact"
-        }
-      }
-    },
-    {
-      "type": "action",
-      "action": "find_and_click",
-      "params": {
-        "target": "Check",
-        "role": "AXButton",
-        "strategy": "mouse_click",
-        "post_delay": 2.0
-      }
-    },
-    {
-      "type": "action",
-      "action": "store_qa",
-      "params": {
-        "question": "$q.question_text",
-        "answer": "$llm.selected",
-        "question_type": "solve_checkbox"
-      }
-    }
-  ]
-}
-
-HOW IT WORKS:
-1. extract_question uses your params to find question text and checkbox options.
-2. send_to_llm with solve_checkbox asks for comma-separated letter selection.
-   Returns: {success: true, selected: ["option text 1", "option text 3"]}
-3. for_each iterates $llm.selected, clicking each checkbox via focus_space.
-   CRITICAL: for_each params (items, variable, do) go at TOP LEVEL, not in params.
-4. find_and_click("Check") submits. post_delay 2.0 for SPA processing.
-5. store_qa saves Q&A pair.
-
-WARNING: solve_checkbox has a known 30-char truncation bug on fallback parsing.
-Use full option text in the tree, not truncated versions."""
-
-
-PATTERN_HAS_TEXT_INPUT = """\
-=== DETECTED: TEXT INPUT (fill-in-the-blank or short answer) ===
-
-Your tree has AXTextArea or AXTextField elements. This is a text input exercise.
-
-COMPLETE BT PATTERN:
-{
-  "type": "sequence",
-  "children": [
-    {
-      "type": "action",
-      "action": "extract_question",
-      "params": {
-        "question": {"role": "AXStaticText", "parent_contains": "LOOK_AT_TREE", "min_length": 20},
-        "text": [{"role": "AXStaticText", "parent_contains": "LOOK_AT_TREE", "min_length": 10}]
-      },
-      "store": "q"
-    },
-    {
-      "type": "action",
-      "action": "send_to_llm",
-      "params": {
-        "question": "$q.question_text",
-        "question_type": "solve",
-        "context": "$q.reference_texts"
-      },
-      "store": "llm"
-    },
-    {
-      "type": "action",
-      "action": "find_and_type",
-      "params": {
-        "target": "",
-        "text": "$llm.answer",
-        "role": "AXTextArea"
-      }
-    },
-    {
-      "type": "action",
-      "action": "find_and_click",
-      "params": {
-        "target": "Check",
-        "role": "AXButton",
-        "strategy": "mouse_click",
-        "post_delay": 2.0
-      }
-    },
-    {
-      "type": "action",
-      "action": "store_qa",
-      "params": {
-        "question": "$q.question_text",
-        "answer": "$llm.answer",
-        "question_type": "solve"
-      }
-    }
-  ]
-}
-
-HOW IT WORKS:
-1. extract_question uses your params to find question/prompt text in the tree.
-2. send_to_llm with solve generates a text answer.
-   Returns: {success: true, answer: "text answer"}
-3. find_and_type finds the text field (empty target matches first field)
-   and types the answer. If multiple fields, specify target by field label.
-4. Submit and store as usual.
-
-NOTE: If both radio buttons AND text fields are present, this is a
-choice-with-text combo. See HAS_RADIO variant for has_text_field=True."""
-
-
-PATTERN_HAS_MANY_LINKS = """\
-=== DETECTED: MANY LINKS (navigation / content list) ===
-
-Your tree has 15+ AXLink elements. This is a navigation or content list screen.
-
-COMPLETE BT PATTERN:
-{
-  "type": "sequence",
-  "children": [
-    {
-      "type": "action",
-      "action": "find_all",
-      "params": {
-        "role": "AXLink"
-      },
-      "store": "links"
-    },
-    {
-      "type": "action",
-      "action": "send_to_llm",
-      "params": {
-        "question_type": "navigate",
-        "items": "$links"
-      },
-      "store": "nav"
-    },
-    {
-      "type": "action",
-      "action": "find_and_click",
-      "params": {
-        "target": "$nav.answer",
-        "role": "AXLink",
-        "strategy": "mouse_click",
-        "match_mode": "exact",
-        "post_delay": 3.0
-      }
-    }
-  ]
-}
-
-HOW IT WORKS:
-1. find_all collects ALL AXLink elements with their descriptions.
-   Each item has: {element, description, popup_desc, label}
-   Labels include completion indicators from preceding text.
-2. send_to_llm with navigate analyzes completion indicators and picks
-   the first incomplete item. Platform-agnostic — looks for "Completed",
-   "Not started", checkmarks, "Try again", etc.
-   Returns: {success: true, answer: "description text of first incomplete item"}
-3. find_and_click navigates to that item. post_delay 3.0 for SPA loading.
-
-EXPECTED_NEXT:
-- VIDEO_UNSTARTED, ARTICLE, EXERCISE, QUIZ_INTRO (content landing pages)
-- Sub-navigation (deeper content list)
-
-CARDINAL RULE: NEVER hardcode link text in target. ALWAYS use $nav.answer
-from the LLM. Link text changes between units/courses."""
-
-
-PATTERN_HAS_VIDEO = """\
-=== DETECTED: VIDEO PLAYER ===
-
-Video screens have 3 states. Detect which one from the tree:
-
-STATE 1 — UNSTARTED:
-Signal: "Play" button visible, no "Pause" button
-BT: Single find_and_click to start playback
-{
-  "type": "sequence",
-  "children": [
-    {
-      "type": "action",
-      "action": "find_and_click",
-      "params": {
-        "target": "Play",
-        "role": "AXButton",
-        "strategy": "mouse_click"
-      }
-    }
-  ]
-}
-screen_type: VIDEO_UNSTARTED
-expected_next: ["VIDEO_PLAYING"]
-
-STATE 2 — PLAYING:
-Signal: "Pause" visible, video progress active
-BT: ONLY video_poll. No other actions.
-{
-  "type": "sequence",
-  "children": [
-    {
-      "type": "action",
-      "action": "video_poll"
-    }
-  ]
-}
-screen_type: VIDEO_PLAYING
-expected_next: ["VIDEO_COMPLETE"]
-CRITICAL: video_poll MUST be the only child. It sleeps 30s and returns
-continue_loop=true. Pipeline re-matches after each poll cycle.
-
-STATE 3 — COMPLETE:
-Signal: Sidebar shows checkmark, "Up next" visible, video ended
-BT: Click "Next" button (NOT "Up next")
-{
-  "type": "sequence",
-  "children": [
-    {
-      "type": "action",
-      "action": "find_and_click",
-      "params": {
-        "target": "Next",
-        "role": "AXButton",
-        "strategy": "mouse_click",
-        "post_delay": 3.0
-      }
-    }
-  ]
-}
-screen_type: VIDEO_COMPLETE
-expected_next: ["NAVIGATION", "EXERCISE_RADIO", "ARTICLE"]
-
-CARDINAL RULES:
-- NEVER click "Up next" on Khan Academy (mastery-adaptive, skips content)
-- NEVER skip or seek (must watch to 100%)
-- Check sidebar completion indicator before marking complete"""
-
-
-PATTERN_HAS_COMBOBOX = """\
-=== DETECTED: COMBOBOX / DROPDOWN (matching or selection exercise) ===
-
-Your tree has AXComboBox or AXPopUpButton elements. These are dropdown
-selection exercises (common in Khan Academy matching/sorting / Wonder Blocks
-single-select).
-
-DO NOT compose raw clicks + arrow keys for these. ARIA comboboxes
-(specifically Wonder Blocks SingleSelect / DropdownCore) keep the keyboard
-handler on a wrapper element and portal the option list outside it via
-ReactDOM.createPortal. Synthetic clicks on AXMenuItem and synthetic Down/
-Enter to the document do NOT propagate to React's selection state because
-DOM focus is on the opener button while options live in a separate subtree.
-
-USE THE SEMANTIC HANDLER: select_dropdown_option
-
-It activates Chrome → opens the trigger → walks the FULL app AX tree
-(NOT scoped to AXWebArea — Wonder Blocks portals options outside it) →
-normalizes "not selected"/"selected" suffixes → tries strategies in order
-(focus_press = AX focus + AXPress, then focus_space, focus_enter,
-mouse_click, ax_press) → after each, verifies trigger AXValue contains
-the chosen option → returns success only on observed state change.
-
-COMPLETE BT PATTERN (use this for any combobox/popup widget):
-{
-  "type": "sequence",
-  "children": [
-    {
-      "type": "action",
-      "action": "find_all",
-      "params": {"role": "AXComboBox"},
-      "store": "popups"
-    },
-    {
-      "type": "action",
-      "action": "send_to_llm",
-      "params": {
-        "question_type": "solve_matching",
-        "items": "$popups"
-      },
-      "store": "matches"
-    },
-    {
-      "type": "action",
-      "action": "for_each",
-      "items": "$popups",
-      "variable": "popup",
-      "do": {
-        "type": "sequence",
-        "children": [
-          {
-            "type": "action",
-            "action": "lookup_match",
-            "params": {
-              "matches": "$matches.matches",
-              "key": "$popup.description"
-            },
-            "store": "chosen"
-          },
-          {
-            "type": "action",
-            "action": "select_dropdown_option",
-            "params": {
-              "trigger_element": "$popup.element",
-              "option": "$chosen",
-              "trigger_role": "AXComboBox",
-              "open_strategy": "mouse_click",
-              "open_wait": 0.7,
-              "verify_wait": 0.4
-            }
-          }
-        ]
-      }
-    },
-    {
-      "type": "action",
-      "action": "find_and_click",
-      "params": {
-        "target": "Check",
-        "role": "AXButton",
-        "strategy": "mouse_click",
-        "post_delay": 2.5
-      }
-    }
-  ]
-}
-
-If the trigger role is AXPopUpButton (native Mac popup) instead of
-AXComboBox, set trigger_role accordingly. select_dropdown_option falls
-back across both.
-
-DISCOVERY-FIRST: For exercises where you don't know the option set ahead
-of time (most cases — content can be wrong, randomized, or non-obvious),
-use the find_all + send_to_llm + lookup_match + select_dropdown_option
-chain above. The system enumerates options first, matches them against
-the answer set, then acts. Do NOT generate BTs that hardcode answers when
-you happen to know them — that pattern breaks the moment Khan content
-varies."""
-
-
-PATTERN_TRANSITION = """\
-=== DETECTED: TRANSITION SCREEN ===
-
-This screen has buttons or links but no assessment signals (no radio,
-checkbox, text field, or quiz markers). It's a transitional page.
-
-Common examples:
-- Score card after completing an exercise ("Next" button)
-- "Start quiz" button on quiz intro page
-- "Continue" button between lessons
-- Article page with "Next" at the bottom
-
-COMPLETE BT PATTERN:
-{
-  "type": "sequence",
-  "children": [
-    {
-      "type": "action",
-      "action": "find_and_click",
-      "params": {
-        "target": "BUTTON_TEXT_FROM_SCREENSHOT",
-        "role": "AXButton",
-        "strategy": "mouse_click",
-        "post_delay": 3.0
-      }
-    }
-  ]
-}
-
-HOW TO DETERMINE target:
-1. Look at the SCREENSHOT — what button is the clear next action?
-2. Common targets: "Next", "Continue", "Start quiz", "Got it"
-3. Check the tree for the exact button text
-4. NEVER use "Skip" or "Up next" as targets
-
-expected_next: The screen type you'd land on after clicking.
-For "Next" after a score card → NAVIGATION or next EXERCISE.
-For "Start quiz" → EXERCISE_RADIO or EXERCISE_CHECKBOX."""
-
-
-# Map tag names to pattern strings
-# V20: HAS_MANY_LINKS -> HAS_LINKS, TRANSITION removed (no longer a tag)
-SCREEN_PATTERNS = {
-    "HAS_RADIO":      PATTERN_HAS_RADIO,
-    "HAS_CHECKBOX":   PATTERN_HAS_CHECKBOX,
-    "HAS_TEXT_INPUT":  PATTERN_HAS_TEXT_INPUT,
-    "HAS_LINKS":      PATTERN_HAS_MANY_LINKS,
-    "HAS_VIDEO":      PATTERN_HAS_VIDEO,
-    "HAS_COMBOBOX":   PATTERN_HAS_COMBOBOX,
-    # TRANSITION pattern still available but not tag-triggered
-    # Gemini can reference PATTERN_TRANSITION via classify_screen prompt
-}
-
+#
+# The PATTERN_HAS_* constants and SCREEN_PATTERNS dict that used to live
+# here have been migrated into knowledge.json operational_notes per
+# subtype. The loader injects them via get_operational_notes_for_screen.
+# Mapping:
+#   PATTERN_HAS_RADIO     -> EXERCISE.multiple_choice  (aliases: radio)
+#   PATTERN_HAS_CHECKBOX  -> EXERCISE.multiple_select  (aliases: checkbox)
+#   PATTERN_HAS_TEXT_INPUT-> EXERCISE.numeric_input + expression_input + free_response
+#   PATTERN_HAS_LINKS     -> NAVIGATION (category-level)
+#   PATTERN_HAS_VIDEO     -> VIDEO (category-level)
+#   PATTERN_HAS_COMBOBOX  -> EXERCISE.dropdown        (aliases: combobox)
+#   PATTERN_TRANSITION    -> TRANSITION (category-level)
+#
+# knowledge.json is now the SINGLE source of truth for screen-specific
+# BT patterns. To update a pattern, edit the matching subtype operational_note.
 
 SECTION_5_HANDLERS = """\
-=== HANDLER REFERENCE (16 registered + 2 composable) ===
+=== HANDLER REFERENCE (18 registered + 2 composable) ===
 
 REGISTERED HANDLERS — Use as action: value in BT nodes.
 Any other action name will SILENTLY FAIL (logs error, returns FAILURE).
@@ -775,7 +299,7 @@ find_and_click:
     target (str, required): Text to search for in element name/description
     role (str, optional): AX role filter (AXButton, AXLink, AXRadioButton, etc.)
     match_mode (str): "exact" or "contains" (default: exact)
-    strategy (str): "mouse_click" (default, browsers), "focus_space" (radio/checkbox),
+    strategy (str): "mouse_click" (ALWAYS for browser content incl. radio/checkbox), "focus_space" (NATIVE Mac apps only — silently no-ops on Chrome web widgets),
                     "focus_enter" (buttons), "ax_press" (native Mac apps)
     fallback_roles (list): Alternate roles to try if primary role not found
     post_delay (float): Seconds to wait after click (default: 0)
@@ -907,6 +431,24 @@ press_escape:
   Purpose: Send Escape key
   Params: None
 
+drag:
+  Purpose: Synthesized mouse drag (mousedown → hold → stepped moves → drop).
+    For mouse-event drag widgets ONLY (e.g. Perseus Sortable / matcher).
+  Params:
+    start (dict, required): {"x": <num>, "y": <num>} — drag origin center
+    end (dict, required): {"x": <num>, "y": <num>} — drop target center
+    steps (int): intermediate moves (default 18)
+    post_delay (float): seconds after mouseup (default 0)
+  SHAPE WARNING: start/end are NESTED dicts. Flat keys (start_x, from_x,
+    to_y, ...) are silently invalid — the action returns None and the BT fails.
+
+type_keys:
+  Purpose: Type arbitrary Unicode (math symbols, Greek, subscripts) into the
+    FOCUSED element. Caller must focus the target first (click/find_and_click).
+  Params:
+    text (str, required): The literal text to type.
+    post_delay (float): seconds after typing (default 0).
+
 COMPOSABLE NODE TYPES — These are NOT handlers. Use as action: value.
 
 for_each:
@@ -953,19 +495,86 @@ SECTION_5_HANDLERS_ORIGINAL = SECTION_5_HANDLERS
 
 # Individual handler documentation blocks for JIT assembly
 HANDLER_DOCS = {
+    "drag": """\
+drag:
+  Purpose: Synthesized mouse drag (mousedown → hold → stepped moves → drop).
+    For mouse-event drag widgets ONLY (e.g. Perseus Sortable / matcher).
+    Does NOT fire HTML5-native dragstart/dragover, and does NOT work on
+    PointerEvent widgets (Mafs interactive-graph — use the keyboard path).
+  Params:
+    start (dict, required): {"x": <num>, "y": <num>} — drag origin center
+      (POINTS, same space as visible_bbox; compute bbox center like click_at).
+    end (dict, required): {"x": <num>, "y": <num>} — drop target center.
+    steps (int): intermediate moves (default 18).
+    press_hold (float): seconds held down BEFORE the first move (default 0.08).
+    step_delay (float): seconds between moves (default 0.02).
+    release_hold (float): seconds held at target before mouseup (default 0.05).
+    post_delay (float): seconds after mouseup (default 0).
+  ACTIVATION (Khan/Perseus Sortable, diagnosed 2026-06-11): the DEFAULT 80ms
+    press_hold is TOO SHORT — the drag library needs a long-press to enter
+    drag state (mousedown alone reads as a click; widget never engages and
+    Check stays disabled). ALWAYS set press_hold: 0.25 and release_hold: 0.15
+    on Sortable widgets (matcher/ranking/sorter). If that fails to engage:
+    press_hold: 0.40; still nothing: steps: 8 with step_delay: 0.04 (bigger
+    first move crosses 5-15px tolerance thresholds).
+  SHAPE WARNING: start/end are NESTED dicts. Flat keys (start_x, from_x,
+    to_y, ...) are silently invalid — the action returns None, BT fails.
+  Returns: {success: true/false}
+  Verify after EACH drop by re-reading the tree/screenshot — drops can miss.""",
+
+    "type_keys": """\
+type_keys:
+  Purpose: Type arbitrary Unicode (math symbols, Greek, subscripts) into the
+    FOCUSED element without a keymap. Caller must focus the target first.
+  Params:
+    text (str, required): The literal text to type.
+    post_delay (float): seconds after typing (default 0).""",
+
     "find_and_click": """\
 find_and_click:
-  Purpose: Find element by text/role, then click it
+  Purpose: Find element by EXACT name and click it. Use ONLY for elements
+    whose visible text is stable across visits (e.g., "Check", "Submit",
+    "Continue", "Try again", "Replay Video", "Cancel"). For elements whose
+    text varies between visits (e.g., "Up next: <video-title>", lesson
+    items with course-specific titles, anything with dynamic content),
+    use click_at instead — read the element's visible_bbox from the AX
+    tree at decision time and click by coordinates. Exact-match only;
+    no guessing.
   Params:
-    target (str, required): Text to search for in element name/description
-    role (str, optional): AX role filter (AXButton, AXLink, AXRadioButton, etc.)
-    match_mode (str): "exact" or "contains" (default: exact)
-    strategy (str): "mouse_click" (default, browsers), "focus_space" (radio/checkbox),
-                    "focus_enter" (buttons), "ax_press" (native Mac apps)
-    fallback_roles (list): Alternate roles to try if primary role not found
-    post_delay (float): Seconds to wait after click (default: 0)
+    target (str, required): Exact name of the element (must literally match).
+    role (str, required): AX role filter (AXButton, AXLink, AXRadioButton, ...).
+    match_mode (str): MUST be "exact" — "contains" is FORBIDDEN per the
+      no-guessing rule. If exact match doesn't fit, switch to click_at.
+    strategy (str): "mouse_click" (ALWAYS for browser content incl. radio/checkbox), "focus_space" (NATIVE Mac apps only — silently no-ops on Chrome web widgets),
+                    "focus_enter" (buttons), "ax_press" (native Mac only — Chrome ignores).
+    post_delay (float): Seconds to wait after click (default: 0).
   Returns: {success: true/false, element: {...}}
-  4-tier fallback: exact→contains→alternate roles→no role filter""",
+  Failure mode: returns success=false if no element matches target+role exactly.
+  When that happens, switch the next BT to click_at — DO NOT relax match_mode.""",
+
+    "click_at": """\
+click_at:
+  Purpose: Click at exact pixel coordinates. THIS IS THE AI-FIRST PATH for
+    any element whose visible text varies between visits. Read the target
+    element's visible_bbox from the AX tree at decision time, compute the
+    bbox center, and click there. No name-matching, no guessing.
+  Params:
+    x (number, required): Window-relative x coordinate (bbox_x + bbox_width/2).
+    y (number, required): Window-relative y coordinate (bbox_y + bbox_height/2).
+    post_delay (float): Seconds to wait after click (default: 0).
+  Returns: {success: true/false}
+  When to use:
+    - 'Up next: <video-title>' AXLink on post-video screens (title varies per video)
+    - Sidebar lesson items with course-specific titles
+    - Any element you can SEE in the screenshot but whose name varies
+    - When find_and_click returned success=false on a previous attempt
+  How to use:
+    1. Look at the screenshot. Identify the target visually.
+    2. Find that element in the AX tree (by role + partial text + position).
+    3. Read its visible_bbox: [x, y, width, height].
+    4. Output: {"action": "click_at", "params": {"x": x+width/2, "y": y+height/2,
+       "post_delay": <appropriate timing>}}
+  Coordinates are in POINTS (not pixels — no Retina scale factor math required).""",
 
     "find_and_type": """\
 find_and_type:
@@ -991,14 +600,17 @@ find_all:
 
     "click": """\
 click:
-  Purpose: Click element from blackboard variable
+  Purpose: Click element from blackboard variable (element ref from find_all).
   Params:
-    element (ref): Blackboard reference to element dict (e.g., "$_current")
-    target (str): Alternative to element — text to find
-    role (str): Role filter
-    match_mode (str): "exact" or "contains"
-    strategy (str): Click strategy
-  Note: If element is dict from find_all, re-finds fresh by description""",
+    element (ref, required): Blackboard reference to element dict
+      (e.g., "$_current" inside for_each over find_all results).
+    strategy (str): Click strategy ("mouse_click" default for browsers).
+  Note: If element is a dict from find_all, the handler re-finds it fresh
+    by description before clicking. For variable-text targets where you
+    don't have a find_all ref, use click_at with bbox from the tree.
+  match_mode: NOT a parameter here — "contains" is FORBIDDEN per the
+    no-guessing rule. Use click_at if you need to click without an exact
+    element ref.""",
 
     "extract_question": """\
 extract_question:
@@ -1381,11 +993,32 @@ EXCEPTION: ARIA combobox/listbox (Wonder Blocks SingleSelect, React Aria
   semantic select_dropdown_option handler (see HAS_COMBOBOX), which uses
   the focus_press strategy under the hood.
 
-find_and_click has a 4-tier fallback chain:
-1. Exact match with specified role
-2. Contains match with specified role
-3. Exact/contains with fallback_roles
-4. No role filter (last resort)
+=== AI-FIRST CLICK PROTOCOL ===
+
+RULE: No contains matching. No fuzzy matching. Every click action is
+either find_and_click with match_mode="exact", or click_at with x/y
+coordinates derived from the AX tree's visible_bbox.
+
+Decision table:
+
+| Element name stable across visits? | Action |
+|-----------------------------------|--------|
+| Yes (Check, Continue, Try again, Replay Video, Play video) | find_and_click target="<exact>" role="<AX role>" match_mode="exact" |
+| No — name varies (Up next: <title>, lesson links) | click_at x=<bbox_cx> y=<bbox_cy> |
+| Visible in screenshot, name unstable or absent | click_at x=<bbox_cx> y=<bbox_cy> |
+
+click_at bbox derivation: locate the target element node in the AX tree;
+its visible_bbox = [x, y, width, height] gives bbox_cx = x + width/2,
+bbox_cy = y + height/2. These are the click_at parameters. No prose
+reasoning in the output — the output is JSON only (see YOUR RESPONSE
+section). Reason internally; emit JSON.
+
+find_and_click failure handling: if it returns success=false, do NOT
+relax match_mode. Use click_at with the bbox of the visually-correct
+element instead.
+
+The Mac handler is exact-only. The legacy 4-tier fallback
+(exact→contains→alt roles→no role) is removed.
 
 === TIMING (post_delay values) ===
 
@@ -1406,6 +1039,13 @@ When in doubt, use 2.0s. Too long is slow but works. Too short breaks."""
 SECTION_8_RESPONSE = """\
 === YOUR RESPONSE ===
 
+OUTPUT FORMAT: Pure JSON object. No prose preamble. No analysis text.
+No "Looking at the screenshot..." narration. No code fences. No markdown.
+The FIRST character of your response MUST be `{{` and the LAST character
+MUST be `}}`. Reason internally; emit JSON. If you need to express
+uncertainty or note an open question, put it inside the JSON as a
+"_notes" field — never as free text.
+
 POST to: http://127.0.0.1:5003/api/v1/consult/{{consultation_id}}/respond
 
 JSON payload:
@@ -1425,9 +1065,24 @@ JSON payload:
 }}
 
 RULES FOR screen_type:
-- Use DESCRIPTIVE names: EXERCISE_RADIO, VIDEO_PLAYING, UNIT_OVERVIEW, etc.
-- Be consistent — same screen structure = same screen_type name
-- Include platform prefix if ambiguous: KA_EXERCISE_DROPDOWN
+- Format is MASTER or MASTER_SUBTYPE where MASTER is EXACTLY one of:
+  NAVIGATION, VIDEO, ARTICLE, EXERCISE, TRANSITION, UNKNOWN.
+- SUBTYPE must reuse the EXACT subtype name from this platform's knowledge
+  (the operational notes section of this prompt shows them) when one fits —
+  e.g. EXERCISE_MATCHER, EXERCISE_RADIO, EXERCISE_DROPDOWN. Matching the
+  knowledge subtype is what routes the platform's proven notes to future
+  encounters; an invented name silently orphans them.
+- NEVER invent platform prefixes (no KA_*, no custom families). If no known
+  subtype fits, use the bare master (e.g. EXERCISE) — not a new label.
+- Be consistent — same screen structure = same screen_type name.
+
+TEMPLATE REUSE (read before designing):
+- If the operational notes for the subtype you classified include a VERIFIED
+  bt_template or canonical action pattern, ADAPT that template — fill in THIS
+  question's values/targets — instead of designing a new structure. Proven
+  templates exist precisely so later questions of the same subtype don't get
+  novel, unproven BTs. Design from scratch ONLY when no note for your
+  subtype carries a pattern.
 
 RULES FOR tree:
 - Must be a valid behavior tree with type: sequence at root
@@ -1479,7 +1134,9 @@ YOU MUST:
 
 COMMON FAILURE PATTERNS AND FIXES:
 - "Element not found": Wrong target text or role. Check tree.json for actual
-  element names. Use match_mode: contains if exact match is too strict.
+  element names. DO NOT use match_mode=contains (forbidden per no-guessing
+  rule). Switch to click_at: look at the screenshot, identify the target
+  visually, read its visible_bbox from the AX tree, click_at the bbox center.
 - "Click had no effect": Wrong click strategy. Try mouse_click if focus_space
   failed. Or the element is behind an overlay — check for modals.
 - "Same screen after execute": BT ran but didn't advance. The action target
@@ -1535,10 +1192,21 @@ def compile_prompt(
         consultation_id, is_reconsultation, context
     ))
 
-    # Section 3: Screen Patterns (tree-driven)
-    for tag in tags:
-        if tag in SCREEN_PATTERNS:
-            sections.append(SCREEN_PATTERNS[tag])
+    # Section 3 deleted (2026-05-19): tree-tag-driven SCREEN_PATTERNS injection
+    # removed per Jesse's directive — knowledge.json operational_notes is now
+    # the SINGLE source of truth for screen-specific BT patterns. Every
+    # PATTERN_HAS_* template that used to live here has been migrated into
+    # the matching subtype's bt_template_hint in knowledge.json under the
+    # appropriate master:
+    #   HAS_RADIO     -> EXERCISE.subtypes.multiple_choice  (aliases: radio)
+    #   HAS_CHECKBOX  -> EXERCISE.subtypes.multiple_select  (aliases: checkbox)
+    #   HAS_TEXT_INPUT-> EXERCISE.subtypes.numeric_input + expression_input + free_response
+    #   HAS_LINKS     -> NAVIGATION (category-level note)
+    #   HAS_VIDEO     -> VIDEO (category-level note)
+    #   HAS_COMBOBOX  -> EXERCISE.subtypes.dropdown        (aliases: combobox)
+    #   TRANSITION    -> TRANSITION (category-level note)
+    # Loader does platform / category / matched-subtype injection via
+    # get_operational_notes_for_screen below.
 
     # Section 4: Platform Knowledge
     # Use knowledge-driven assembly when available, else full docs fallback
@@ -1547,9 +1215,18 @@ def compile_prompt(
         get_handlers_for_screen, get_quirks_for_screen,
         get_question_types_for_screen,
         get_operational_notes_for_screen,
+        get_prompt_block_for_screen,
     )
     knowledge = load_knowledge(platform)
-    screen_type = context.get("screen_type", "UNKNOWN")
+    raw_screen_type = context.get("screen_type", "UNKNOWN")
+    # Master category for functions that need it (handlers, quirks). Pass the
+    # raw variant to operational_notes/prompt_block functions — they do their
+    # own master resolution + subtype matching internally.
+    try:
+        from spark.tasks.screen_type_util import get_master_category
+        screen_type = get_master_category(raw_screen_type) or raw_screen_type
+    except Exception:
+        screen_type = raw_screen_type
 
     if knowledge and knowledge.get("screen_types"):
         # JIT: Structured knowledge context
@@ -1560,10 +1237,18 @@ def compile_prompt(
         if knowledge_ctx:
             sections.append(knowledge_ctx)
 
-        # JIT: Operational notes — concrete lessons from prior consultations
-        # (exact roles, casing quirks, depth gotchas, BT templates that worked).
-        # Empty string returned when no notes exist for this screen_type.
-        op_notes = get_operational_notes_for_screen(knowledge, screen_type)
+        # Canonical screen pattern (former SCREEN_PATTERNS inline templates,
+        # now stored verbatim as prompt_block in knowledge.json per subtype/
+        # master). Inject FIRST, before operational_notes bullets, so the
+        # worker sees the directive section the way it did pre-migration.
+        prompt_block = get_prompt_block_for_screen(knowledge, raw_screen_type)
+        if prompt_block:
+            sections.append(prompt_block)
+
+        # JIT: Operational notes — supplementary diagnostic learnings.
+        # Anti-patterns, gotchas, special-case BTs discovered live. Rendered
+        # as markdown bullets, layered on top of the canonical pattern.
+        op_notes = get_operational_notes_for_screen(knowledge, raw_screen_type)
         if op_notes:
             sections.append(op_notes)
 
@@ -1584,6 +1269,21 @@ def compile_prompt(
 
         sections.append(SECTION_5_HANDLERS_ORIGINAL)
         sections.append(SECTION_6_QUESTION_TYPES_ORIGINAL)
+
+    # Screen session: per-screen working memory (Jesse 2026-06-11) — prior
+    # attempts, measured facts, standing plan for THIS screen/question.
+    # Injected so builds RESUME instead of re-deriving from zero.
+    try:
+        from spark.tasks.skeleton import extract_skeleton, skeleton_hash as _ss_hash
+        from spark.tasks.skeleton import extract_content_fingerprint as _ss_fp
+        from spark.tasks.screen_session import render_for_prompt as _ss_render
+        _sess_block = _ss_render(
+            platform, _ss_hash(extract_skeleton(tree)), _ss_fp(tree),
+        )
+        if _sess_block:
+            sections.append(_sess_block)
+    except Exception:
+        logger.exception("screen_session prompt injection failed (continuing)")
 
     # Section 7: Click Strategies & Timing (always)
     sections.append(SECTION_7_STRATEGIES)
