@@ -60,6 +60,27 @@ def prune_tree_for_prompt(tree: dict) -> dict:
     return _prune_node(tree)
 
 
+def filter_tree_base(tree: dict) -> dict:
+    """THE default base filter for EVERY tree sent to an LLM — classifier AND
+    worker. Two-stage design (Jesse, discussed many times):
+
+      1. Base (here, always): scope to the page content (AXWebArea), dropping
+         ALL browser chrome (toolbar, tabs, extensions, address bar, "View
+         progress"/"Share"/"Tab Search" popups...), then keep content + collapse
+         empty structural wrappers + drop coordinate noise.
+      2. Per-screen: each screen-type YAML narrows further to just that screen's
+         relevant elements.
+
+    Chrome chrome is NEVER relevant to solving a course screen and is pure
+    bloat/confusion. This is filtering, NOT truncation — no content is dropped,
+    and (unlike the old _sanitize_tree_for_worker) values are never clipped.
+    """
+    from spark.tasks.prompt_codex import _find_web_area
+
+    web = _find_web_area(tree) or tree
+    return _prune_node(web)
+
+
 def _prune_node(node: dict) -> dict:
     """Prune a single node recursively, collapsing contentless wrappers among
     its children."""

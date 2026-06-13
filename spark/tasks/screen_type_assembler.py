@@ -466,8 +466,14 @@ def create_worker_handoff(
     screenshot_target = handoff_dir / screenshot_path.name
     system_prompt_path = handoff_dir / "system_prompt.txt"
     try:
+        # Base Chrome filter (Jesse 2026-06-13): scope to page content + strip
+        # browser chrome for EVERY worker tree — the worker was getting the full
+        # ~1.4MB tree including Chrome toolbar/tabs/extensions, pure bloat and
+        # confusion. filter_tree_base = web-area scope + content-keep + collapse
+        # (no value truncation). Per-screen YAMLs narrow further.
+        from spark.tasks.prune_tree import filter_tree_base
         tree_path.write_text(
-            json.dumps(_sanitize_tree_for_worker(tree), ensure_ascii=True, indent=2),
+            json.dumps(filter_tree_base(tree), ensure_ascii=True, indent=2),
             encoding="utf-8",
         )
         system_prompt_path.write_text(system_prompt, encoding="utf-8")
