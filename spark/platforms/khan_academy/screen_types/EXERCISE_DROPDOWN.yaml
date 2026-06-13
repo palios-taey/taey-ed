@@ -50,7 +50,13 @@ behavior_tree_template:              # EMIT THIS as your "tree". UNROLL the
   type: sequence
   name: exercise_dropdown
   children:
-    - {type: action, action: wait, params: {seconds: 2.0}}
+    - {type: action, action: wait, params: {seconds: 1.0}}
+    # GATE before find_all: Perseus Wonder Blocks dropdowns hydrate via React
+    # AFTER the DOM mounts — the AX role is transiently AXGroup/AXButton before
+    # settling to AXComboBox. find_all fired during that window returns 0 even
+    # though the combobox is there (claude-0 live-confirmed 2026-06-13). Block
+    # until the role settles, THEN find_all.
+    - {type: action, action: wait_for_element, params: {role: AXComboBox, timeout: 3.0}}
     - {type: action, action: find_all, params: {role: AXComboBox}, store: popups}
     # --- DISCOVERY: UNROLL one block per popup ($popups.0, $popups.1, ...) ---
     - {type: action, action: find_and_click, params: {element: "$popups.0", strategy: mouse_click}}
