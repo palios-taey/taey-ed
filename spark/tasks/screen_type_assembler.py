@@ -8,6 +8,8 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
+import yaml
+
 from spark.tasks.screen_session import render_for_prompt
 from spark.tasks.screen_type_util import MASTER_CATEGORIES, get_master_category
 
@@ -151,6 +153,32 @@ def _load_text(path: Path) -> str:
         raise ScreenTypeAssemblerError(f"Failed to read {path}: {e}") from e
 
 
+def _extract_top_level_value(text: str, key: str) -> str:
+    prefix = f"{key}:"
+    for line in text.splitlines():
+        if line.startswith(prefix):
+            return line.split(":", 1)[1].strip().split("#", 1)[0].strip()
+    return ""
+
+
+def _extract_top_level_block(text: str, key: str) -> str:
+    lines = text.splitlines()
+    prefix = f"{key}:"
+    block: list[str] = []
+    in_block = False
+    for line in lines:
+        if not in_block:
+            if line.startswith(prefix):
+                in_block = True
+                block.append(line)
+                continue
+        else:
+            if line and not line.startswith((" ", "\t", "#")) and ":" in line:
+                break
+            block.append(line)
+    return "\n".join(block)
+
+
 def _load_screen_artifact(platform: str, screen_type: str) -> dict:
     normalized = str(screen_type or "UNKNOWN").strip() or "UNKNOWN"
     screen_dir = _screen_types_dir(platform)
@@ -209,6 +237,27 @@ def _load_screen_artifact(platform: str, screen_type: str) -> dict:
     raise ScreenTypeAssemblerError(
         f"No per-screen artifact for platform={platform!r} screen_type={normalized!r}"
     )
+
+
+def load_screen_artifact_metadata(platform: str, screen_type: str) -> dict:
+    artifact = _load_screen_artifact(platform, screen_type)
+    content = artifact["content"]
+    deterministic_raw = _extract_top_level_value(content, "deterministic").lower()
+    deterministic = deterministic_raw == "true"
+    fixed_bt = None
+    fixed_bt_block = _extract_top_level_block(content, "fixed_behavior_tree")
+    if fixed_bt_block:
+        try:
+            fixed_bt = (yaml.safe_load(fixed_bt_block) or {}).get("fixed_behavior_tree")
+        except Exception as e:
+            raise ScreenTypeAssemblerError(
+                f"Malformed fixed_behavior_tree in {artifact['path']}: {e}"
+            ) from e
+    return {
+        "artifact": artifact,
+        "deterministic": deterministic,
+        "fixed_behavior_tree": fixed_bt,
+    }
 
 
 def _render_universal_block() -> str:

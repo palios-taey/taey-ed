@@ -574,8 +574,8 @@ def _consultation_or_wait(consult_result: dict) -> dict:
 def _build_screen_directive(request, platform: str, tree: dict, screen_type: str, sig_hash: str,
                             user_guidance: str = None, course_id: str = "") -> dict:
     """
-    Single assembly stack: create a worker consultation and let the worker
-    build the BT. Server-side BT generation is removed.
+    Deterministic subtype YAMLs replay their stored fixed BT directly.
+    Non-deterministic subtypes go through the worker consultation path.
     """
     if not request.screenshot_b64:
         return {
@@ -583,46 +583,21 @@ def _build_screen_directive(request, platform: str, tree: dict, screen_type: str
             "directive_id": _make_directive_id(),
             "reason": f"{screen_type.lower()}_consultation_needs_screenshot",
         }
-    from spark.tasks.screen_type_util import get_master_category
-    if get_master_category(screen_type) == "NAVIGATION":
-        nav_tree = {
-            "type": "sequence",
-            "name": "navigate",
-            "children": [
-                {
-                    "type": "action",
-                    "action": "find_all",
-                    "params": {
-                        "role": "AXLink",
-                    },
-                    "store": "links",
-                },
-                {
-                    "type": "action",
-                    "action": "send_to_llm",
-                    "params": {
-                        "question_type": "navigate",
-                        "items": "$links",
-                    },
-                    "store": "nav",
-                },
-                {
-                    "type": "action",
-                    "action": "find_and_click",
-                    "params": {
-                        "target": "$nav.answer",
-                        "role": "AXLink",
-                        "strategy": "mouse_click",
-                        "match_mode": "exact",
-                        "post_delay": 3.0,
-                    },
-                },
-            ],
-        }
+    from spark.tasks.screen_type_assembler import (
+        ScreenTypeAssemblerError,
+        load_screen_artifact_metadata,
+    )
+    try:
+        metadata = load_screen_artifact_metadata(platform, screen_type)
+    except ScreenTypeAssemblerError:
+        logger.exception("_build_screen_directive: failed to load screen metadata for %s", screen_type)
+        metadata = None
+
+    if metadata and metadata.get("deterministic") and metadata.get("fixed_behavior_tree"):
         return _with_chat({
             "directive": "execute_tree",
             "directive_id": _make_directive_id(),
-            "tree": nav_tree,
+            "tree": metadata["fixed_behavior_tree"],
             "screen": screen_type,
             "extract": _get_extract_for_type(
                 screen_type,
@@ -634,7 +609,7 @@ def _build_screen_directive(request, platform: str, tree: dict, screen_type: str
             "lesson": "",
             "expected_next": [],
             "skeleton_hash": sig_hash,
-        }, platform, [build_status(f"Using fixed {screen_type} navigation automation")])
+        }, platform, [build_status(f"Using fixed {screen_type} automation")])
     consult_result = request_consultation(
         platform=platform,
         tree=tree,

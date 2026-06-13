@@ -7,6 +7,28 @@ classify: >
   MathJax), no completion marker yet on this item, an "Up next" link at the
   bottom. No answer widgets, no player. (If the item already shows
   "completed Article <X>", it is ARTICLE__COMPLETE instead.)
+fixed_behavior_tree:
+  type: sequence
+  name: article_reading
+  children:
+    - type: action
+      action: scroll
+      params: {direction: down, amount: 5}
+    - {type: action, action: wait, params: {seconds: 0.5}}
+    - type: action
+      action: scroll
+      params: {direction: down, amount: 5}
+    - {type: action, action: wait, params: {seconds: 0.5}}
+    - type: action
+      action: scroll
+      params: {direction: down, amount: 5}
+    - {type: action, action: wait, params: {seconds: 0.5}}
+    - {type: action, action: find_all, params: {role: AXLink}, store: links}
+    - {type: action, action: send_to_llm,
+       params: {question_type: navigate, items: "$links"}, store: nav}
+    - {type: action, action: find_and_click,
+       params: {target: "$nav.answer", role: AXLink, strategy: mouse_click,
+                match_mode: exact, post_delay: 3.0}}
 recipe:                              # deterministic structure; scroll count +
   # the exact up-next name resolve at Mac-execution time. EVERY article scrolls
   # to bottom AND extracts to the local KB before advancing (Jesse 2026-06-11).
