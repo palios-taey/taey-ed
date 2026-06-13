@@ -244,6 +244,53 @@ def _infer_transition_subtype(tree: dict) -> str:
     return "UNKNOWN"
 
 
+def _infer_exercise_subtype(tree: dict) -> str:
+    """Resolve a bare EXERCISE master to its on-disk subtype from widget shape.
+
+    Completes the canonicalize() subtype-inference pattern that NAVIGATION,
+    ARTICLE, VIDEO, and TRANSITION already have. EXERCISE was omitted in the
+    subtype cutover (2026-06-12), so a bare/legacy EXERCISE hash entry fell to
+    UNKNOWN and the worker received the UNKNOWN classification guide with no
+    recipe — it then invented unregistered actions (describe_image) and failed.
+
+    Role-accurate (AXComboBox / AXRadioButton / AXCheckBox), and deterministic
+    ONLY for the unambiguous widget signatures (dropdown, single-vs-multi
+    choice). Genuinely ambiguous shapes (matcher vs sorter, graph points,
+    label-image, table, free text) return UNKNOWN so the Claude classifier
+    picks the subtype — never a wrong guess (wrong answer = catastrophic).
+    """
+    combobox_answer = 0
+    choice_radio = 0
+    choice_checkbox = 0
+
+    def walk(n):
+        nonlocal combobox_answer, choice_radio, choice_checkbox
+        if isinstance(n, dict):
+            role = n.get("role") or ""
+            name = (n.get("name") or "").strip().lower()
+            if role == "AXComboBox" and "select an answer" in name:
+                combobox_answer += 1
+            if name.startswith("(choice"):
+                if role == "AXCheckBox":
+                    choice_checkbox += 1
+                elif role == "AXRadioButton":
+                    choice_radio += 1
+            for c in n.get("children") or []:
+                walk(c)
+        elif isinstance(n, list):
+            for i in n:
+                walk(i)
+
+    walk(_find_web_area(tree) or tree)
+    if combobox_answer > 0:
+        return "EXERCISE_DROPDOWN"
+    if choice_checkbox > 0:
+        return "EXERCISE_MULTIPLE_SELECT"
+    if choice_radio > 0:
+        return "EXERCISE_MULTIPLE_CHOICE"
+    return "UNKNOWN"
+
+
 def canonicalize_screen_type(platform: str, screen_type: object, tree: dict | None = None) -> str:
     registry = _load_screen_type_registry(platform)
     allowed = set(registry)
@@ -269,6 +316,10 @@ def canonicalize_screen_type(platform: str, screen_type: object, tree: dict | No
                 return "VIDEO__PLAYER"
         if normalized.startswith("TRANSITION"):
             inferred = _infer_transition_subtype(tree)
+            if inferred in allowed:
+                return inferred
+        if normalized == "EXERCISE" or normalized.startswith("EXERCISE"):
+            inferred = _infer_exercise_subtype(tree)
             if inferred in allowed:
                 return inferred
 
