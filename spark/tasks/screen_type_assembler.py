@@ -17,6 +17,7 @@ MAX_TOTAL_PROMPT_CHARS = 25_000
 UNIVERSAL_CHAR_BUDGET = 5_000
 KB_CHAR_BUDGET = 5_000
 HANDOFF_ROOT = Path("/tmp/taey-ed-worker-handoff")
+SPLIT_MASTER_CATEGORIES = {"NAVIGATION", "ARTICLE", "VIDEO", "TRANSITION"}
 
 KNOWN_ACTIONS = {
     "click",
@@ -164,6 +165,24 @@ def _load_screen_artifact(platform: str, screen_type: str) -> dict:
             "content": _load_text(path),
         }
 
+    if normalized.upper() in SPLIT_MASTER_CATEGORIES:
+        guide_path = screen_dir / "_UNKNOWN_GUIDE.md"
+        if guide_path.exists():
+            logger.warning(
+                "screen_type_assembler: bare split master screen_type=%s for %s; falling back to UNKNOWN guide",
+                normalized,
+                platform,
+            )
+            return {
+                "screen_type": "UNKNOWN",
+                "kind": "unknown_guide",
+                "path": guide_path,
+                "content": _load_text(guide_path),
+            }
+        raise ScreenTypeAssemblerError(
+            f"Bare split-master screen_type cannot be assembled: platform={platform!r} screen_type={normalized!r}"
+        )
+
     path = screen_dir / f"{normalized}.yaml"
     if path.exists():
         return {
@@ -172,17 +191,6 @@ def _load_screen_artifact(platform: str, screen_type: str) -> dict:
             "path": path,
             "content": _load_text(path),
         }
-
-    master = get_master_category(normalized)
-    if master != "UNKNOWN":
-        master_path = screen_dir / f"{master}.yaml"
-        if master_path.exists():
-            return {
-                "screen_type": master,
-                "kind": "yaml",
-                "path": master_path,
-                "content": _load_text(master_path),
-            }
 
     guide_path = screen_dir / "_UNKNOWN_GUIDE.md"
     if guide_path.exists():
