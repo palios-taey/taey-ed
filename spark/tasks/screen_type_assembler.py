@@ -389,9 +389,11 @@ def assemble_worker_prompt(
         _render_universal_block(),
         f"=== SCREEN PROGRAM ===\nsource: {artifact['path']}\nkind: {artifact['kind']}\n\n{artifact['content'].rstrip()}",
     ]
-    proven_block = _render_proven_knowledge_block(platform, screen_type)
-    if proven_block:
-        sections.append(proven_block)
+    # NOTE (2026-06-13): the concrete behavior_tree_template now lives in the
+    # per-screen recipe YAML and supersedes the verbose knowledge-note dump that
+    # used to be injected here. Injecting both blew the 25K prompt cap
+    # (29960 > 25000 -> assembly failure -> fallback -> escalation loop). The
+    # template + recipe carry the procedure; keep the prompt lean.
     session_block = _render_session_block(platform, tree)
     if session_block:
         sections.append(session_block)

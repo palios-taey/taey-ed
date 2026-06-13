@@ -1,60 +1,93 @@
 """
-Prune accessibility tree for Gemini prompts.
+Filter an accessibility tree down to the relevant info for LLM prompts.
 
-Strips fields Gemini doesn't use (coordinates, element_id, computed name)
-and removes empty string values. Preserves everything Gemini needs for
-BT building: role, title, description, value, children.
+Two problems with sending the raw tree (Jesse 2026-06-13): it is huge (Khan
+trees run ~450KB / ~110K tokens — they blow the classifier's cost budget, which
+errors out and silently degrades to screen_type=UNKNOWN) AND, paradoxically, it
+used to drop `name` — which is exactly where the content-bearing labels live
+("Select an answer", "Check", choice text, headings). So the prompt was both
+bloated and content-poor.
+
+This filter keeps only the relevant info:
+  - KEEP role + name/title/description/value (the labels + text the LLM reads)
+    + a few answer-widget state fields (value/selected/enabled).
+  - DROP coordinates / ids (element_id, position, size, visible_bbox) — the Mac
+    resolves actions by name+role, never coordinates.
+  - COLLAPSE contentless structural wrappers (AXGroup/AXGeneric/... with no
+    name/title/description/value) by hoisting their children. Khan trees are
+    ~50% empty wrapper groups; flattening them is the bulk of the size win and
+    loses nothing the LLM needs.
+
+The original tree is NOT modified — returns a new dict. NOT truncation: no
+content is dropped, only coordinate noise and empty structural nesting.
 
 Platform-agnostic — capture_tree.py produces identical field sets regardless
-of platform. The pruning rules are universal.
+of platform.
 """
 
 import logging
 
 logger = logging.getLogger("taey-ed")
 
-# Fields Gemini never uses in BT building.
-# - element_id: "for visual mapping only — Mac executes by name+role, NOT element_id"
-# - name: always computed as title || description (redundant)
-# - position: Gemini never generates coordinate-based actions
-# - size: same
-# - visible_bbox: position + size combined (same)
-_DROP_FIELDS = {"element_id", "name", "position", "size", "visible_bbox"}
+# Coordinate / id fields the LLM never uses (Mac executes by name+role).
+_DROP_FIELDS = {"element_id", "position", "size", "visible_bbox"}
+
+# Fields whose non-empty presence means a node carries content worth keeping.
+_CONTENT_FIELDS = ("name", "title", "description", "value")
+
+# Roles that are pure structural containers — collapse them when they carry no
+# content of their own (hoist their children into the parent).
+_STRUCTURAL_ROLES = {
+    "AXGroup", "AXGeneric", "AXScrollArea", "AXSplitGroup", "AXSplitter",
+    "AXLayoutArea", "AXLayoutItem", "AXUnknown", "AXEmptyGroup",
+}
+
+
+def _has_content(node: dict) -> bool:
+    for key in _CONTENT_FIELDS:
+        if str(node.get(key) or "").strip():
+            return True
+    return False
 
 
 def prune_tree_for_prompt(tree: dict) -> dict:
-    """
-    Return a pruned copy of the tree for Gemini prompt inclusion.
+    """Return a filtered copy of the tree for LLM prompt inclusion.
 
-    Removes:
-      - element_id, name, position, size, visible_bbox from every node
-      - Keys with empty string values (e.g., "title": "")
-
-    Preserves:
-      - role, title, description, value, children (everything Gemini needs)
-
-    The original tree is NOT modified — returns a new dict.
+    Keeps content (role + name/title/description/value), drops coordinate noise,
+    and collapses contentless structural wrappers. The root node itself is never
+    collapsed.
     """
     return _prune_node(tree)
 
 
 def _prune_node(node: dict) -> dict:
-    """Prune a single node recursively."""
+    """Prune a single node recursively, collapsing contentless wrappers among
+    its children."""
     pruned = {}
 
     for key, val in node.items():
-        # Skip dropped fields
         if key in _DROP_FIELDS:
             continue
 
-        # Recurse into children
         if key == "children" and isinstance(val, list):
-            pruned_children = [_prune_node(child) for child in val]
-            if pruned_children:
-                pruned["children"] = pruned_children
+            collapsed: list = []
+            for child in val:
+                if not isinstance(child, dict):
+                    continue
+                pruned_child = _prune_node(child)
+                # Collapse a contentless structural wrapper: splice its (already
+                # pruned) children in place of the wrapper itself.
+                if (
+                    child.get("role") in _STRUCTURAL_ROLES
+                    and not _has_content(child)
+                ):
+                    collapsed.extend(pruned_child.get("children", []))
+                else:
+                    collapsed.append(pruned_child)
+            if collapsed:
+                pruned["children"] = collapsed
             continue
 
-        # Skip empty string values
         if isinstance(val, str) and val == "":
             continue
 
