@@ -34,6 +34,48 @@ recipe:                              # THE type-BT — HARD BAN (vc=3): solved b
       then wait 1.0                  # the " not selected" display suffix
   - wait 1.5                         # Check enable race
   - find_and_click: {target: Check, role: AXButton, strategy: mouse_click, match_mode: exact, post_delay: 2.5}
+behavior_tree_template:              # EMIT THIS as your "tree". UNROLL the
+  # discover + select blocks ONE PER visible AXComboBox, indexed $popups.0,
+  # $popups.1, ... — count from the tree's find_all (this example shows 2; emit
+  # exactly N). NEVER use for_each: the engine fails to resolve the whole popup
+  # list ($popups) — direct indexing ($popups.0) is the PROVEN path (verified×17,
+  # live-confirmed 2026-06-13 that for_each over $popups returns no items).
+  # Fill ONLY the send_to_llm `question` (quote each blank verbatim, indexed
+  # 0..N-1 top-to-bottom). HARD RULES:
+  #   - select_dropdown_option.option MUST be the lookup_match result ($chosen_i).
+  #     NEVER null, NEVER a value you reasoned yourself — the real option strings
+  #     exist only at runtime after discover_menu enumerates them.
+  #   - You MUST include send_to_llm AND lookup_match. Not optional.
+  #   - Do not add describe_image or any node not shown here.
+  type: sequence
+  name: exercise_dropdown
+  children:
+    - {type: action, action: wait, params: {seconds: 2.0}}
+    - {type: action, action: find_all, params: {role: AXComboBox}, store: popups}
+    # --- DISCOVERY: UNROLL one block per popup ($popups.0, $popups.1, ...) ---
+    - {type: action, action: find_and_click, params: {element: "$popups.0", strategy: mouse_click}}
+    - {type: action, action: wait_for_element, params: {role: AXMenuItem}}
+    - {type: action, action: discover_menu, store_to_current: options}
+    - {type: action, action: press_escape}
+    - {type: action, action: find_and_click, params: {element: "$popups.1", strategy: mouse_click}}
+    - {type: action, action: wait_for_element, params: {role: AXMenuItem}}
+    - {type: action, action: discover_menu, store_to_current: options}
+    - {type: action, action: press_escape}
+    # --- SOLVE: one send_to_llm for all popups; quote each blank, indexed 0..N-1 ---
+    - {type: action, action: send_to_llm,
+       params: {question_type: solve_matching, items: "$popups",
+                question: "<quote each blank's full sentence VERBATIM from the screenshot: 'Blank 0: ...', 'Blank 1: ...'; return the chosen option per blank, keyed by blank index>"},
+       store: matches}
+    # --- SELECT: UNROLL one block per popup, SAME count, key = blank index ---
+    - {type: action, action: lookup_match, params: {key: "0"}, store: chosen_0}
+    - {type: action, action: select_dropdown_option, params: {trigger_element: "$popups.0.element", option: "$chosen_0"}}
+    - {type: action, action: wait, params: {seconds: 1.0}}
+    - {type: action, action: lookup_match, params: {key: "1"}, store: chosen_1}
+    - {type: action, action: select_dropdown_option, params: {trigger_element: "$popups.1.element", option: "$chosen_1"}}
+    - {type: action, action: wait, params: {seconds: 1.0}}
+    - {type: action, action: wait, params: {seconds: 1.5}}
+    - {type: action, action: find_and_click,
+       params: {target: Check, role: AXButton, strategy: mouse_click, match_mode: exact, post_delay: 2.5}}
 contracts:
   - option text VERBATIM from the menu enumeration; one answer per VISIBLE row
   - find_all(AXMenuItem) element refs must NEVER enter send_to_llm params
