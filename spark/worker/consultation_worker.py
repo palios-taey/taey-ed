@@ -24,11 +24,14 @@ import json
 import logging
 import os
 import time
+import base64
 from concurrent.futures import ThreadPoolExecutor, Future
 from pathlib import Path
 from typing import Optional
 
 from spark.tasks.atomic_write import atomic_write_json
+from spark.tasks.classification_request import CLASSIFY_DIR
+from spark.tasks.classify_screen import classify_screen
 from spark.worker.bt_generator import BTGenerationError, generate_bt
 
 logger = logging.getLogger(__name__)
@@ -61,6 +64,29 @@ def _list_pending_consultations() -> list[str]:
             continue
         if meta.get("status") == "pending":
             pending.append(sub.name)
+    return pending
+
+
+def _list_pending_classifications() -> list[str]:
+    if not CLASSIFY_DIR.exists():
+        return []
+    pending = []
+    for platform_dir in CLASSIFY_DIR.iterdir():
+        if not platform_dir.is_dir():
+            continue
+        for sub in platform_dir.iterdir():
+            if not sub.is_dir() or not sub.name.startswith("classify_"):
+                continue
+            meta_path = sub / "metadata.json"
+            response_path = sub / "response.json"
+            if not meta_path.exists() or response_path.exists():
+                continue
+            try:
+                meta = json.loads(meta_path.read_text())
+            except (json.JSONDecodeError, OSError):
+                continue
+            if meta.get("status") == "pending":
+                pending.append(str(sub.relative_to(CLASSIFY_DIR)))
     return pending
 
 
@@ -101,6 +127,26 @@ def _write_user_input_needed_fallback(consultation_id: str, reason: str) -> None
     )
 
 
+def _write_classification_fallback(job_ref: str, reason: str) -> None:
+    job_dir = CLASSIFY_DIR / job_ref
+    fallback = {
+        "success": False,
+        "screen_type": "UNKNOWN",
+        "confidence_note": f"classification_worker_error: {reason}",
+        "platform_variant": "",
+    }
+    atomic_write_json(job_dir / "response.json", fallback)
+    meta_path = job_dir / "metadata.json"
+    try:
+        meta = json.loads(meta_path.read_text())
+        meta["status"] = "worker_failed"
+        meta["worker_failure_reason"] = reason
+        atomic_write_json(meta_path, meta)
+    except Exception:
+        pass
+    logger.error("worker: wrote classification fallback for %s (%s)", job_ref, reason)
+
+
 def _process_one(consultation_id: str) -> None:
     """Process a single consultation. Catches all errors and writes a fallback
     on failure so the Mac never hangs."""
@@ -139,6 +185,51 @@ def _process_one(consultation_id: str) -> None:
     )
 
 
+def _process_one_classification(job_ref: str) -> None:
+    job_dir = CLASSIFY_DIR / job_ref
+    t0 = time.time()
+    try:
+        meta = json.loads((job_dir / "metadata.json").read_text())
+        tree = json.loads((job_dir / "tree.json").read_text())
+        screenshot_path = job_dir / "screenshot.png"
+        screenshot_b64 = None
+        if screenshot_path.exists():
+            screenshot_b64 = base64.b64encode(screenshot_path.read_bytes()).decode("ascii")
+
+        result = classify_screen(
+            tree=tree,
+            screenshot_b64=screenshot_b64,
+            platform=meta["platform"],
+        )
+    except Exception as e:
+        _write_classification_fallback(job_ref, f"unexpected: {e}")
+        logger.exception("worker: unexpected classification error for %s", job_ref)
+        return
+
+    atomic_write_json(job_dir / "response.json", result)
+    meta_path = job_dir / "metadata.json"
+    try:
+        meta = json.loads(meta_path.read_text())
+        meta["status"] = "complete"
+        meta["responded_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        meta["responded_by"] = "worker"
+        atomic_write_json(meta_path, meta)
+    except Exception as e:
+        logger.warning(
+            "worker: classification response written for %s but metadata update failed: %s",
+            job_ref,
+            e,
+        )
+
+    elapsed = time.time() - t0
+    logger.info(
+        "worker: classified %s in %.1fs (screen_type=%s)",
+        job_ref,
+        elapsed,
+        result.get("screen_type"),
+    )
+
+
 def run_forever(poll_interval_s: float = POLL_INTERVAL_S) -> None:
     """Main worker loop. Polls for pending consultations and processes them
     concurrently up to MAX_CONCURRENT_JOBS.
@@ -166,14 +257,26 @@ def run_forever(poll_interval_s: float = POLL_INTERVAL_S) -> None:
                         )
                     del in_flight[cid]
 
-            # Find new work
+            # Prioritize classification first so /next_action can answer the
+            # next poll without holding the HTTP request open.
+            for job_ref in _list_pending_classifications():
+                key = f"classify:{job_ref}"
+                if key in in_flight:
+                    continue
+                if len(in_flight) >= MAX_CONCURRENT_JOBS:
+                    break
+                logger.info(f"worker: dispatching classification {job_ref}")
+                in_flight[key] = pool.submit(_process_one_classification, job_ref)
+
+            # Find new consultation work
             for cid in _list_pending_consultations():
-                if cid in in_flight:
+                key = f"consult:{cid}"
+                if key in in_flight:
                     continue
                 if len(in_flight) >= MAX_CONCURRENT_JOBS:
                     break
                 logger.info(f"worker: dispatching {cid}")
-                in_flight[cid] = pool.submit(_process_one, cid)
+                in_flight[key] = pool.submit(_process_one, cid)
 
             time.sleep(poll_interval_s)
 
