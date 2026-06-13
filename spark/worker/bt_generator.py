@@ -363,12 +363,26 @@ def generate_bt(
     # Screen session: absorb the worker's _session contribution (facts/plan/
     # lesson) so the NEXT cycle on this screen resumes with what this build
     # measured or decided (Jesse 2026-06-11 per-screen working memory).
-    try:
-        from spark.tasks.skeleton import extract_skeleton, skeleton_hash as _sh
-        from spark.tasks.screen_session import absorb_worker_session
-        absorb_worker_session(platform, _sh(extract_skeleton(tree)), bt)
-    except Exception:
-        logger.exception("screen_session absorption failed (continuing)")
+    #
+    # Guard (2026-06-13 RCA): only absorb from RECIPE-backed builds (artifact
+    # kind == yaml). UNKNOWN-guide builds have no recipe and the worker
+    # freelances — absorbing those plans poisons the per-screen memory (tonight
+    # an UNKNOWN-guide click_at plan got stored, then every later cycle resumed
+    # it and rebuilt the rejected click_at BT, ignoring the recipe). See
+    # [[poisoned-screen-session-traps-worker]].
+    if prompt_meta.get("artifact_kind") == "yaml":
+        try:
+            from spark.tasks.skeleton import extract_skeleton, skeleton_hash as _sh
+            from spark.tasks.screen_session import absorb_worker_session
+            absorb_worker_session(platform, _sh(extract_skeleton(tree)), bt)
+        except Exception:
+            logger.exception("screen_session absorption failed (continuing)")
+    else:
+        logger.info(
+            f"bt_generator: skipped screen_session absorb for {consultation_id} "
+            f"(artifact kind={prompt_meta.get('artifact_kind')!r}, not recipe-backed "
+            f"— avoids poisoning per-screen memory with freelance plans)"
+        )
 
     logger.info(
         f"bt_generator: success for {consultation_id} in {meta['elapsed_wall_s']:.1f}s "
