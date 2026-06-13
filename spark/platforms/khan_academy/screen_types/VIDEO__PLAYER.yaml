@@ -1,0 +1,40 @@
+screen_type: VIDEO__PLAYER
+master_category: VIDEO
+subtype: player
+deterministic: true
+classify: >
+  Embedded video player (YouTube Video Player group / Play-Pause-Replay
+  buttons). One subtype covers all player states (unstarted/playing/complete) —
+  the fixed BT is idempotent and state-adaptive at execution time. "Play video"
+  and "Up next" are ALWAYS present and do NOT indicate state.
+fixed_behavior_tree:                 # IDEMPOTENT (the playing screen re-matches
+  # the unstarted hash; a bare click-play toggles pause/play forever). Fallback
+  # play -> video_poll. Completion read from indicators, never from movement.
+  type: sequence
+  name: video
+  children:
+    - type: fallback
+      children:
+        - {type: action, action: find_and_click,
+           params: {target: "Play video", role: AXButton, strategy: mouse_click,
+                    match_mode: exact}}
+        - {type: action, action: wait, params: {seconds: 0.1}}
+    - {type: action, action: video_poll}
+contracts:
+  - watch IN FULL — completion from indicators, never elapsed time or skipping
+  - extract config rides along so transcript/description lands in the local KB
+actuation:
+  never: coordinate clicks on the player (blind pause/play toggle)
+verification:
+  playing: "Play video" button ABSENT (renamed "Pause video")
+completion:                          # checked EVERY poll server-side (completed
+  # video's tree FREEZES, so completion must not live behind a tree-changed branch)
+  any of:
+    - "Replay Video" button present
+    - seek slider >= 99.5
+    - sidebar AXLink "completed Video <WebArea title>" / adjacent "completed" AXImage
+  on completion: server advances via the exact "Up next: <X>" AXLink
+failure_modes:
+  - re-playing a completed video: if any completion indicator is present on
+    FIRST encounter, the video is DONE — advance, do not press play
+  - tree frozen + no completion indicator -> genuine stall, escalate

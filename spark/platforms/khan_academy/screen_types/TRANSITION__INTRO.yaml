@@ -1,0 +1,31 @@
+screen_type: TRANSITION__INTRO
+master_category: TRANSITION
+subtype: intro
+deterministic: true
+classify: >
+  A start/intro interstitial before an activity: quiz/unit-test intro with a
+  start affordance ("Let's go", "Start quiz", "Start Unit test"), or a
+  "Don't give up yet!" / welcome modal with a single dismiss button. Buttons
+  but no answer widgets, no player, no content to read.
+fixed_behavior_tree:
+  type: sequence
+  name: transition_intro
+  children:
+    - {type: action, action: find_all, params: {role: AXButton}, store: buttons}
+    - {type: action, action: send_to_llm,
+       params: {question_type: navigate, items: "$buttons"}, store: pick}
+    - {type: action, action: find_and_click,
+       params: {target: "$pick.answer", strategy: mouse_click,
+                match_mode: exact, post_delay: 3.0}}
+contracts:
+  - COPY the button text VERBATIM from the tree — Khan uses curly Unicode
+    ("Let's go" with U+2019, not ASCII '); exact-match fails on the wrong glyph
+  - pick the single forward affordance (start/continue/keep-going); never "Skip"
+actuation:
+  strategy: mouse_click; post_delay 3.0 (SPA)
+verification:
+  - tree changes to the activity's first screen (quiz Q1, etc.)
+completion:
+  - n/a — the click IS the screen's purpose
+failure_modes:
+  - "Try again" on a summary is a re-do, not an intro — that's TRANSITION__SUMMARY

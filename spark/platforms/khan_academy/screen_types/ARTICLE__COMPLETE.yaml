@@ -1,0 +1,35 @@
+screen_type: ARTICLE__COMPLETE
+master_category: ARTICLE
+subtype: complete
+deterministic: true
+classify: >
+  A completed-content advance state (the screen STUCK live 2026-06-13, then
+  classified UNKNOWN): article content PLUS completion markers
+  ("completed Video <X>" / "completed Article <X>" AXLinks, a "completed"
+  AXImage) AND an "Up next: <type>" AXLink. The piece is DONE; the only action
+  is to advance via Up-next. No answer widgets.
+fixed_behavior_tree:                 # nothing to read/extract — just advance.
+  # Uses the navigate handler so the exact "Up next: <type>" link is resolved
+  # at Mac-execution time (the suffix varies: exercise/video/article).
+  type: sequence
+  name: advance_up_next
+  children:
+    - {type: action, action: find_all, params: {role: AXLink}, store: links}
+    - {type: action, action: send_to_llm,
+       params: {question_type: navigate, items: "$links"}, store: nav}
+    - {type: action, action: find_and_click,
+       params: {target: "$nav.answer", role: AXLink, strategy: mouse_click,
+                match_mode: exact, post_delay: 3.0}}
+contracts:
+  - the navigate pick MUST resolve to the "Up next: <X>" link (the first
+    incomplete next item); completed pieces are skipped
+  - do NOT re-enter a "completed Video/Article" piece
+actuation:
+  strategy: mouse_click on the resolved AXLink; post_delay 3.0
+verification:
+  - tree/URL changes to the next content (the up-next target)
+completion:
+  - n/a — succeeds on advancing to the next incomplete piece
+failure_modes:
+  - this was the UNKNOWN-classified stuck screen — the fix is recognizing the
+    completed+up-next state and advancing, not trying to "read" a done article

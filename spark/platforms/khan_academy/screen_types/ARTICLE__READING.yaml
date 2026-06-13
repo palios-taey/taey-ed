@@ -1,0 +1,37 @@
+screen_type: ARTICLE__READING
+master_category: ARTICLE
+subtype: reading
+deterministic: true
+classify: >
+  An article to READ: article-renderer text content (headers, paragraphs,
+  MathJax), no completion marker yet on this item, an "Up next" link at the
+  bottom. No answer widgets, no player. (If the item already shows
+  "completed Article <X>", it is ARTICLE__COMPLETE instead.)
+recipe:                              # deterministic structure; scroll count +
+  # the exact up-next name resolve at Mac-execution time. EVERY article scrolls
+  # to bottom AND extracts to the local KB before advancing (Jesse 2026-06-11).
+  - repeat 3-6x until page bottom or Up-next visible:
+      scroll: {direction: down, amount: 5}
+      wait 0.5
+  - extract:                         # content -> local KB (feeds later questions)
+      text: {role: AXStaticText, min_length: 5}
+      images: window
+  - find_and_click:
+      target: <exact "Up next: <type>" AXLink name from the CURRENT tree>
+      role: AXLink
+      strategy: mouse_click
+      match_mode: exact
+      post_delay: 3.0
+contracts:
+  - an article map WITHOUT scroll+extract is WRONG — the extract is the point
+  - the Up-next link name varies; read it exact from the tree, never guess
+actuation:
+  strategy: mouse_click on AXLink; small scroll increments (amount 5)
+verification:
+  - bottom reached (no further y-movement) or advance link in the tree
+  - extraction returned non-trivial text
+completion:
+  - auto-completes on view/scroll; "Up next" advances
+failure_modes:
+  - inline "Try it yourself" Perseus widgets are NOT graded — scroll past
+  - advance-only BT (no scroll/extract) — forbidden

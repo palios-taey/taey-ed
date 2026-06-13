@@ -1,0 +1,33 @@
+screen_type: TRANSITION__SUMMARY
+master_category: TRANSITION
+subtype: summary
+deterministic: true
+classify: >
+  A post-set summary / completion card: exercise score card, mastery-points
+  card ("X out of 100 Mastery points", Proficient/Mastered), or end-of-set
+  review state with "(Choice X, Correct)" markers + "Show summary". The set is
+  DONE; advance via "Up next: <X>" (or click "Show summary" first if present).
+fixed_behavior_tree:                 # navigate handler resolves the exact
+  # "Up next"/"Show summary"/"Next question" forward link at execution time
+  type: sequence
+  name: transition_summary
+  children:
+    - {type: action, action: find_all, params: {role: AXLink}, store: links}
+    - {type: action, action: send_to_llm,
+       params: {question_type: navigate, items: "$links"}, store: nav}
+    - {type: action, action: find_and_click,
+       params: {target: "$nav.answer", role: AXLink, strategy: mouse_click,
+                match_mode: exact, post_delay: 3.0}}
+contracts:
+  - post-completion "Up next:" is the CANONICAL advance here (the mid-content
+    "never click Up next" rule does NOT apply to completion/transition screens)
+  - NEVER click "Try again" on a summary — it re-does the COMPLETED set
+actuation:
+  strategy: mouse_click on the resolved AXLink; post_delay 3.0
+verification:
+  - tree changes to the next content item
+completion:
+  - n/a — succeeds on advancing
+failure_modes:
+  - "(Choice X, Correct)" review markers = ALREADY ANSWERED — never re-click
+    choices; the forward move is the summary/up-next link
