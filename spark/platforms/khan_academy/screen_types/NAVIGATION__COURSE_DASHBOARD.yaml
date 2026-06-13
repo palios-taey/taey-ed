@@ -1,0 +1,36 @@
+screen_type: NAVIGATION__COURSE_DASHBOARD
+master_category: NAVIGATION
+subtype: course_dashboard
+deterministic: true
+classify: >
+  Course-overview / mastery dashboard: "Course mastery: X%" or a mastery grid,
+  unit crown icons (Mastered/Proficient), a "Mastery challenge" / "Course
+  challenge" card, the unit list in the left rail (UNIT 1..N). Many AXLinks,
+  no answer widgets, no player. This is the COURSE root, not a single unit.
+fixed_behavior_tree:                 # PROVEN live 2026-06-13 (advanced dashboard
+  # -> "Wave properties"). Structure constant; the send_to_llm node does the
+  # live pick at Mac-execution time. store is NODE-level (Mac reads node.store).
+  type: sequence
+  name: navigate
+  children:
+    - {type: action, action: find_all, params: {role: AXLink}, store: links}
+    - {type: action, action: send_to_llm,
+       params: {question_type: navigate, items: "$links"}, store: nav}
+    - {type: action, action: find_and_click,
+       params: {target: "$nav.answer", role: AXLink, strategy: mouse_click,
+                match_mode: exact, post_delay: 3.0}}
+contracts:
+  - the navigate handler is number-based (the LLM returns the item NUMBER; the
+    server maps it to the exact link name) — garbage-proof vs the screenshot
+  - pick the FIRST INCOMPLETE item in curriculum order: skip mastered/proficient
+    units; enter the first unit showing attempted/unfamiliar/not-started skills
+actuation:
+  strategy: mouse_click on the resolved AXLink; post_delay 3.0 (SPA load)
+verification:
+  - tree/URL changes into a unit or a lesson's first content (video/article)
+completion:
+  - n/a — navigation succeeds when it lands on the next incomplete content
+failure_modes:
+  - never click "Take ... again" / "Mastery challenge" unless no incomplete
+    standard content remains (tests level skills DOWN)
+  - if the whole course is mastered, navigate to the next unfamiliar UNIT link

@@ -1,0 +1,32 @@
+screen_type: NAVIGATION__LESSON_LIST
+master_category: NAVIGATION
+subtype: lesson_list
+deterministic: true
+classify: >
+  A single LESSON's content list: "Lesson N: <title>" with the lesson's items in
+  chronological order (Video / Article / "Learn and try" / Exercise), each with a
+  completion marker. The left rail shows the lesson's pieces. Scoped to ONE
+  lesson, finer than a unit page.
+fixed_behavior_tree:                 # same proven nav structure
+  type: sequence
+  name: navigate
+  children:
+    - {type: action, action: find_all, params: {role: AXLink}, store: links}
+    - {type: action, action: send_to_llm,
+       params: {question_type: navigate, items: "$links"}, store: nav}
+    - {type: action, action: find_and_click,
+       params: {target: "$nav.answer", role: AXLink, strategy: mouse_click,
+                match_mode: exact, post_delay: 3.0}}
+contracts:
+  - pick the FIRST INCOMPLETE item in chronological order; videos/articles
+    before the lesson's exercise
+  - a "completed Video/Article <X>" marker means that piece is DONE — skip it
+actuation:
+  strategy: mouse_click on the resolved AXLink; post_delay 3.0
+verification:
+  - tree/URL changes into the chosen content (video/article/exercise)
+completion:
+  - n/a — succeeds on landing in the next incomplete piece
+failure_modes:
+  - all pieces complete: advance via the lesson's "Up next" / next-lesson link
+  - do NOT re-enter a "completed" piece

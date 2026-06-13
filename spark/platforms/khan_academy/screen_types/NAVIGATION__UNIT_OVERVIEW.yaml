@@ -1,0 +1,34 @@
+screen_type: NAVIGATION__UNIT_OVERVIEW
+master_category: NAVIGATION
+subtype: unit_overview
+deterministic: true
+classify: >
+  A single UNIT page: "UNIT N <title>" header, that unit's lessons listed with
+  per-item completion markers (completed/proficient/mastered vs attempted/
+  unfamiliar/not-started), often a "Great work! You've mastered this unit"
+  banner when done. Scoped to ONE unit, not the whole-course mastery grid.
+fixed_behavior_tree:                 # same proven nav structure; subtype differs
+  type: sequence                     # in classify + the live pick context only
+  name: navigate
+  children:
+    - {type: action, action: find_all, params: {role: AXLink}, store: links}
+    - {type: action, action: send_to_llm,
+       params: {question_type: navigate, items: "$links"}, store: nav}
+    - {type: action, action: find_and_click,
+       params: {target: "$nav.answer", role: AXLink, strategy: mouse_click,
+                match_mode: exact, post_delay: 3.0}}
+contracts:
+  - pick the FIRST INCOMPLETE lesson/skill in this unit; within a section,
+    videos and articles come before exercises/quizzes
+  - enter a Quiz/Unit test ONLY when no other incomplete content remains
+    (sequential, high-stakes — wrong answers level skills DOWN)
+actuation:
+  strategy: mouse_click on the resolved AXLink; post_delay 3.0
+verification:
+  - tree/URL changes into a lesson's content or the next item
+completion:
+  - n/a — succeeds on landing in the next incomplete content
+failure_modes:
+  - unit fully mastered ("Great work!" banner): navigate to the next
+    unfamiliar/started UNIT via the left rail
+  - "Take quiz again" / "Take unit test to level up!" = done/marketing, not a target

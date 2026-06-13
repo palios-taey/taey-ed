@@ -231,6 +231,11 @@ def validate_yaml_file(path: Path) -> ValidationResult:
 
     for section in REQUIRED_SECTIONS:
         if section not in section_set:
+            # Deterministic subtypes carry a fixed_behavior_tree INSTEAD of a
+            # worker-filled recipe (schema 2026-06-13: structure is constant,
+            # cognition lives in the BT's send_to_llm nodes at execution time).
+            if section == "recipe" and "fixed_behavior_tree" in section_set:
+                continue
             result.issues.append(ValidationIssue(path, f"missing required section: {section}"))
 
     for section in REQUIRED_SECTIONS:
