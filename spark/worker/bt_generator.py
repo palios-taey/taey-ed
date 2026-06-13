@@ -152,6 +152,11 @@ def _strip_code_fences(text: str) -> str:
     return _extract_json_object(text)
 
 
+# Composite/control node types that are NOT actions — never rewrite their type.
+# Everything else with a `type` is an action shorthand ({type: find_all} etc.).
+_STRUCTURAL_NODE_TYPES = {"sequence", "selector", "action", "for_each", "conditional", "fallback"}
+
+
 def _normalize_bt_nodes(node) -> None:
     """Hoist node-level keys the Mac BT engine reads from the NODE, not params.
 
@@ -166,6 +171,24 @@ def _normalize_bt_nodes(node) -> None:
     the worker wrote the key.
     """
     if isinstance(node, dict):
+        # Normalize action-as-node-type -> {type: action, action: X}. The Mac
+        # engine runs both `{type: find_all}` and `{type: action, action:
+        # find_all}`, but the recipe-conformance collector only counts the
+        # `action` FIELD. Live RCA 2026-06-13: the worker emits the action as
+        # the node TYPE (e.g. {type: discover_menu, ...}), so conformance saw
+        # zero actions and false-rejected every dropdown BT ("missing
+        # find_all/discover_menu/select_dropdown_option"). Canonicalize here so
+        # validation, conformance, and the Mac all see one shape. Invented
+        # actions (e.g. describe_image) still normalize, then fail the
+        # not-in-recipe check — the safety net is preserved.
+        node_type = node.get("type")
+        if (
+            isinstance(node_type, str)
+            and node_type not in _STRUCTURAL_NODE_TYPES
+            and "action" not in node
+        ):
+            node["action"] = node_type
+            node["type"] = "action"
         params = node.get("params")
         if isinstance(params, dict):
             for key in ("store", "store_to_current"):
@@ -323,6 +346,16 @@ def generate_bt(
     try:
         validate_worker_bt_response(bt, platform=platform, screen_type=context["screen_type"])
     except ScreenTypeAssemblerError as e:
+        # Observability (2026-06-13): persist the worker's exact BT on a
+        # conformance rejection so the failure is diagnosable. The raw output
+        # is otherwise lost — we could only infer why the worker's actions
+        # weren't recognized. No behavior change; written before the raise.
+        try:
+            (consult_dir / "rejected_bt.json").write_text(
+                json.dumps(bt, indent=2, ensure_ascii=False), encoding="utf-8"
+            )
+        except Exception:
+            logger.exception("failed to persist rejected_bt.json (non-fatal)")
         raise BTGenerationError(
             f"BT recipe-conformance validation failed for {consultation_id}: {e}"
         ) from e
