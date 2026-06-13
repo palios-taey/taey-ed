@@ -1386,7 +1386,8 @@ def _next_action_impl(request: NextActionRequest):
         # inside the tree-changed branch, poll forever). During playback the
         # hash changes (timestamps); at completion it freezes. Either way,
         # the indicators in the CURRENT tree are the truth.
-        _is_video_poll = lr.screen and "VIDEO" in (lr.screen or "").upper()
+        from spark.tasks.screen_type_util import get_master_category as _gmc_poll
+        _is_video_poll = bool(lr.screen and _gmc_poll(lr.screen or "") == "VIDEO")
         if lr.tree_hash_before != lr.tree_hash_after or _is_video_poll:
             is_video = _is_video_poll
             if is_video:
@@ -1453,7 +1454,7 @@ def _next_action_impl(request: NextActionRequest):
                     "reason": "content_complete_advance",
                 }
             return _build_screen_directive(
-                request, platform, tree, "TRANSITION", "",
+                request, platform, tree, "TRANSITION__SUMMARY", "",
                 user_guidance=(
                     "Content (video/article) just completed. Advance to the next item.\n"
                     "Find the explicit forward-advancement link in the AX tree — typically:\n"
@@ -1938,6 +1939,7 @@ def _next_action_impl(request: NextActionRequest):
                 "course_id": cs.course_id,
             },
         )
+        logger.info("  Step 5D: UNKNOWN classification escalated into consultation flow")
         return _consultation_or_wait(consult_result)
 
     return _build_screen_directive(

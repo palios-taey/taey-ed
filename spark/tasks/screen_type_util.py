@@ -10,11 +10,41 @@ Variants are platform-specific and open-ended:
 Backward compat: ARTICLE_READING -> master=ARTICLE, variant=reading
 """
 
-# Master categories that use deterministic stored BTs (no Gemini needed)
-DETERMINISTIC_CATEGORIES = {"VIDEO", "ARTICLE"}
+from __future__ import annotations
+
+from functools import lru_cache
+from pathlib import Path
 
 # All recognized master categories
 MASTER_CATEGORIES = {"VIDEO", "ARTICLE", "EXERCISE", "NAVIGATION", "TRANSITION", "UNKNOWN"}
+_DEFAULT_PLATFORM = "khan_academy"
+
+
+def _platforms_dir() -> Path:
+    candidates = [
+        Path(__file__).parent.parent / "platforms",
+        Path("spark/platforms"),
+    ]
+    for path in candidates:
+        if path.exists():
+            return path
+    return candidates[0]
+
+
+@lru_cache(maxsize=64)
+def _load_screen_type_metadata(platform: str, screen_type: str) -> dict:
+    path = _platforms_dir() / platform / "screen_types" / f"{screen_type}.yaml"
+    if not path.exists():
+        return {}
+    try:
+        text = path.read_text(encoding="utf-8")
+        for line in text.splitlines():
+            if line.startswith("deterministic:"):
+                value = line.split(":", 1)[1].strip().split("#", 1)[0].strip().lower()
+                return {"deterministic": value == "true"}
+    except Exception:
+        return {}
+    return {}
 
 
 def get_master_category(screen_type: str) -> str:
@@ -56,6 +86,9 @@ def get_master_category(screen_type: str) -> str:
     return "UNKNOWN"
 
 
-def is_deterministic(screen_type: str) -> bool:
-    """Return True if this screen type should use stored BTs without Gemini."""
-    return get_master_category(screen_type) in DETERMINISTIC_CATEGORIES
+def is_deterministic(screen_type: str, platform: str = _DEFAULT_PLATFORM) -> bool:
+    """Return True iff the matched YAML marks this screen type deterministic."""
+    metadata = _load_screen_type_metadata(platform, screen_type)
+    if metadata:
+        return bool(metadata.get("deterministic", False))
+    return False

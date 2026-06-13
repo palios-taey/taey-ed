@@ -183,7 +183,7 @@ class LastResult(BaseModel):
 class KBChunk(BaseModel):
     """A relevant chunk retrieved from the user's local DeepTutor KB.
 
-    The Mac app captures content during VIDEO/ARTICLE screens, embeds via
+    The Mac app captures content during VIDEO/ARTICLE subtype screens, embeds via
     /api/v1/embed (Qwen3-Embedding-8B native 4096d), and stores (text,
     vector) pairs locally in DeepTutor (per Jesse 2026-05-12: NO truncation).
     At EXERCISE time, the Mac embeds the question, runs local similarity
@@ -195,7 +195,7 @@ class KBChunk(BaseModel):
     stays on the user's Mac. Only top-K relevant text chunks travel to the
     central server, never the whole KB.
     """
-    source_screen_type: str  # "VIDEO" | "ARTICLE"
+    source_screen_type: str  # canonical source subtype; current frozen Mac path still emits VIDEO/ARTICLE masters
     source_screen_id: Optional[str] = None  # opaque stable hash from the Mac
     captured_at: Optional[str] = None  # ISO-8601
     text: str  # the actual chunk text (≤1500 chars per chunk recommended)
