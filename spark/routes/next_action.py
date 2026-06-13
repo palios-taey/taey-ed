@@ -577,6 +577,17 @@ def _build_screen_directive(request, platform: str, tree: dict, screen_type: str
     Deterministic subtype YAMLs replay their stored fixed BT directly.
     Non-deterministic subtypes go through the worker consultation path.
     """
+    from spark.tasks.classify_screen import canonicalize_screen_type
+
+    canonical_screen_type = canonicalize_screen_type(platform, screen_type, tree)
+    if canonical_screen_type != screen_type:
+        logger.warning(
+            "_build_screen_directive: canonicalized screen_type %s -> %s",
+            screen_type,
+            canonical_screen_type,
+        )
+    screen_type = canonical_screen_type
+
     if not request.screenshot_b64:
         return {
             "directive": "need_screenshot",
@@ -592,6 +603,30 @@ def _build_screen_directive(request, platform: str, tree: dict, screen_type: str
     except ScreenTypeAssemblerError:
         logger.exception("_build_screen_directive: failed to load screen metadata for %s", screen_type)
         metadata = None
+
+    artifact = (metadata or {}).get("artifact") or {}
+    artifact_screen_type = artifact.get("screen_type")
+    artifact_kind = artifact.get("kind")
+
+    if (
+        screen_type != "UNKNOWN"
+        and artifact_kind == "unknown_guide"
+        and artifact_screen_type == "UNKNOWN"
+    ):
+        logger.error(
+            "_build_screen_directive: unresolved non-UNKNOWN screen_type=%s for platform=%s; refusing worker fallback",
+            screen_type,
+            platform,
+        )
+        return _with_chat({
+            "directive": "user_input_needed",
+            "directive_id": _make_directive_id(),
+            "reason": f"Subtype '{screen_type}' has no matching screen artifact; refusing uncached worker fallback.",
+            "screen_type": screen_type,
+        }, platform, [
+            build_status(f"Subtype artifact missing for {screen_type}"),
+            build_question(f"I recognized this as {screen_type}, but its screen artifact is missing. What should I do?"),
+        ])
 
     if metadata and metadata.get("deterministic") and metadata.get("fixed_behavior_tree"):
         return _with_chat({
@@ -610,6 +645,22 @@ def _build_screen_directive(request, platform: str, tree: dict, screen_type: str
             "expected_next": [],
             "skeleton_hash": sig_hash,
         }, platform, [build_status(f"Using fixed {screen_type} automation")])
+
+    if metadata and metadata.get("deterministic"):
+        logger.error(
+            "_build_screen_directive: deterministic screen_type=%s lacks fixed_behavior_tree; refusing worker fallback",
+            screen_type,
+        )
+        return _with_chat({
+            "directive": "user_input_needed",
+            "directive_id": _make_directive_id(),
+            "reason": f"Deterministic subtype '{screen_type}' has no fixed behavior tree.",
+            "screen_type": screen_type,
+        }, platform, [
+            build_status(f"Deterministic automation missing for {screen_type}"),
+            build_question(f"I recognized this as {screen_type}, but its fixed automation is missing. What should I do?"),
+        ])
+
     consult_result = request_consultation(
         platform=platform,
         tree=tree,
@@ -1943,5 +1994,5 @@ def _next_action_impl(request: NextActionRequest):
         return _consultation_or_wait(consult_result)
 
     return _build_screen_directive(
-        request, platform, tree, screen_type, skel_hash, course_id=cs.course_id
+        request, platform, tree, variant, skel_hash, course_id=cs.course_id
     )
