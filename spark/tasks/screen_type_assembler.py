@@ -336,6 +336,45 @@ def _render_kb_block(screen_type: str, kb_chunks: list[dict]) -> str:
     return "\n".join(lines).strip()
 
 
+def _render_proven_knowledge_block(platform: str, screen_type: str) -> str:
+    """Inject the accumulated, verified per-subtype know-how the worker needs
+    to rebuild a correct adaptive BT.
+
+    Restored 2026-06-13: the subtype cutover removed this injection, starving
+    the worker of the proven procedure (e.g. the verified×17 dropdown pattern:
+    open each AXComboBox -> discover_menu enumerates options -> send_to_llm
+    matches content -> select_dropdown_option per row -> Check). Without it the
+    worker shortcut the recipe, omitting required phases, and conformance
+    rejected every build. These notes live at
+    {DATA_DIR}/knowledge_notes/{platform}/{MASTER}.{subtype}.md and carry
+    verified×N markers so the worker weights proven patterns over synthesized.
+    """
+    from spark.tasks.paths import DATA_DIR
+
+    master = get_master_category(screen_type)
+    if not master or "_" not in screen_type:
+        return ""
+    subtype = screen_type[len(master) + 1:].lower()
+    if not subtype:
+        return ""
+    note_path = DATA_DIR / "knowledge_notes" / platform / f"{master}.{subtype}.md"
+    if not note_path.exists():
+        return ""
+    try:
+        content = note_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+    if not content:
+        return ""
+    return (
+        "=== PROVEN KNOWLEDGE FOR THIS SCREEN TYPE (verified observations — FOLLOW THESE) ===\n"
+        "Accumulated, production-verified procedure for this subtype. Higher verified×N = "
+        "more trustworthy; prefer it over improvisation. Build the BT that satisfies the "
+        "recipe's required phases using exactly these patterns.\n\n"
+        + content
+    )
+
+
 def assemble_worker_prompt(
     *,
     tree: dict,
@@ -350,6 +389,9 @@ def assemble_worker_prompt(
         _render_universal_block(),
         f"=== SCREEN PROGRAM ===\nsource: {artifact['path']}\nkind: {artifact['kind']}\n\n{artifact['content'].rstrip()}",
     ]
+    proven_block = _render_proven_knowledge_block(platform, screen_type)
+    if proven_block:
+        sections.append(proven_block)
     session_block = _render_session_block(platform, tree)
     if session_block:
         sections.append(session_block)
