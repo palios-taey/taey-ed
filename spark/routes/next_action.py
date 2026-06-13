@@ -889,6 +889,57 @@ def session_reset(platform: str = "khan_academy"):
     return {"ok": True, "platform": platform, "cleared": cleared}
 
 
+# ── Hydration guard state (claude-0 2026-06-13) ──
+# Bounded re-poll when a capture is exercise-shaped but its answer widgets
+# haven't hydrated yet. Per-platform counter in the long-lived API process;
+# reset whenever a non-hydrating capture arrives so it can't accumulate.
+MAX_HYDRATION_WAITS = 6
+_HYDRATION_WAITS: dict = {}
+
+
+def _bump_hydration_wait(platform: str) -> int:
+    _HYDRATION_WAITS[platform] = _HYDRATION_WAITS.get(platform, 0) + 1
+    return _HYDRATION_WAITS[platform]
+
+
+def _reset_hydration_wait(platform: str) -> None:
+    _HYDRATION_WAITS.pop(platform, None)
+
+
+def _looks_like_hydrating_exercise(tree: dict) -> bool:
+    """True when the capture shows exercise content (a graded submit button +
+    substantial question text) but NO answer-input widgets — i.e. the widgets
+    are still hydrating. Conservative: requires the submit affordance AND
+    content text AND zero answer widgets, so non-exercise screens never match.
+    """
+    from spark.tasks.classify_screen import _find_web_area
+
+    web = _find_web_area(tree) or tree
+    has_submit = False
+    answer_widgets = 0
+    text_chars = 0
+
+    def walk(n):
+        nonlocal has_submit, answer_widgets, text_chars
+        if isinstance(n, dict):
+            role = n.get("role") or ""
+            name = (n.get("name") or "").strip()
+            if role == "AXButton" and name in ("Check", "Submit", "Check answer", "Check again"):
+                has_submit = True
+            if role in ("AXComboBox", "AXRadioButton", "AXCheckBox", "AXTextField", "AXTextArea", "AXSlider"):
+                answer_widgets += 1
+            if role == "AXStaticText":
+                text_chars += len(name) + len(str(n.get("value") or ""))
+            for c in n.get("children") or []:
+                walk(c)
+        elif isinstance(n, list):
+            for i in n:
+                walk(i)
+
+    walk(web)
+    return has_submit and answer_widgets == 0 and text_chars > 80
+
+
 @router.post("/next_action")
 def next_action(request: NextActionRequest):
     """Production wrapper: intercept any user_input_needed at the endpoint
@@ -1878,6 +1929,34 @@ def _next_action_impl(request: NextActionRequest):
     if gate_flag.exists():
         gate_flag.unlink()
         logger.info(f"  Step 5: Knowledge gate cleared for {platform}")
+
+    # Hydration guard (claude-0 2026-06-13): Perseus/React widgets hydrate AFTER
+    # the DOM mounts. A capture taken mid-hydration shows exercise content (the
+    # question text + a graded "Check" button) but NO answer widgets yet — the
+    # classifier then can't see the EXERCISE signal and flaps to UNKNOWN (which
+    # cascades into the worker getting the generic guide and freelancing). When
+    # the capture looks like an exercise mid-hydration, re-poll briefly instead
+    # of classifying a widget-less snapshot. Bounded so a genuine no-widget
+    # screen can't loop.
+    if _looks_like_hydrating_exercise(tree):
+        n = _bump_hydration_wait(platform)
+        if n <= MAX_HYDRATION_WAITS:
+            logger.info(
+                f"  Step 5: capture looks mid-hydration (exercise content, no answer widgets) "
+                f"— re-poll {n}/{MAX_HYDRATION_WAITS} before classifying"
+            )
+            return {
+                "directive": "wait",
+                "directive_id": _make_directive_id(),
+                "seconds": 1.0,
+                "reason": "awaiting_widget_hydration",
+            }
+        logger.warning(
+            f"  Step 5: still no answer widgets after {MAX_HYDRATION_WAITS} re-polls "
+            f"— proceeding to classify as-is"
+        )
+    else:
+        _reset_hydration_wait(platform)
 
     # Step 5A: Need screenshot for Flash classification
     if not request.screenshot_b64:
