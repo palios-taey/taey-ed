@@ -1,62 +1,31 @@
-# Terminal Escalation — Mark Unsolvable
+# Terminal — system bug / capability gap (handed UP to the Supervisor)
 
-You hit Terminal because the full ladder has been exhausted (per Jesse
-2026-06-11 canonical ladder):
-- Tier 1: 2 attempts by claude-primary editing knowledge.json
-- Tier 2: 1 Perplexity DR consultation
-- Tier 3: 1 full Family round
+The full ladder is exhausted (2 Operator shots → 1 Perplexity DR → 1 Family
+round = 4 attempts). This screen is outside the system's current capability —
+usually a missing handler or a novel widget pattern the existing primitives can't
+express.
 
-That's 4 attempts total. This screen is genuinely outside the system's current
-capability — likely a handler gap or a fundamentally novel widget pattern that
-can't be solved with the existing primitives.
+Terminal is **code-owned** (`escalation_state`): the system marks it terminal,
+deletes the Mac signature so it won't retry the same path, and routes a **defect
+notification to the Supervisor automatically**. You do not drive any of that.
 
-## What to do
+## What you do
 
-1. Open the escalation packet for one last review. Confirm: was the failure mode
-   consistent across tiers (suggests handler gap), or did each tier propose
-   different things and none worked (suggests something subtler)?
+1. Review the packet once. Was the failure mode consistent across tiers (→ a
+   handler gap), or did each tier try different things and none worked (→ subtler)?
+2. Append an entry to `/home/user/taey-ed/consultations/UNSOLVED.md` (create if
+   missing): escalation id, platform, screen_hash, variant, a one-paragraph
+   failure-mode summary, the strongest approach tried across tiers, and your best
+   read on the **missing capability** (new handler / primitive / question_type /
+   schema extension).
+3. **Do NOT touch any flag.** Terminal is code-owned; there is no flag for you to
+   set. You do NOT fix the system.
 
-2. Touch the gave_up.flag for this state dir. This is the ONLY tier where
-   gave_up.flag is appropriate.
-
-3. Log the unsolved screen to `/home/user/taey-ed/consultations/UNSOLVED.md`
-   (create if missing). Append a section with:
-   - escalation_id, platform, screen_hash, variant
-   - Failure-mode summary (one paragraph)
-   - The strongest candidate BT proposed across all tiers
-   - The recommended handler addition / system change (Mac-side or server-side)
-   - Pointer to the packet for forensic reference
-
-4. Send a single notification summarizing the terminal state. Use the canonical
-   notification system:
-
-   ```
-   /usr/local/bin/taey-notify taey-ed --type defect --from spark \
-     "TERMINAL ESCALATION — <platform> screen_hash <hash> marked unsolvable
-    after ladder exhaustion. Packet: <path>. Recommended next step:
-    <one-line — usually a new Mac handler or server-side change>."
-   ```
-
-5. The Mac signature for this screen is automatically deleted by the system on
-   gave_up.flag. The screen will not retry the same path. Mac surfaces it to
-   the user as a known-unsolvable.
-
-## What this means architecturally
-
-A Terminal escalation is a **bug report on the system**, not a failure of the
-escalation process. The escalation process did its job — it surfaced the gap.
-The fix is upstream:
-- A new Mac handler (`rank_items`, `text_drag`, `dialog_solve`, etc.)
-- A new BT primitive (arithmetic? JSON-list parse?)
-- A new question_type in send_to_llm
-- An extension to the knowledge.json schema
-
-UNSOLVED.md is the work-queue for those upstream fixes. Treasurer reviews it
-periodically and dispatches the right fleet member (CCM for Mac, claude-primary
-for server, codex/gemini for measurement).
+A terminal screen is a **bug report on the system**, not a failure of the
+process — the process did its job by surfacing the gap. The **Supervisor** owns
+the upstream fix. UNSOLVED.md is that work-queue.
 
 ## Anti-patterns
-
-- DO NOT give up on Tier 1, 2, or 3 manually. The system auto-promotes.
-- DO NOT touch gave_up.flag outside Terminal.
-- DO NOT silently delete the state dir. UNSOLVED.md is the audit trail.
+- DO NOT give up manually at Tier 1/2/3 — the ladder auto-climbs.
+- DO NOT touch any flag — escalation state is code-owned.
+- DO NOT delete the state dir — UNSOLVED.md is the audit trail.

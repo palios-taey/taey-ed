@@ -1,13 +1,15 @@
 """
 Escalation ladder for taey-ed consultation failures.
 
-Ladder (per Jesse 2026-06-11 canonical flow):
-    Attempts 1-2  -> Tier 1: claude-primary edits knowledge.json operational_note
+Ladder (per Jesse 2026-06-11 canonical flow; routing per §F role split 2026-06-14):
+    Attempts 1-2  -> Tier 1: OPERATOR edits the per-screen YAML (screen_types/*.yaml)
     Attempt  3    -> Tier 2: Perplexity DR via taeys-hands
     Attempt  4    -> Tier 3: Full Family fan-out (ONE round)
-    Attempt  5+   -> Terminal: gave_up.flag + UNSOLVED.md entry
+    Attempt  5+   -> Terminal: code-owned (escalation_state), defect -> Supervisor
 
-    4 attempts total before terminal.
+    4 attempts total before terminal. Attempt count + terminal are code-owned and
+    MONOTONIC (escalation_state); resume is auto on a timed window. No flag-touch
+    advances or resets the ladder.
 
 Architecture: this module owns the packet builder + tier resolver. The actual
 trigger lives in consultation_request.py — when retry_count hits a tier
@@ -694,31 +696,40 @@ def notify_body_for_tier(
     if tier == "tier1":
         return base + (
             "\n"
-            "ACTION: Edit /home/user/taey-ed/spark/platforms/{platform}/knowledge.json\n"
-            "under screen_types.<master>.subtypes.<matched_variant>.operational_notes[].\n"
-            "Rule must be generalizable. Touch diagnosis_done.flag when done.\n"
+            "ACTION (Operator, INTENDED_FLOW §F):\n"
+            "1. Read the SCREENSHOT first — it is ground truth; logs lag.\n"
+            "2. Review ALL prior attempts above (worker Tier-0 + your earlier shot). NEVER repeat\n"
+            "   an approach that already failed. Diagnose WHICH step of extract->answer->enter\n"
+            "   (or which missing input) broke.\n"
+            "3. Fix the per-screen PROGRAM — the YAML the worker actually receives:\n"
+            "   /home/user/taey-ed/spark/platforms/<platform>/screen_types/<SCREEN_TYPE>.yaml\n"
+            "   (NOT knowledge.json — its notes do not reach the worker). Keep EVERY section\n"
+            "   (recipe/template/contracts/actuation/verification) internally consistent.\n"
+            "4. Do NOT touch any flag. The system auto-resumes on its own; the worker rebuilds\n"
+            "   from your YAML on the next cycle. Editing the YAML IS your whole job here.\n"
         )
     if tier == "tier2":
         return base + (
             "\n"
             "AUTO-DISPATCHED to taeys-hands (Perplexity DR) by the server — do NOT re-dispatch.\n"
-            "ACTION: await the response_ready from taeys-hands, then SYNTHESIZE the research\n"
-            "and fold it into knowledge.json as a PROVISIONAL operational_note for this screen.\n"
-            "Touch diagnosis_done.flag only AFTER the fold — DO NOT touch gave_up.flag.\n"
+            "ACTION: await the response_ready from taeys-hands, SYNTHESIZE the research, and fold it\n"
+            "into the per-screen YAML (screen_types/<SCREEN_TYPE>.yaml) as a PROVISIONAL refinement.\n"
+            "Do NOT touch any flag — auto-resume handles the retry.\n"
         )
     if tier == "tier3":
         return base + (
             f"\n"
             f"AUTO-DISPATCHED to taeys-hands (full Family fan-out, one round) by the server — do NOT re-dispatch.\n"
             f"ACTION: await the response_ready messages, SYNTHESIZE the Family perspectives\n"
-            f"(synthesis, not a vote) and fold the approach into knowledge.json as PROVISIONAL.\n"
-            f"Touch diagnosis_done.flag only AFTER the fold — DO NOT touch gave_up.flag.\n"
-            f"If this round fails: next escalation auto-triggers terminal.\n"
+            f"(synthesis, not a vote), and fold the approach into the per-screen YAML\n"
+            f"(screen_types/<SCREEN_TYPE>.yaml) as PROVISIONAL. Do NOT touch any flag.\n"
+            f"If this round fails, the next escalation auto-triggers terminal.\n"
         )
     # terminal
     return base + (
         "\n"
-        "ACTION: Mark unsolvable. Append entry to /home/user/taey-ed/consultations/UNSOLVED.md.\n"
-        "Touch gave_up.flag. Send a summary defect notification.\n"
-        "Follow terminal_giveup.md exactly.\n"
+        "ACTION (terminal): this screen is a system bug / capability gap. It is HANDED UP to the\n"
+        "Supervisor automatically (the defect notification routes there). Append an entry to\n"
+        "/home/user/taey-ed/consultations/UNSOLVED.md. Do NOT touch any flag — terminal is\n"
+        "code-owned (escalation_state). Follow terminal_giveup.md.\n"
     )
