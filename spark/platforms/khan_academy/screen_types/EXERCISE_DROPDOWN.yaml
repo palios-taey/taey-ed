@@ -1,81 +1,117 @@
 screen_type: EXERCISE_DROPDOWN
 classify: >
   AXComboBox "Select an answer" present among the ANSWER WIDGETS (question
-  area, not chrome — "View progress"/"Share with..."/"Sort by:" popups are
-  chrome). One combobox per blank/row; inline fill-blank sentences or table
-  rows. 2-5 dropdowns is normal variation — count the visible boxes, same recipe.
-recipe:                              # The boxes are IDENTICAL by name ("Select an
-  # answer") and the name never changes (only the value does) — so name/value
-  # CANNOT distinguish them, and a whole-list element find returns 0 mid-render.
-  # Distinguish them
-  # by POSITION: read each AXComboBox's visible_bbox from the tree, sort
-  # top-to-bottom. The preceding sentence ("amplitude" / "wavelength") is the
-  # text anchor for which answer goes in which box. Open each box with click_at
-  # at its bbox CENTRE (POINTS = visible_bbox space), then click the answer in
-  # the opened menu. Per box, top-to-bottom:
-  - wait 2.0                         # settle after the transition
-  - send_to_llm:                     # answers from the SCREENSHOT (diagram +
-      question_type: solve_complex   # sentences). One answer per blank, in
-      question: >                    # top-to-bottom order (Blank 0 = top box).
-        <quote each blank's full sentence VERBATIM, top-to-bottom; read the
-         diagram/image; return the chosen value per blank>
-      store: answers
-  - per box, top-to-bottom (UNROLL; read visible_bbox=[x,y,w,h] from the tree):
-      click_at: {x: <bbox_x + bbox_w/2>, y: <bbox_y + bbox_h/2>}   # open THIS box
-      wait_for_element: {role: AXMenuItem}
-      find_and_click: {target: <this box's answer>, role: AXMenuItem, strategy: mouse_click, match_mode: exact}
+  area, not chrome — "View progress" / "Share with..." popups are chrome
+  AXPopUpButton, NOT answer AXComboBox). One AXComboBox per blank/row; inline
+  fill-blank sentences, unit/property tables, or measurement questions. 2-5
+  dropdowns is normal variation — count the visible AXComboBox, same recipe.
+  Khan renders these as Wonder Blocks SingleSelect; the chosen value replaces the
+  "Select an answer" placeholder. Options are NOT in the tree until the box opens
+  (closed box = 0 menu items; after open they surface as AXMenuItem in the app tree).
+recipe:                                # ENUMERATE-OPTIONS positional wiring (engine
+  # 738e863: GenerateRequest.options accepts discover_menu dicts -> NO 422;
+  # solve_complex extracts the exact option text for BOTH the prompt and the
+  # answer, so the LLM ALWAYS picks from the VALID enumerated set — unifies numeric
+  # measurement AND string-option (unit) dropdowns. Boxes are IDENTICAL by name
+  # ("Select an answer") — distinguish ONLY by element ref + position (find_all
+  # tree order = top-to-bottom = blank order). POSITIONAL BY CONSTRUCTION: one
+  # open+discover+answer+select PER BOX. select_dropdown_option does the actual
+  # SELECTION; NO solve_matching, NO lookup_match, NO matches keying. No page move.
+  - wait 2.0                           # settle; the screen just transitioned
+  - find_all: {role: AXComboBox, store: popups}   # tree order = top-to-bottom = blank order
+  - per visible popup i (UNROLLED from the CURRENT find_all count — a stored BT
+    whose popup count mismatches the live capture is REBUILT, never replayed):
+      # a. OPEN box i by ELEMENT (handle_click accepts element=, bt_handlers:96;
+      #    NOT find_and_click, which is target+role-based; NOT click_at). Proven
+      #    TABLE_INPUT open: click -> discover_menu -> escape.
+      click: {element: $popups.<i>.element, strategy: mouse_click}
+      wait_for_element: {role: AXMenuItem, max_wait: 3.0}
+      # b. enumerate THIS box's options into a PLAIN named var, then close
+      discover_menu: {role: AXMenuItem, store: opts_<i>}   # PLAIN store like find_all
+                                                           # (NOT store_to_current — _current is
+                                                           #  for_each-only and unset here)
+      press_escape
+      # c. answer THIS blank, choosing FROM the enumerated options
+      send_to_llm:
+        question_type: solve_complex         # screenshot auto-attached -> vision
+        question: >                          # You are answering box i = the i-th AXComboBox
+          counting TOP-TO-BOTTOM (1-indexed), i.e. its blank/row. Read THIS box's
+          context FROM THE SCREENSHOT: either the inline fill-blank sentence, OR — for
+          a property/units TABLE — the row's property label. The row label is OFTEN
+          RENDERED AS AN IMAGE / MathML (it will NOT appear as AX text), so READ IT
+          FROM THE SCREENSHOT IMAGE at this row's vertical position. Read the WHOLE
+          table top-to-bottom first so you bind row i to the correct property, then
+          pick the correct option for THIS row from the enumerated options. Return the
+          exact chosen option, nothing else.
+        options: $opts_<i>                   # discovered options (dicts OK; engine extracts text)
+        store: ans_<i>                       # $ans_<i>.answer = the exact chosen option string
+      # d. enter THIS box
+      select_dropdown_option:
+        trigger_element: $popups.<i>.element # ELEMENT REF — never by name/label
+        option: $ans_<i>.answer              # the exact option string for THIS box
+        open_strategy: mouse_click
+        open_wait: 0.7
+        verify_wait: 0.4
       then wait 1.0
+  - wait_for_element: {target: Check, role: AXButton, max_wait: 3.0}
   - find_and_click: {target: Check, role: AXButton, strategy: mouse_click, match_mode: exact, post_delay: 2.5}
-behavior_tree_template:              # EMIT THIS. Distinguish identical boxes by
-  # POSITION via click_at on each box's visible_bbox centre (read [x,y,w,h] from
-  # the tree, sort by y top->bottom; box0 = top). Then click the answer option in
-  # the opened menu. UNROLL one block per visible box (this shows 2; emit N).
-  # Fill the click_at x/y from each box's bbox, the send_to_llm question, and
-  # each box's answer into its find_and_click target.
-  type: sequence
-  name: exercise_dropdown
-  children:
-    - {type: action, action: wait, params: {seconds: 2.0}}
-    - {type: action, action: send_to_llm,
-       params: {question_type: solve_complex,
-                question: "<quote each blank's sentence VERBATIM top-to-bottom; read the wave diagram; return the chosen value for Blank 0 (top box) then Blank 1 (lower box)>"},
-       store: answers}
-    # --- BOX 0 (TOP — smallest visible_bbox y). x,y = its bbox centre. ---
-    - {type: action, action: click_at, params: {x: "<box0 bbox_x + w/2>", y: "<box0 bbox_y + h/2>"}}
-    - {type: action, action: wait_for_element, params: {role: AXMenuItem}}
-    - {type: action, action: find_and_click, params: {target: "<answer for Blank 0>", role: AXMenuItem, strategy: mouse_click, match_mode: exact}}
-    - {type: action, action: wait, params: {seconds: 1.0}}
-    # --- BOX 1 (LOWER — larger visible_bbox y). x,y = its bbox centre. ---
-    - {type: action, action: click_at, params: {x: "<box1 bbox_x + w/2>", y: "<box1 bbox_y + h/2>"}}
-    - {type: action, action: wait_for_element, params: {role: AXMenuItem}}
-    - {type: action, action: find_and_click, params: {target: "<answer for Blank 1>", role: AXMenuItem, strategy: mouse_click, match_mode: exact}}
-    - {type: action, action: wait, params: {seconds: 1.0}}
-    - {type: action, action: find_and_click,
-       params: {target: Check, role: AXButton, strategy: mouse_click, match_mode: exact, post_delay: 2.5}}
+  - store_qa: {question: <the blank(s)/label(s), verbatim>, answer: <the chosen option(s)>, question_type: solve_complex}
 contracts:
-  - the two boxes are IDENTICAL by name; distinguish ONLY by position (bbox y),
-    top-to-bottom. NEVER target by name (hits the first box twice).
-  - click_at uses the box's visible_bbox CENTRE (POINTS, same space as bbox).
-  - enumerated AXMenuItem element refs must NEVER enter send_to_llm params
-    (crashes JSON serialization Mac-side).
-  - multi-system questions (gravity AND electric, "each system"): one vision
-    call PER SYSTEM/region — a single multi-blob call cross-bleeds context
+  - the boxes are IDENTICAL by name ("Select an answer"); distinguish ONLY by
+    element ref from find_all + tree position (top-to-bottom). NEVER target by
+    name or label (name hits box 0 repeatedly).
+  - ENUMERATE BEFORE ASK: open each box (click its element), discover_menu
+    its options, close (press_escape), and pass $opts_<i> to that box's send_to_llm.
+    Options live INSIDE the closed box (not on the screenshot) — without them the
+    LLM hallucinates non-options ("cm") or rambles.
+  - TABLE vs inline: when the row label is an IMAGE/MathML (units/property tables —
+    "Identify an appropriate unit ..."), the AX text for that blank is EMPTY, so the
+    send_to_llm MUST read row i's property FROM THE SCREENSHOT by position and bind
+    the WHOLE table top-to-bottom first. Per-box "quote the blank sentence" alone =
+    empty question -> the LLM guesses the row->option mapping -> WRONG ANSWER (RCA
+    2026-06-14, the verbalized-unit table). This is a TABLE, not independent blanks.
+  - the OPEN menu exposes options as role=AXMenuItem in the app tree (closed box =
+    0 AXMenuItem). Use role=AXMenuItem for BOTH wait_for_element and discover_menu.
+  - options may be discover_menu DICTS ({text:..}) — engine 738e863 accepts them
+    (GenerateRequest.options) and extracts display text. No flattening needed.
+  - discover_menu uses a PLAIN node-level `store: opts_<i>` — NOT store_to_current
+    (which writes blackboard['_current'], bound ONLY inside for_each; unrolled has none).
+  - POSITIONAL BY CONSTRUCTION: one open+discover+answer+select PER BOX;
+    $ans_<i>.answer -> $popups.<i>.element. NO matches dict, NO lookup_match, NO
+    key indexing, NO single-blob $answers.<i>.
+  - SELECTION is select_dropdown_option ONLY (owns the strategy ladder + verify).
+    NEVER hand-roll selection via find_and_click on an AXMenuItem, and NEVER open a
+    trigger with click_at (coordinates). Opening for DISCOVERY uses an ELEMENT
+    click + wait_for_element AXMenuItem — that is the enumerate phase, not
+    selection, and is the proven pattern.
+  - WRAPPER-DUP: if find_all returns 2x the visible blanks, operate on the FIRST
+    HALF only; wrapper writes overwrite the first pass.
+  - multi-system questions ("each system"): one box's send_to_llm per system/region.
 actuation:
-  strategy: click_at the box's bbox-centre to open it, then find_and_click the
-    answer in the opened menu (role=AXMenuItem, mouse_click, exact). Settle 2.0s
-    before the first open, 1.0s between boxes.
+  strategy: per box, click(element) to OPEN -> wait_for_element AXMenuItem
+    -> discover_menu(AXMenuItem) -> press_escape, then select_dropdown_option
+    open_strategy mouse_click (Wonder Blocks SingleSelect is React-synthetic;
+    ax_press silently no-ops on Chrome).
+  settle: 2.0s before the first box; 1.0s between boxes; wait_for_element gates the
+    open menu AND Check.
+  no_scroll: dropdowns are element-based — solve in ONE pass regardless of fold.
 verification:
-  - after each box: its AXComboBox value flips from "Select an answer" to the
-    chosen value before moving to the next box
-  - same-skeleton after Check = wrong answer or nothing staged — never success
+  - per box: after select, its AXComboBox value flips from "Select an answer" to the
+    chosen value (or the menu closes — the commit signal) before the next box.
+  - same-skeleton after Check = wrong answer or nothing staged — never success.
 completion:
-  - post-answer popover with "Next question" = advance
+  - "Next question" / "Show summary" AXButton after Check = correct, advance.
 failure_modes:
-  - wrong answer -> FULL STOP, escalate (R3)
-  - menu_items_seen=[] -> fired too early; settle longer, re-open once
-  - submit renamed "Check again" after a platform reset — exact-match the name
-    in the CURRENT tree
-  - NO scroll phase: dropdowns are ELEMENT-based; a scroll-only BT changes
-    nothing and trips stuck-detection
-  - targeting by name (not position) -> both selects hit box 0; use click_at by
-    bbox position
+  - wrong answer ("Not quite" / "Try again" / red feedback) -> FULL STOP,
+    escalate (R3). Never re-pick, never resubmit.
+  - LLM answers a non-option ("cm") or rambles -> options were not enumerated for
+    that box; ensure the open->discover_menu->store ran and $opts_<i> reached send_to_llm.
+  - menu_items_seen=[] / discover_menu empty -> the box did not open or fired too
+    early; the click(open) + wait_for_element AXMenuItem must precede
+    discover_menu; settle >=2s before the first box, >=1s between boxes.
+  - targeting by name/label (not element ref + position) -> both selects hit box 0.
+  - click_at to open / find_and_click an AXMenuItem to SELECT -> HARD BAN; selection
+    is select_dropdown_option only.
+  - store_to_current in an unrolled block -> _current unset, $opts_<i> won't resolve;
+    use a plain node-level store.
+  - baked multi-line question literal -> breaks BT JSON. Recipe-only escaped string.
