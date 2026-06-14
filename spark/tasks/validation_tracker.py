@@ -194,7 +194,7 @@ def notify_claude_for_validation(
     )
     try:
         subprocess.Popen(
-            [TAEY_NOTIFY_BIN, "taey-ed", "--type", "task", "--from", "spark", msg],
+            [TAEY_NOTIFY_BIN, "taey-ed-operator", "--type", "task", "--from", "spark", msg],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )

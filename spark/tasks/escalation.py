@@ -166,7 +166,7 @@ def dispatch_body_for_tier(
     reviews_name = f"{platform}_{screen_hash[:12]}_tier{tier[-1]}"
     response_routing = (
         f"ROUTE EVERY RESPONSE BACK via:\n"
-        f"  taey-notify taey-ed --type response_ready --from taeys-hands\n"
+        f"  taey-notify taey-ed-operator --type response_ready --from taeys-hands\n"
         f"with the verbatim response saved to:\n"
         f"  /home/user/taey-ed/consultations/REVIEWS/{reviews_name}.md\n"
     )

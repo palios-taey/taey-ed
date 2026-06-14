@@ -17,9 +17,17 @@ import subprocess
 logger = logging.getLogger(__name__)
 
 TAEY_NOTIFY_BIN = "/usr/local/bin/taey-notify"
-TARGET = "taey-ed"
+# Role split (Jesse 2026-06-14, INTENDED_FLOW §F): routine/operational
+# notifications go to the OPERATOR; terminal/defect hand-ups go to the SUPERVISOR.
+OPERATOR_TARGET = "taey-ed-operator"   # owns Tiers 0-3 + mapping/YAMLs (routine)
+SUPERVISOR_TARGET = "taey-ed"          # owns system/code; receives terminal/defect hand-ups
+_SUPERVISOR_TYPES = {"defect"}         # a hand-UP (system bug / capability gap); all else = routine
 DEFAULT_TYPE = "escalation"
 FROM_ID = "spark"
+
+
+def _target_for_type(notify_type: str) -> str:
+    return SUPERVISOR_TARGET if notify_type in _SUPERVISOR_TYPES else OPERATOR_TARGET
 
 
 def notify_spark_claude(message: str, notify_type: str = DEFAULT_TYPE) -> bool:
@@ -37,11 +45,12 @@ def notify_spark_claude(message: str, notify_type: str = DEFAULT_TYPE) -> bool:
         True if the subprocess was launched. Delivery is asynchronous; the CLI
         owns Redis envelope construction (timestamp, msg_id, normalized shape).
     """
+    target = _target_for_type(notify_type)
     try:
         subprocess.Popen(
             [
                 TAEY_NOTIFY_BIN,
-                TARGET,
+                target,
                 "--type", notify_type,
                 "--from", FROM_ID,
                 message,
@@ -50,7 +59,7 @@ def notify_spark_claude(message: str, notify_type: str = DEFAULT_TYPE) -> bool:
             stderr=subprocess.DEVNULL,
         )
         logger.info(
-            f"Notified {TARGET} via taey-notify (type={notify_type}, "
+            f"Notified {target} via taey-notify (type={notify_type}, "
             f"len={len(message)}): {message[:60]!r}"
         )
         return True
