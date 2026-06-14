@@ -54,7 +54,19 @@ DEFAULT_MAX_BUDGET_USD = 2.50  # API-equivalent ceiling; Max subscription covers
 
 class ClaudeCallError(RuntimeError):
     """Raised on any failure: timeout, non-zero exit, malformed JSON wrapper,
-    `is_error` flag, empty result text."""
+    `is_error` flag, empty result text. `subtype` carries the CLI result subtype
+    (e.g. error_during_execution, error_max_budget_usd) when known, so callers
+    can distinguish transient infra errors (retry) from real caps (don't)."""
+
+    def __init__(self, *args, subtype: Optional[str] = None):
+        super().__init__(*args)
+        self.subtype = subtype
+
+
+# CLI result subtypes that are TRANSIENT worker/API errors worth a bounded retry
+# (vs error_max_budget_usd, a real cap — never retry). error_during_execution is
+# the agent loop erroring mid-run, frequently a transient API blip.
+_TRANSIENT_SUBTYPES = {"error_during_execution"}
 
 
 def _build_user_message(user_message: str, screenshot_path: Optional[str]) -> str:
@@ -136,19 +148,36 @@ def call_claude_cli(
         screenshot_path = temp_path
 
     try:
-        return _do_call(
-            system_prompt=system_prompt,
-            user_message=user_message,
-            screenshot_path=screenshot_path,
-            model=model,
-            timeout_s=timeout_s,
-            max_budget_usd=max_budget_usd,
-            require_screenshot_read=require_screenshot_read,
-            permission_mode=permission_mode,
-            tools=tools,
-            add_dirs=add_dirs,
-            working_dir=working_dir,
-        )
+        # Bounded retry for TRANSIENT worker/API errors (error_during_execution).
+        # A transient blip should not consume an escalation tier / paid DR
+        # (operator defect 2026-06-14). Real caps (error_max_budget_usd) and all
+        # other failures raise immediately — only _TRANSIENT_SUBTYPES retry.
+        _max_attempts = 3
+        for _attempt in range(1, _max_attempts + 1):
+            try:
+                return _do_call(
+                    system_prompt=system_prompt,
+                    user_message=user_message,
+                    screenshot_path=screenshot_path,
+                    model=model,
+                    timeout_s=timeout_s,
+                    max_budget_usd=max_budget_usd,
+                    require_screenshot_read=require_screenshot_read,
+                    permission_mode=permission_mode,
+                    tools=tools,
+                    add_dirs=add_dirs,
+                    working_dir=working_dir,
+                )
+            except ClaudeCallError as e:
+                if getattr(e, "subtype", None) in _TRANSIENT_SUBTYPES and _attempt < _max_attempts:
+                    _backoff = 2.0 * _attempt
+                    logger.warning(
+                        "call_claude_cli transient %s (attempt %d/%d) — retrying in %.1fs",
+                        e.subtype, _attempt, _max_attempts, _backoff,
+                    )
+                    time.sleep(_backoff)
+                    continue
+                raise
     finally:
         if temp_path:
             try:
@@ -253,9 +282,33 @@ def _do_call(
         ) from e
 
     if outer.get("is_error"):
+        _subtype = outer.get("subtype")
+        # CAPTURE for diagnosis (operator defect 2026-06-14: error_during_execution
+        # left nothing diagnosable). Persist the FULL worker result + stderr next
+        # to the handoff so the failure is inspectable, and log richly.
+        try:
+            if working_dir:
+                (Path(working_dir) / "worker_error.json").write_text(
+                    json.dumps(
+                        {"outer": outer, "stderr": result.stderr, "elapsed_s": elapsed},
+                        indent=2, ensure_ascii=False,
+                    ),
+                    encoding="utf-8",
+                )
+        except Exception:
+            logger.exception("failed to persist worker_error.json")
+        logger.error(
+            "call_claude_cli is_error: subtype=%s session=%s num_turns=%s "
+            "result=%r stderr=%r full_outer=%s",
+            _subtype, outer.get("session_id"), outer.get("num_turns"),
+            (outer.get("result") or "")[:500], (result.stderr or "")[:500],
+            json.dumps(outer)[:1500],
+        )
         raise ClaudeCallError(
-            f"claude reported error: subtype={outer.get('subtype')} "
-            f"result={(outer.get('result') or '')[:300]}"
+            f"claude reported error: subtype={_subtype} "
+            f"result={(outer.get('result') or '')[:300]} "
+            f"stderr={(result.stderr or '')[:200]}",
+            subtype=_subtype,
         )
 
     text = outer.get("result", "")
