@@ -274,6 +274,12 @@ def _render_universal_block() -> str:
         "Platform-agnostic operating law. Follow these rules together with the selected screen program.",
         "",
     ]
+    cats = payload.get("screen_categories") or {}
+    if cats.get("categories"):
+        lines.append("SCREEN CATEGORIES (the 6 master types): " + ", ".join(cats["categories"]))
+        if cats.get("rule"):
+            lines.append(str(cats["rule"]).strip())
+        lines.append("")
     for idx, note in enumerate(payload.get("operational_notes") or [], 1):
         rule = str(note.get("rule") or "").strip()
         anti_pattern = str(note.get("anti_pattern") or "").strip()

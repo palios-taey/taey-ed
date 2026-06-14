@@ -1,6 +1,10 @@
 {
-  "schema_version": "1.1",
+  "schema_version": "1.2",
   "description": "Universal operational_notes that apply to ALL platforms. Merged into every platform's knowledge['global']['operational_notes'] at load time by spark.tasks.knowledge_loader.load_knowledge. PLATFORM-AGNOSTIC ONLY; recipe-grade detail lives in each platform's screen_types/*.yaml. Rendered size budget: <=5K.",
+  "screen_categories": {
+    "categories": ["NAVIGATION", "VIDEO", "ARTICLE", "EXERCISE", "TRANSITION", "UNKNOWN"],
+    "rule": "There are exactly 6 universal screen CATEGORIES (master types) above. Every screen is first classified to one category, then given a SUBTYPE name in the form CATEGORY__SUBTYPE (e.g. NAVIGATION__COURSE_DASHBOARD, VIDEO__PLAYER, EXERCISE__DROPDOWN). A category is the LEVEL ABOVE screens — it is NEVER itself a screen name. NEVER classify, name, store, or map a screen as a bare category (no screen is just 'EXERCISE' or 'VIDEO'); it must always be a CATEGORY__SUBTYPE. UNKNOWN is the only valid bare value, used when no category fits and the screen needs mapping."
+  },
   "operational_notes": [
     {
       "discovered_at": "2026-05-19T17:30:00Z",
