@@ -58,6 +58,28 @@ def bump(platform: str, screen_hash: str) -> int:
     return s["attempt"]
 
 
+def note_attempt(platform: str, screen_hash: str, consult_id: str) -> int:
+    """Advance the ladder ONLY on a genuinely distinct failed attempt.
+
+    Jesse/operator 2026-06-14: the ladder must climb on real attempts, not on a
+    blind timer. The auto-resume timer was bumping the tier every few minutes —
+    so a screen being actively fixed got steamrolled tier1->2->3->terminal while
+    the operator was correctly holding for an in-flight DR. The attempt counter
+    now advances here, once per DISTINCT failed consult id (a real worker
+    attempt that failed). Re-reading the same failed consult does NOT climb; the
+    timer does NOT climb. Returns the current attempt count.
+    """
+    _DIR.mkdir(parents=True, exist_ok=True)
+    s = get(platform, screen_hash)
+    if consult_id and s.get("last_failed_consult") == consult_id:
+        return int(s.get("attempt", 0))   # already counted this attempt
+    s["attempt"] = int(s.get("attempt", 0)) + 1
+    s["last_failed_consult"] = consult_id or ""
+    s["updated_at"] = time.time()
+    _path(platform, screen_hash).write_text(json.dumps(s))
+    return s["attempt"]
+
+
 def set_terminal(platform: str, screen_hash: str) -> None:
     """Mark terminal — sticky until clear()."""
     _DIR.mkdir(parents=True, exist_ok=True)

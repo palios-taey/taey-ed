@@ -138,9 +138,13 @@ def _escalate_to_claude_diagnosing(
             build_question(question_text),
         ])
 
-    # Attempt count is code-owned + MONOTONIC (escalation_state), not the
-    # touchable /tmp retries.txt. Cannot be reset to re-arm Tier-1.
-    retries = escalation_state.attempt(platform, _screen_hash)
+    # Attempt count is code-owned + MONOTONIC (escalation_state). It advances on
+    # a genuinely DISTINCT failed attempt (this consult id), NOT on the
+    # auto-resume timer — so a screen being actively fixed is never steamrolled
+    # tier1->terminal while the operator holds for research (operator defect
+    # 2026-06-14). note_attempt dedupes repeated polls of the same failed consult.
+    # retry_count is 0-based for tier_for_attempt (0,1 -> tier1 = the 2 shots).
+    retries = max(0, escalation_state.note_attempt(platform, _screen_hash, consultation_id or "") - 1)
 
     # NOTE (Jesse 2026-06-14): the old diagnosis_done.flag RESUME path was removed.
     # Resume is now CODE-AUTOMATIC (timed per-tier window) in the pre-pipeline
@@ -214,7 +218,11 @@ def _escalate_to_claude_diagnosing(
         # build); tier2/tier3 = longer (Perplexity / Family run async for mins).
         # Written BEFORE diagnosing.flag so a poll never sees diagnosing without
         # a resume_at (which would auto-resume prematurely).
-        _window = {"tier1": 60, "tier2": 300, "tier3": 420}.get(tier, 120)
+        # Re-trigger window = a dead-man's-switch for a non-responsive operator,
+        # NOT a ladder-climber (the timer no longer advances the tier). Generous
+        # so the operator + async research (Perplexity DR / Family take minutes,
+        # plus synthesis + fold) finish before a fresh attempt is forced.
+        _window = {"tier1": 180, "tier2": 1200, "tier3": 1200}.get(tier, 300)
         try:
             (diag_dir / "resume_at").write_text(str(time.time() + _window))
         except Exception:
@@ -1000,10 +1008,12 @@ def next_action(request: NextActionRequest):
                     # No resume_at = a pre-change stuck dir → resume now.
                     if (not _rp.exists()) or (_resume_at and time.time() >= _resume_at):
                         try:
-                            from spark.tasks import escalation_state as _es
                             _parts = _state_dir.name.rsplit("_", 1)
-                            if len(_parts) == 2:
-                                _es.bump(_parts[0], _parts[1])  # advance the ladder
+                            # The timer only RE-TRIGGERS a fresh attempt — it does
+                            # NOT advance the ladder (operator defect 2026-06-14:
+                            # the timer-bump steamrolled actively-fixed screens to
+                            # terminal). The ladder climbs only on a genuinely
+                            # distinct failed attempt (note_attempt in route_failure).
                             (_state_dir / "diagnosing.flag").unlink(missing_ok=True)
                             _rp.unlink(missing_ok=True)
                             # Abandon any open consult so the re-attempt builds fresh.
