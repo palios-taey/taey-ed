@@ -142,53 +142,10 @@ def _escalate_to_claude_diagnosing(
     # touchable /tmp retries.txt. Cannot be reset to re-arm Tier-1.
     retries = escalation_state.attempt(platform, _screen_hash)
 
-    # Claude finished diagnosing (knowledge.json updated). Clear flags + abandon
-    # the stale consult so Mac's next /next_action runs the FRESH pipeline,
-    # which spawns a new worker call using the updated knowledge.json.
-    if done.exists():
-        retries = escalation_state.bump(platform, _screen_hash)
-        retry_p.write_text(str(retries))   # mirror for visibility only
-        done.unlink()
-        diagnosing.unlink(missing_ok=True)
-        # Abandon the stale consult so its metadata.status flips off
-        # "complete" — Mac's next request will find no active consult
-        # and trigger fresh pipeline.
-        if consultation_id:
-            try:
-                _stale_path = Path("/tmp/taey-ed-consult") / consultation_id
-                _meta_p = _stale_path / "metadata.json"
-                if _meta_p.exists():
-                    _m = json.loads(_meta_p.read_text())
-                    _m["status"] = "abandoned"
-                    _m["abandoned_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-                    _m["abandoned_reason"] = "claude_diagnosis_complete_retry"
-                    _meta_p.write_text(json.dumps(_m, indent=2))
-                # Remove response.json so Mac status poll won't see it as complete
-                _resp = _stale_path / "response.json"
-                if _resp.exists():
-                    _resp.unlink()
-            except Exception:
-                logger.exception("failed to abandon stale consult on diagnosis_done")
-        # A completed diagnosis means knowledge changed — stale variant
-        # failure counts predate the fix and must not preempt the retry
-        # (observed 14:48: a healthy phase-1 scroll cycle got loop-guarded
-        # by attempt-1's leftover count and climbed to a spurious Tier-2).
-        _clear_variant_failures(platform)
-        logger.info(
-            f"Claude diagnosis complete for {platform}_{_screen_hash[:16]} — "
-            f"abandoned stale consult {consultation_id}, retry cycle {retries}, "
-            f"variant failure counters cleared"
-        )
-        return _with_chat({
-            "directive": "wait",
-            "directive_id": _make_directive_id(),
-            "seconds": 3.0,
-            "reason": "claude_diagnosis_complete",
-            "message": "Claude diagnosis complete — retrying with updated knowledge.",
-            "consultation_id": "",
-        }, platform, [
-            build_status("Claude diagnosis complete — retrying with updated knowledge"),
-        ])
+    # NOTE (Jesse 2026-06-14): the old diagnosis_done.flag RESUME path was removed.
+    # Resume is now CODE-AUTOMATIC (timed per-tier window) in the pre-pipeline
+    # gate — I am not allowed to touch the flag to re-arm/resume the cycle. The
+    # tier window + abandon-stale-consult on auto-resume live there.
 
     # Tier-aware escalation per Jesse 2026-05-19 ladder
     # (2 me → 1 Perplexity → 1 Family → terminal). The notify body and packet
@@ -251,6 +208,17 @@ def _escalate_to_claude_diagnosing(
     # Non-terminal: build rich-context packet + tier-aware notify (once per
     # stuck-screen cycle until done/gave_up).
     if not diagnosing.exists():
+        # Code-automatic resume window for this tier (Jesse 2026-06-14): the
+        # pre-pipeline gate auto-resumes + re-attempts once this elapses — no
+        # flag-touch from me. tier1 = quick (definition edit is read fresh next
+        # build); tier2/tier3 = longer (Perplexity / Family run async for mins).
+        # Written BEFORE diagnosing.flag so a poll never sees diagnosing without
+        # a resume_at (which would auto-resume prematurely).
+        _window = {"tier1": 60, "tier2": 300, "tier3": 420}.get(tier, 120)
+        try:
+            (diag_dir / "resume_at").write_text(str(time.time() + _window))
+        except Exception:
+            logger.exception("failed to write resume_at")
         diagnosing.touch()
         consult_path = Path("/tmp/taey-ed-consult") / consultation_id if consultation_id else diag_dir
         # Compose Mac BT execution log + failed BT into an attempts.jsonl-like
@@ -999,8 +967,48 @@ def next_action(request: NextActionRequest):
                 if not _state_dir.is_dir():
                     continue
                 if (_state_dir / "diagnosing.flag").exists() \
-                        and not (_state_dir / "diagnosis_done.flag").exists() \
                         and not (_state_dir / "gave_up.flag").exists():
+                    # CODE-AUTOMATIC RESUME (Jesse 2026-06-14): when the tier
+                    # window has elapsed, auto-advance the ladder and let the
+                    # screen re-attempt — NOT via any flag I touch. This is the
+                    # only resume path; clears happen only here (timer) /
+                    # advance / user-Stop.
+                    _resume_at = 0.0
+                    _rp = _state_dir / "resume_at"
+                    if _rp.exists():
+                        try:
+                            _resume_at = float(_rp.read_text().strip())
+                        except Exception:
+                            _resume_at = 0.0
+                    # No resume_at = a pre-change stuck dir → resume now.
+                    if (not _rp.exists()) or (_resume_at and time.time() >= _resume_at):
+                        try:
+                            from spark.tasks import escalation_state as _es
+                            _parts = _state_dir.name.rsplit("_", 1)
+                            if len(_parts) == 2:
+                                _es.bump(_parts[0], _parts[1])  # advance the ladder
+                            (_state_dir / "diagnosing.flag").unlink(missing_ok=True)
+                            _rp.unlink(missing_ok=True)
+                            # Abandon any open consult so the re-attempt builds fresh.
+                            _croot = Path("/tmp/taey-ed-consult")
+                            if _croot.exists():
+                                for _cd in _croot.iterdir():
+                                    _cm = _cd / "metadata.json"
+                                    if not _cm.exists():
+                                        continue
+                                    try:
+                                        _md = json.loads(_cm.read_text())
+                                        if _md.get("screen_hash", "")[:16] == _parts[1] and _md.get("status") not in ("abandoned", "complete"):
+                                            _md["status"] = "abandoned"
+                                            _md["abandoned_reason"] = "auto_resume_tier_window"
+                                            _cm.write_text(json.dumps(_md))
+                                            (_cd / "response.json").unlink(missing_ok=True)
+                                    except Exception:
+                                        pass
+                            logger.info(f"PRE-PIPELINE: auto-resumed {_state_dir.name} (tier window elapsed) — ladder advanced")
+                        except Exception:
+                            logger.exception("auto-resume failed (non-fatal)")
+                        continue   # do not count as waiting — let it re-attempt
                     _waiting_reasons.append(f"diagnosing:{_state_dir.name}")
                     if len(_waiting_reasons) >= 4:
                         break
