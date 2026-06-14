@@ -539,10 +539,27 @@ def _iter_nodes(node: dict):
             yield from _iter_nodes(child)
 
 
+def _strip_yaml_comments(text: str) -> str:
+    """Remove YAML inline/full-line comments (# at line start or after
+    whitespace) so prose in COMMENTS never contributes a 'required' action.
+
+    Operator defect 2026-06-14: _recipe_actions scanned the whole recipe text for
+    action tokens and couldn't tell prohibition from prescription — 'scroll'
+    mentioned only in a 'NO scroll phase' comment became a REQUIRED signature
+    action the worker correctly never emitted. Same class as the find_all-in-a-
+    comment footgun. Comments are guidance, never requirements."""
+    out = []
+    for line in text.splitlines():
+        m = re.search(r"(^|\s)#", line)
+        out.append(line[: m.start()] if m else line)
+    return "\n".join(out)
+
+
 def _recipe_actions(recipe_text: str) -> set[str]:
+    scanned = _strip_yaml_comments(recipe_text)
     found = set()
     for action in KNOWN_ACTIONS:
-        if re.search(rf"(?<![A-Za-z_]){re.escape(action)}(?![A-Za-z_])", recipe_text):
+        if re.search(rf"(?<![A-Za-z_]){re.escape(action)}(?![A-Za-z_])", scanned):
             found.add(action)
     return found
 
