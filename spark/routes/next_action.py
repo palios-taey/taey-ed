@@ -319,7 +319,28 @@ def _escalate_to_claude_diagnosing(
                 bt_debug_tail=bt_debug_tail,
             )
             if dispatch_body:
-                notify_fleet("taeys-hands", dispatch_body, notify_type="task")
+                # DEDUP (operator defect 2026-06-14): the auto-resume timer re-enters
+                # this block each cycle, re-firing the SAME {hash,tier} Chat dispatch
+                # even when the Family/Perplexity round already ran — flooding
+                # taeys-hands with no-op re-dispatches. Dispatch ONCE per {hash,tier}:
+                # skip if a REVIEW already landed OR a dispatch marker exists. The
+                # marker lives in diag_dir, which is cleared on advance/user-Stop —
+                # so a NEW screen_hash or an explicit re-open dispatches fresh.
+                _review = Path(
+                    f"/home/user/taey-ed/consultations/REVIEWS/{platform}_{_screen_hash[:12]}_{tier}.md"
+                )
+                _marker = diag_dir / f"chat_dispatched_{tier}.flag"
+                if _review.exists() or _marker.exists():
+                    logger.info(
+                        f"taeys-hands dispatch SKIPPED for {_screen_hash[:16]} {tier} "
+                        f"(already dispatched/reviewed — no-op re-fire dedup)"
+                    )
+                else:
+                    notify_fleet("taeys-hands", dispatch_body, notify_type="task")
+                    try:
+                        _marker.write_text(str(time.time()))
+                    except Exception:
+                        logger.exception("failed to write chat-dispatch marker")
         except Exception:
             logger.exception("taeys-hands auto-dispatch failed in escalate helper")
         logger.warning(
