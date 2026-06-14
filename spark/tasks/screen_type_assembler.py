@@ -389,12 +389,26 @@ def assemble_worker_prompt(
     screen_type: str,
     kb_chunks: Optional[list[dict]] = None,
 ) -> tuple[str, dict]:
+    # MINIMAL WORKER CONTEXT (Jesse 2026-06-14): the worker builds a BT for an
+    # ALREADY-MAPPED screen — it gets ONLY what it needs to complete THAT screen:
+    # the screen PROGRAM (its YAML, which carries all screen-specific rules in
+    # recipe/contracts/actuation/failure_modes) + the tree + screenshot + KB. The
+    # universal-rules block + the 6 screen-categories are CLASSIFICATION / new-screen
+    # / operator context (the operator writes the YAML with universal law in mind;
+    # the classifier keeps category guidance via the registry + UNKNOWN guide) —
+    # NOT every worker BT-build. Injecting them here was bloat/confusion.
     artifact = _load_screen_artifact(platform, screen_type)
     sections = [
         f"=== WORKER CONTEXT ===\nconsultation_id: {consultation_id}\nplatform: {platform}\nscreen_type_hint: {screen_type}",
-        _render_universal_block(),
-        f"=== SCREEN PROGRAM ===\nsource: {artifact['path']}\nkind: {artifact['kind']}\n\n{artifact['content'].rstrip()}",
     ]
+    # Universal rules + the 6 screen-categories belong to the NEW-SCREEN /
+    # classification case only (artifact kind == unknown_guide). A MAPPED screen
+    # (a real recipe YAML) gets ONLY its program — no universal block.
+    if artifact.get("kind") != "yaml":
+        sections.append(_render_universal_block())
+    sections.append(
+        f"=== SCREEN PROGRAM ===\nsource: {artifact['path']}\nkind: {artifact['kind']}\n\n{artifact['content'].rstrip()}"
+    )
     # NOTE (2026-06-13): the concrete behavior_tree_template now lives in the
     # per-screen recipe YAML and supersedes the verbose knowledge-note dump that
     # used to be injected here. Injecting both blew the 25K prompt cap
