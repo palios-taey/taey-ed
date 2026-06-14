@@ -67,7 +67,12 @@ class GenerateRequest(BaseModel):
     """Answer generation via Gemini."""
     question: str
     question_type: str
-    options: Optional[List[str]] = None
+    # str OR dict: discover_menu emits option dicts ({"text": ...}); the engine
+    # extracts display text via _option_text. Accepting dicts lets per-box
+    # solve_complex take ENUMERATED options directly — string-option dropdowns hide
+    # their options inside the closed box, so the LLM must be GIVEN them or it
+    # free-associates/rambles (operator live 2026-06-14). No 422 on dict options.
+    options: Optional[List[Union[str, Dict]]] = None
     context: Optional[List[str]] = None
     image_descriptions: Optional[List[str]] = None
     has_text_field: bool = False

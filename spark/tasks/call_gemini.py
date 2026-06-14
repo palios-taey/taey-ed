@@ -178,8 +178,12 @@ async def _solve_complex_with_gemini(
     try:
         letters = "ABCDEFGHIJ"
         if options:
+            # _option_text handles discover_menu dicts ({"text": ...}) AND plain
+            # strings, so per-box solve_complex can take ENUMERATED options
+            # directly (operator 2026-06-14: string-option dropdowns need the
+            # option set in front of the LLM or it rambles/free-associates).
             options_block = "\n".join(
-                f"{letters[i]}) {opt}" for i, opt in enumerate(options) if i < len(letters)
+                f"{letters[i]}) {_option_text(opt)}" for i, opt in enumerate(options) if i < len(letters)
             )
         else:
             options_block = "(No options provided - determine from screenshot)"
@@ -205,7 +209,9 @@ async def _solve_complex_with_gemini(
         # No substring-match fallback — if letter parsing fails on a letter-format
         # request, fail explicitly rather than guessing.
         if options:
-            letter_to_opt = {letters[i]: opt for i, opt in enumerate(options) if i < len(letters)}
+            # Map back to the EXACT option text (via _option_text) so the returned
+            # answer matches the dropdown menu item for select_dropdown_option.
+            letter_to_opt = {letters[i]: _option_text(opt) for i, opt in enumerate(options) if i < len(letters)}
             selected = []
             for part in raw_answer.replace(" ", "").split(","):
                 part = part.strip().upper()
