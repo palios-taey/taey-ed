@@ -21,6 +21,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import ClientDisconnect
 
 # Configure logging with rotation (5MB max, 3 backups = 20MB max)
 _LOG_DIR = os.path.expanduser("~/taey-ed/logs")
@@ -253,6 +254,11 @@ async def _dump_raw_failure_bodies(request: Request, call_next):
             async def receive():
                 return {"type": "http.request", "body": body}
             request._receive = receive
+        except ClientDisconnect:
+            # Expected: the Mac aborted mid-request on a flaky tunnel (the SSL /
+            # 'context canceled' class). Not an error — log a clean one-liner, no
+            # traceback. The request is already dead; nothing to dump or restore.
+            logger.info("raw-dump: client disconnected before body received (tunnel flake) — skipped")
         except Exception:
             logger.exception("raw-dump middleware failed (non-fatal)")
     return await call_next(request)
