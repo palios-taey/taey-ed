@@ -1198,10 +1198,8 @@ def _next_action_impl(request: NextActionRequest):
                     f"Step 1: worker_fallback for {consultation_id} — "
                     f"routing through claude_diagnosing helper. reason={_wf_reason}"
                 )
-                # Route through the single canonical helper. It checks done.flag
-                # (abandons stale consult, signals retry), gave_up.flag (user
-                # fallback), or notifies and returns wait if neither.
-                return _escalate_to_claude_diagnosing(
+                # Route through the single canonical helper (escalate/notify).
+                _esc_result = _escalate_to_claude_diagnosing(
                     platform=platform,
                     tree=tree,
                     consultation_id=consultation_id,
@@ -1210,6 +1208,29 @@ def _next_action_impl(request: NextActionRequest):
                     bt_debug_tail=(lr.bt_debug_tail or "") if lr else "",
                     failed_bt=lr.failed_bt if lr and lr.failed_bt else None,
                 )
+                # INVALIDATE the failed consult so the NEXT cycle mints a FRESH
+                # consult from the CURRENT YAML (operator defect 2026-06-14: a
+                # cached _worker_fallback was re-served every cycle, so YAML fixes
+                # never reached a new prompt — and it burned a paid DR on the
+                # phantom). The escalation already fired above; this consult's job
+                # is done. Abandon it (+ remove its cached response) so Step 1's
+                # next read finds it abandoned -> re-matches -> fresh consult.
+                try:
+                    _cp = Path("/tmp/taey-ed-consult") / consultation_id
+                    _mp = _cp / "metadata.json"
+                    if _mp.exists():
+                        _m = json.loads(_mp.read_text())
+                        _m["status"] = "abandoned"
+                        _m["abandoned_reason"] = "worker_fallback_invalidate_for_fresh_yaml"
+                        _mp.write_text(json.dumps(_m))
+                    (_cp / "response.json").unlink(missing_ok=True)
+                    logger.info(
+                        f"Step 1: invalidated failed consult {consultation_id} "
+                        f"— next cycle mints fresh from current YAML"
+                    )
+                except Exception:
+                    logger.exception("failed to invalidate worker_fallback consult")
+                return _esc_result
             tree_def = consult_status.get("tree")
             if tree_def:
                 # Bug #8: Get skeleton_hash from CURRENT tree, not stale consultation
