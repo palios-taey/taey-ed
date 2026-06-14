@@ -199,7 +199,16 @@ def _normalize_bt_nodes(node) -> None:
         ):
             node["action"] = node_type
             node["type"] = "action"
+        # UNWRAP a spurious `args` nesting: worker variance sometimes wraps every
+        # node's params one extra level — params:{args:{element:..,strategy:..}} —
+        # and the Mac handlers read params.get('element') DIRECTLY, so they get
+        # None ('click: element not found'). Same class as the flat-vs-nested
+        # variance (633b6b3). Hoist while params is solely {args:<dict>}. (Live RCA
+        # 2026-06-14, consult ...2c041273: ALL nodes args-wrapped; nothing flattened it.)
         params = node.get("params")
+        while isinstance(params, dict) and set(params.keys()) == {"args"} and isinstance(params["args"], dict):
+            node["params"] = params["args"]
+            params = node["params"]
         if isinstance(params, dict):
             for key in ("store", "store_to_current"):
                 if key in params and key not in node:
