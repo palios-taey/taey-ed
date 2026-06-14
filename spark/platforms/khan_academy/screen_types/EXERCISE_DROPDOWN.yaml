@@ -3,10 +3,11 @@ classify: >
   AXComboBox "Select an answer" present among the ANSWER WIDGETS (question
   area, not chrome — "View progress"/"Share with..."/"Sort by:" popups are
   chrome). One combobox per blank/row; inline fill-blank sentences or table
-  rows. 2-5 dropdowns is normal variation — count from find_all, same recipe.
+  rows. 2-5 dropdowns is normal variation — count the visible boxes, same recipe.
 recipe:                              # The boxes are IDENTICAL by name ("Select an
   # answer") and the name never changes (only the value does) — so name/value
-  # CANNOT distinguish them, and find_all returns 0 mid-render. Distinguish them
+  # CANNOT distinguish them, and a whole-list element find returns 0 mid-render.
+  # Distinguish them
   # by POSITION: read each AXComboBox's visible_bbox from the tree, sort
   # top-to-bottom. The preceding sentence ("amplitude" / "wavelength") is the
   # text anchor for which answer goes in which box. Open each box with click_at
@@ -55,7 +56,7 @@ contracts:
   - the two boxes are IDENTICAL by name; distinguish ONLY by position (bbox y),
     top-to-bottom. NEVER target by name (hits the first box twice).
   - click_at uses the box's visible_bbox CENTRE (POINTS, same space as bbox).
-  - find_all(AXMenuItem) element refs must NEVER enter send_to_llm params
+  - enumerated AXMenuItem element refs must NEVER enter send_to_llm params
     (crashes JSON serialization Mac-side).
   - multi-system questions (gravity AND electric, "each system"): one vision
     call PER SYSTEM/region — a single multi-blob call cross-bleeds context
