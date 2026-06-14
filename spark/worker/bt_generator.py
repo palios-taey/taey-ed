@@ -156,6 +156,16 @@ def _strip_code_fences(text: str) -> str:
 # Everything else with a `type` is an action shorthand ({type: find_all} etc.).
 _STRUCTURAL_NODE_TYPES = {"sequence", "selector", "action", "for_each", "conditional", "fallback"}
 
+# Keys that live at the NODE level and must NEVER be moved into params: node
+# identity/label, hoisted store keys, subtree pointers, and the for_each/
+# conditional structural keys (items/variable/condition). Everything else on an
+# ACTION node is an action parameter and belongs in params:{}.
+_NODE_LEVEL_KEYS = {
+    "type", "action", "name", "store", "store_to_current",
+    "children", "do", "then", "else",
+    "items", "variable", "condition", "params",
+}
+
 
 def _normalize_bt_nodes(node) -> None:
     """Hoist node-level keys the Mac BT engine reads from the NODE, not params.
@@ -194,6 +204,27 @@ def _normalize_bt_nodes(node) -> None:
             for key in ("store", "store_to_current"):
                 if key in params and key not in node:
                     node[key] = params.pop(key)
+        # NEST flat action params INTO params:{} — the inverse of the store-hoist.
+        # Live RCA 2026-06-14 (operator): the RECURRING 422 was worker VARIANCE,
+        # not the YAML. The worker non-deterministically emits action params FLAT
+        # at node level ({type:action, action:send_to_llm, question_type:..,
+        # question:..}) instead of nested. The Mac reads node['params'] -> {} ->
+        # send_to_llm defaults to solve_choice + empty question -> generate_answer
+        # !success -> HTTP 422 (never reaches the vision call). Nest deterministically
+        # so EVERY build is valid regardless of where the worker put the keys.
+        # ACTION nodes only; structural keys (for_each items/variable, conditional
+        # condition, subtree pointers, identity) stay at node level.
+        if node.get("action"):
+            flat = {k: v for k, v in list(node.items()) if k not in _NODE_LEVEL_KEYS}
+            if flat:
+                p = node.get("params")
+                if not isinstance(p, dict):
+                    p = {}
+                    node["params"] = p
+                for k, v in flat.items():
+                    if k not in p:          # never override an explicit params value
+                        p[k] = v
+                    node.pop(k, None)        # remove the flat key from node level
         for child in node.get("children") or []:
             _normalize_bt_nodes(child)
         for nested_key in ("do", "then", "else"):
