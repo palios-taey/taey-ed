@@ -29,8 +29,12 @@ import logging
 
 logger = logging.getLogger("taey-ed")
 
-# Coordinate / id fields the LLM never uses (Mac executes by name+role).
-_DROP_FIELDS = {"element_id", "position", "size", "visible_bbox"}
+# Id / redundant-coordinate fields the LLM never uses. visible_bbox is KEPT:
+# the dropdown solver distinguishes identical "Select an answer" comboboxes by
+# POSITION (bbox-center click_at) + preceding label — dropping it (my 2026-06-13
+# mistake) forced by-name targeting, which can't tell the boxes apart. position
+# and size are redundant with visible_bbox.
+_DROP_FIELDS = {"element_id", "position", "size"}
 
 # Fields whose non-empty presence means a node carries content worth keeping.
 _CONTENT_FIELDS = ("name", "title", "description", "value")

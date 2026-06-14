@@ -4,82 +4,51 @@ classify: >
   area, not chrome — "View progress"/"Share with..."/"Sort by:" popups are
   chrome). One combobox per blank/row; inline fill-blank sentences or table
   rows. 2-5 dropdowns is normal variation — count from find_all, same recipe.
-recipe:                              # THE type-BT — HARD BAN (vc=3): solved by
-  # select_dropdown_option per row + Check, NOTHING ELSE. If you are designing
-  # any new structure for a dropdown question, you are wrong — adapt this.
-  - wait 2.0                         # menus render lazily after transitions
-  - find_all: {role: AXComboBox, store: popups}
-  # WRAPPER DEDUPE: Khan double-wraps — if find_all returns 2x the visible
-  # blanks, operate on the FIRST HALF only, top-to-bottom (pairs are
-  # sequential by index, NOT interleaved).
-  - MENU DISCOVERY phase, per visible popup:    # enumerate BEFORE asking (vc=17)
-      click popup -> wait_for_element AXMenuItem -> discover_menu -> press_escape
-  - send_to_llm:
-      question_type: solve_matching
-      question: >                    # row context comes from the SCREENSHOT,
-        <full sentences / row labels QUOTED VERBATIM, each blank indexed:
-        "Blank 0 (top-left) fills: '<fragment>'..." — the item.label heuristic
-        returns column headers / sentence garbage, NEVER rely on it>
-      options: <discovered menu items per popup>
-      store: matches
-  - for each visible popup i (UNROLLED at build/replay time from the CURRENT
-    capture's find_all count — if a stored BT's popup count mismatches the
-    current find_all, REBUILD from this template, never replay blind):
-      lookup_match: {key: <popup i's key>, store: chosen_i}   # key = what
-      # parse_matching_response used — popup_desc/label text, or index if the
-      # question explicitly indexed the blanks
-      select_dropdown_option:        # opens, verifies, commits — the ONLY way
-        trigger_element: $popups.<i>.element
-        option: $chosen_i            # BARE option text — handler normalizes
-      then wait 1.0                  # the " not selected" display suffix
-  - wait 1.5                         # Check enable race
+recipe:                              # The boxes are IDENTICAL by name ("Select an
+  # answer") and the name never changes (only the value does) — so name/value
+  # CANNOT distinguish them, and find_all returns 0 mid-render. Distinguish them
+  # by POSITION: read each AXComboBox's visible_bbox from the tree, sort
+  # top-to-bottom. The preceding sentence ("amplitude" / "wavelength") is the
+  # text anchor for which answer goes in which box. Open each box with click_at
+  # at its bbox CENTRE (POINTS = visible_bbox space), then click the answer in
+  # the opened menu. Per box, top-to-bottom:
+  - wait 2.0                         # settle after the transition
+  - send_to_llm:                     # answers from the SCREENSHOT (diagram +
+      question_type: solve_complex   # sentences). One answer per blank, in
+      question: >                    # top-to-bottom order (Blank 0 = top box).
+        <quote each blank's full sentence VERBATIM, top-to-bottom; read the
+         diagram/image; return the chosen value per blank>
+      store: answers
+  - per box, top-to-bottom (UNROLL; read visible_bbox=[x,y,w,h] from the tree):
+      click_at: {x: <bbox_x + bbox_w/2>, y: <bbox_y + bbox_h/2>}   # open THIS box
+      wait_for_element: {role: AXMenuItem}
+      find_and_click: {target: <this box's answer>, role: AXMenuItem, strategy: mouse_click, match_mode: exact}
+      then wait 1.0
   - find_and_click: {target: Check, role: AXButton, strategy: mouse_click, match_mode: exact, post_delay: 2.5}
-behavior_tree_template:              # EMIT THIS as your "tree". UNROLL the
-  # discover + select blocks ONE PER visible AXComboBox, indexed $popups.0,
-  # $popups.1, ... — count from the tree's find_all (this example shows 2; emit
-  # exactly N). NEVER use for_each: the engine fails to resolve the whole popup
-  # list ($popups) — direct indexing ($popups.0) is the PROVEN path (verified×17,
-  # live-confirmed 2026-06-13 that for_each over $popups returns no items).
-  # Fill ONLY the send_to_llm `question` (quote each blank verbatim, indexed
-  # 0..N-1 top-to-bottom). HARD RULES:
-  #   - select_dropdown_option.option MUST be the lookup_match result ($chosen_i).
-  #     NEVER null, NEVER a value you reasoned yourself — the real option strings
-  #     exist only at runtime after discover_menu enumerates them.
-  #   - You MUST include send_to_llm AND lookup_match. Not optional.
-  #   - Do not add describe_image or any node not shown here.
+behavior_tree_template:              # EMIT THIS. Distinguish identical boxes by
+  # POSITION via click_at on each box's visible_bbox centre (read [x,y,w,h] from
+  # the tree, sort by y top->bottom; box0 = top). Then click the answer option in
+  # the opened menu. UNROLL one block per visible box (this shows 2; emit N).
+  # Fill the click_at x/y from each box's bbox, the send_to_llm question, and
+  # each box's answer into its find_and_click target.
   type: sequence
   name: exercise_dropdown
   children:
-    - {type: action, action: wait, params: {seconds: 1.0}}
-    # GATE before find_all: Perseus Wonder Blocks dropdowns hydrate via React
-    # AFTER the DOM mounts — the AX role is transiently AXGroup/AXButton before
-    # settling to AXComboBox. find_all fired during that window returns 0 even
-    # though the combobox is there (claude-0 live-confirmed 2026-06-13). Block
-    # until the role settles, THEN find_all.
-    - {type: action, action: wait_for_element, params: {role: AXComboBox, timeout: 3.0}}
-    - {type: action, action: find_all, params: {role: AXComboBox}, store: popups}
-    # --- DISCOVERY: UNROLL one block per popup ($popups.0, $popups.1, ...) ---
-    - {type: action, action: find_and_click, params: {element: "$popups.0", strategy: mouse_click}}
-    - {type: action, action: wait_for_element, params: {role: AXMenuItem}}
-    - {type: action, action: discover_menu, store_to_current: options}
-    - {type: action, action: press_escape}
-    - {type: action, action: find_and_click, params: {element: "$popups.1", strategy: mouse_click}}
-    - {type: action, action: wait_for_element, params: {role: AXMenuItem}}
-    - {type: action, action: discover_menu, store_to_current: options}
-    - {type: action, action: press_escape}
-    # --- SOLVE: one send_to_llm for all popups; quote each blank, indexed 0..N-1 ---
+    - {type: action, action: wait, params: {seconds: 2.0}}
     - {type: action, action: send_to_llm,
-       params: {question_type: solve_matching, items: "$popups",
-                question: "<quote each blank's full sentence VERBATIM from the screenshot: 'Blank 0: ...', 'Blank 1: ...'; return the chosen option per blank, keyed by blank index>"},
-       store: matches}
-    # --- SELECT: UNROLL one block per popup, SAME count, key = blank index ---
-    - {type: action, action: lookup_match, params: {key: "0"}, store: chosen_0}
-    - {type: action, action: select_dropdown_option, params: {trigger_element: "$popups.0.element", option: "$chosen_0"}}
+       params: {question_type: solve_complex,
+                question: "<quote each blank's sentence VERBATIM top-to-bottom; read the wave diagram; return the chosen value for Blank 0 (top box) then Blank 1 (lower box)>"},
+       store: answers}
+    # --- BOX 0 (TOP — smallest visible_bbox y). x,y = its bbox centre. ---
+    - {type: action, action: click_at, params: {x: "<box0 bbox_x + w/2>", y: "<box0 bbox_y + h/2>"}}
+    - {type: action, action: wait_for_element, params: {role: AXMenuItem}}
+    - {type: action, action: find_and_click, params: {target: "<answer for Blank 0>", role: AXMenuItem, strategy: mouse_click, match_mode: exact}}
     - {type: action, action: wait, params: {seconds: 1.0}}
-    - {type: action, action: lookup_match, params: {key: "1"}, store: chosen_1}
-    - {type: action, action: select_dropdown_option, params: {trigger_element: "$popups.1.element", option: "$chosen_1"}}
+    # --- BOX 1 (LOWER — larger visible_bbox y). x,y = its bbox centre. ---
+    - {type: action, action: click_at, params: {x: "<box1 bbox_x + w/2>", y: "<box1 bbox_y + h/2>"}}
+    - {type: action, action: wait_for_element, params: {role: AXMenuItem}}
+    - {type: action, action: find_and_click, params: {target: "<answer for Blank 1>", role: AXMenuItem, strategy: mouse_click, match_mode: exact}}
     - {type: action, action: wait, params: {seconds: 1.0}}
-    - {type: action, action: wait, params: {seconds: 1.5}}
     - {type: action, action: find_and_click,
        params: {target: Check, role: AXButton, strategy: mouse_click, match_mode: exact, post_delay: 2.5}}
 contracts:
