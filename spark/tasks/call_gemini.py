@@ -162,6 +162,35 @@ IMPORTANT RULES:
 - No explanation. Just the letters."""
 
 
+_MATHML_VERBALIZATION = [
+    ("StartFraction ", ""), (" Over ", "/"), (" EndFraction", ""),
+    ("StartRoot ", "√("), (" EndRoot", ")"),
+    ("Superscript ", "^"), (" Baseline", ""),
+    ("left parenthesis ", "("), ("left parenthesis", "("),
+    (" right parenthesis", ")"), ("right parenthesis", ")"),
+    ("StartAbsoluteValue ", "|"), (" EndAbsoluteValue", "|"),
+]
+
+
+def _normalize_math_verbalization(text: str) -> str:
+    """Convert macOS/MathML screen-reader VERBALIZATION to plain symbols so the
+    LLM reads clean units/math. Khan renders units as MathML; the AX tree
+    verbalizes them, e.g. 'meters per second left parenthesis StartFraction m
+    Over s EndFraction right parenthesis' -> 'meters per second (m/s)'. RCA
+    2026-06-14: a units-table wrong answer traced to the LLM choosing among
+    mangled verbalized option strings. Display-only (the original verbalized
+    string is kept for the Mac's menu match); never changes the answer that
+    reaches select_dropdown_option."""
+    if not isinstance(text, str) or not text:
+        return text
+    out = text
+    for a, b in _MATHML_VERBALIZATION:
+        out = out.replace(a, b)
+    while "  " in out:
+        out = out.replace("  ", " ")
+    return out.replace("( ", "(").replace(" )", ")").strip()
+
+
 async def _solve_complex_with_gemini(
     question: str,
     options: Optional[List[str]] = None,
@@ -182,8 +211,12 @@ async def _solve_complex_with_gemini(
             # strings, so per-box solve_complex can take ENUMERATED options
             # directly (operator 2026-06-14: string-option dropdowns need the
             # option set in front of the LLM or it rambles/free-associates).
+            # DISPLAY uses normalized math (clean units for the LLM); letter_to_opt
+            # below keeps the ORIGINAL verbalized text so the returned answer still
+            # matches the Mac's (verbalized) menu item. The LLM picks by LETTER.
             options_block = "\n".join(
-                f"{letters[i]}) {_option_text(opt)}" for i, opt in enumerate(options) if i < len(letters)
+                f"{letters[i]}) {_normalize_math_verbalization(_option_text(opt))}"
+                for i, opt in enumerate(options) if i < len(letters)
             )
         else:
             options_block = "(No options provided - determine from screenshot)"
