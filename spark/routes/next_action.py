@@ -138,6 +138,27 @@ def _escalate_to_claude_diagnosing(
             build_question(question_text),
         ])
 
+    # FIX-RESETS-THE-LADDER (Jesse 2026-06-14): when the per-screen YAML (the
+    # program) is edited AFTER the last recorded attempt, the operator folded a
+    # fix — the prior failures were against the OLD broken program and must not
+    # carry forward (else the corrected wiring inherits a near-terminal ladder).
+    # The "knowledge changed -> stale failures reset" principle, automatic so a
+    # fold always earns a clean 2-shot ladder with no manual Supervisor reset.
+    try:
+        _st = (screen_type_hint or "").strip()
+        if _st and _st != "UNKNOWN" and not escalation_state.is_terminal(platform, _screen_hash):
+            _yaml = Path(f"/home/user/taey-ed/spark/platforms/{platform}/screen_types/{_st}.yaml")
+            _es_state = escalation_state.get(platform, _screen_hash)
+            _last = float(_es_state.get("updated_at", 0) or 0)
+            if _yaml.exists() and _es_state.get("attempt", 0) and _yaml.stat().st_mtime > _last:
+                escalation_state.clear(platform, _screen_hash, f"yaml_fold_resets_ladder:{_st}")
+                logger.info(
+                    f"escalation_state: {_st} YAML edited after last attempt — "
+                    f"fold detected, ladder reset to fresh for {_screen_hash[:16]}"
+                )
+    except Exception:
+        logger.exception("yaml-fold-reset check failed (non-fatal)")
+
     # Attempt count is code-owned + MONOTONIC (escalation_state). It advances on
     # a genuinely DISTINCT failed attempt (this consult id), NOT on the
     # auto-resume timer — so a screen being actively fixed is never steamrolled
