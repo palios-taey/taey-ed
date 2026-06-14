@@ -80,6 +80,8 @@ def _escalate_to_claude_diagnosing(
     except Exception:
         _screen_hash = "unknown"
 
+    from spark.tasks import escalation_state
+
     diag_dir = Path("/tmp/taey-ed-claude-diagnosing") / f"{platform}_{_screen_hash[:16]}"
     diag_dir.mkdir(parents=True, exist_ok=True)
     diagnosing = diag_dir / "diagnosing.flag"
@@ -106,9 +108,10 @@ def _escalate_to_claude_diagnosing(
         except Exception:
             logger.exception("escalate: failed to write screenshot.png")
 
-    # Only path to user: claude explicitly gave up by touching gave_up.flag.
-    # Mac/Spark cannot create this flag — only the Mira-side claude session can.
-    if gave_up.exists():
+    # Terminal is STICKY and code-owned (escalation_state): once the ladder is
+    # exhausted, the screen stays terminal until user-Stop or genuine advance.
+    # rm-ing gave_up.flag no longer un-terminates it.
+    if gave_up.exists() or escalation_state.is_terminal(platform, _screen_hash):
         from spark.tasks.classify_screen import _describe_screen
         # Terminal user-assist (INTENDED_FLOW §D terminal; Jesse 2026-06-11):
         # when the system gives up on a screen, the user is notified WITH the
@@ -135,19 +138,16 @@ def _escalate_to_claude_diagnosing(
             build_question(question_text),
         ])
 
-    retries = 0
-    if retry_p.exists():
-        try:
-            retries = int(retry_p.read_text().strip())
-        except (ValueError, OSError):
-            retries = 0
+    # Attempt count is code-owned + MONOTONIC (escalation_state), not the
+    # touchable /tmp retries.txt. Cannot be reset to re-arm Tier-1.
+    retries = escalation_state.attempt(platform, _screen_hash)
 
     # Claude finished diagnosing (knowledge.json updated). Clear flags + abandon
     # the stale consult so Mac's next /next_action runs the FRESH pipeline,
     # which spawns a new worker call using the updated knowledge.json.
     if done.exists():
-        retries += 1
-        retry_p.write_text(str(retries))
+        retries = escalation_state.bump(platform, _screen_hash)
+        retry_p.write_text(str(retries))   # mirror for visibility only
         done.unlink()
         diagnosing.unlink(missing_ok=True)
         # Abandon the stale consult so its metadata.status flips off
@@ -209,6 +209,7 @@ def _escalate_to_claude_diagnosing(
 
     # Terminal tier: auto-mark unsolvable, log, return user_input_needed.
     if tier == "terminal":
+        escalation_state.set_terminal(platform, _screen_hash)   # sticky, code-owned
         try:
             gave_up.touch()
             UNSOLVED_LOG.parent.mkdir(parents=True, exist_ok=True)
@@ -1265,6 +1266,11 @@ def _next_action_impl(request: NextActionRequest):
                         author="machine",
                     )
                     archive(platform, lr.directive_skeleton_hash)
+                    # Genuine advance = screen solved → clear its escalation
+                    # counter (one of the two legitimate resets; the other is
+                    # user-Stop). Monotonic otherwise.
+                    from spark.tasks import escalation_state
+                    escalation_state.clear(platform, lr.directive_skeleton_hash, "advanced")
                 except Exception:
                     logger.exception("screen_session advance-archive failed (continuing)")
 

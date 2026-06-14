@@ -125,5 +125,16 @@ def abandon_consultation(consultation_id: str):
     meta["abandoned_at"] = datetime.now().isoformat()
     atomic_write_json(meta_file, meta)
 
+    # user-Stop is one of the two legitimate escalation resets (Jesse 2026-06-14):
+    # abandon = the user stopped, so clear this screen's escalation counter +
+    # terminal so a restart begins fresh. (The other reset is genuine advance.)
+    try:
+        from spark.tasks import escalation_state
+        _h = meta.get("screen_hash") or ""
+        if _h:
+            escalation_state.clear(meta.get("platform", "khan_academy"), _h, "user_stop_abandon")
+    except Exception:
+        logger.exception("abandon: escalation_state clear failed (non-fatal)")
+
     logger.info(f"Consultation {consultation_id} abandoned by Mac")
     return {"ok": True, "status": "abandoned", "consultation_id": consultation_id}
