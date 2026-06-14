@@ -52,26 +52,29 @@ behavior_tree_template:              # EMIT THIS. Distinguish identical boxes by
     - {type: action, action: find_and_click,
        params: {target: Check, role: AXButton, strategy: mouse_click, match_mode: exact, post_delay: 2.5}}
 contracts:
-  - option text VERBATIM from the menu enumeration; one answer per VISIBLE row
+  - the two boxes are IDENTICAL by name; distinguish ONLY by position (bbox y),
+    top-to-bottom. NEVER target by name (hits the first box twice).
+  - click_at uses the box's visible_bbox CENTRE (POINTS, same space as bbox).
   - find_all(AXMenuItem) element refs must NEVER enter send_to_llm params
-    (crashes JSON serialization Mac-side); click_at on triggers is BANNED
+    (crashes JSON serialization Mac-side).
   - multi-system questions (gravity AND electric, "each system"): one vision
     call PER SYSTEM/region — a single multi-blob call cross-bleeds context
 actuation:
-  strategy: select_dropdown_option only; settle 2.0s before first open, 1.0s
-    between rows; keyboard-by-POSITION fallback if a click will not commit
-    (focus opener, ArrowDown to the option's discovered index, Enter)
+  strategy: click_at the box's bbox-centre to open it, then find_and_click the
+    answer in the opened menu (role=AXMenuItem, mouse_click, exact). Settle 2.0s
+    before the first open, 1.0s between boxes.
 verification:
-  - per row: AXComboBox value flips from "Select an answer" to the chosen value
-    BEFORE moving to the next row (handler verifies menu_closed + committed)
+  - after each box: its AXComboBox value flips from "Select an answer" to the
+    chosen value before moving to the next box
   - same-skeleton after Check = wrong answer or nothing staged — never success
 completion:
   - post-answer popover with "Next question" = advance
 failure_modes:
   - wrong answer -> FULL STOP, escalate (R3)
-  - menu_items_seen=[] -> fired too early; settle longer, re-enumerate once
+  - menu_items_seen=[] -> fired too early; settle longer, re-open once
   - submit renamed "Check again" after a platform reset — exact-match the name
     in the CURRENT tree
-  - NO scroll phase: dropdowns are ELEMENT-based (name+role, no coordinates);
-    a scroll-only BT here changes nothing and trips stuck-detection
-  - for_each over a comma-joined answer string -> select fails; UNROLLED only
+  - NO scroll phase: dropdowns are ELEMENT-based; a scroll-only BT changes
+    nothing and trips stuck-detection
+  - targeting by name (not position) -> both selects hit box 0; use click_at by
+    bbox position
