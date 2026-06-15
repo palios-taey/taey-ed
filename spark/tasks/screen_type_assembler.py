@@ -60,6 +60,13 @@ SIGNATURE_ACTIONS = {
     # standard exercise pattern is find_all-widget + vision send_to_llm anyway.
     "fallback",
     "find_all",
+    # find_and_click IS required (2026-06-15): it is the LOAD-BEARING actuation for
+    # direct-solve exercises (click the chosen answer(s) + Check) and the
+    # advance/submit click everywhere. Added so direct-solve MULTIPLE_SELECT/CHOICE
+    # have a hard-required action — WITHOUT it, dropping store_qa below would leave
+    # their required set EMPTY (no empty-BT protection). With it required, store_qa
+    # can be soft.
+    "find_and_click",
     "find_and_type",
     "for_each",
     "lookup_match",
@@ -67,7 +74,14 @@ SIGNATURE_ACTIONS = {
     "scroll",
     "select_dropdown_option",
     "send_to_llm",
-    "store_qa",
+    # store_qa deliberately NOT required (2026-06-15, recurred FREQUENTLY: 984b161,
+    # 2f83dfe4 — first-attempt drops on direct-solve multi-selects). store_qa is the
+    # LEARNING CAPTURE (KB), NOT load-bearing for ADVANCING (the screen advances on
+    # the Check click). The worker intermittently omits it; requiring it BLOCKED the
+    # advance for zero advancing benefit. Soft now: capture stays best-effort (the
+    # recipe keeps store_qa; the worker emits it most of the time -> KB still
+    # builds), and an omitted store_qa no longer stalls. Empty-BT protection is
+    # preserved by find_and_click being required (above). Stays in KNOWN_ACTIONS.
     "video_poll",
 }
 FLAT_DRAG_KEYS = {"start_x", "start_y", "from_x", "from_y", "to_x", "to_y", "end_x", "end_y"}
