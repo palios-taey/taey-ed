@@ -183,6 +183,28 @@ def _normalize_bt_nodes(node) -> None:
     the worker wrote the key.
     """
     if isinstance(node, dict):
+        # ACTION-AS-KEY form FIRST: the worker sometimes emits {<action>: {<params>}}
+        # — the action name as the dict KEY — instead of {type:action,
+        # action:<action>, params:{...}}. Neither _collect_tree_actions nor the Mac
+        # recognizes it, so every action is reported omitted -> conformance
+        # rejects a perfectly good BT. (RCA 2026-06-15, d2b842: the worker emitted
+        # {"find_and_click": {...}}, {"wait": 1.5}, {"store_qa": {...}}.) Canonicalize
+        # when the node has no type/action and exactly one key that is a registered
+        # action. Runs BEFORE the for_each/conditional canonicalization so
+        # {"for_each": {...}} flows through both.
+        if "type" not in node and "action" not in node:
+            _akeys = [k for k in node.keys() if k in KNOWN_ACTIONS]
+            if len(_akeys) == 1 and len(node) == 1:
+                _ak = _akeys[0]
+                _val = node.pop(_ak)
+                node["type"] = "action"
+                node["action"] = _ak
+                if isinstance(_val, dict):
+                    node["params"] = _val
+                elif _ak == "wait" and isinstance(_val, (int, float)):
+                    node["params"] = {"seconds": _val}
+                else:
+                    node["params"] = {}
         # CANONICALIZE a MALFORMED for_each / conditional FIRST. These are
         # LOAD-BEARING composables (a click-loop over N runtime items cannot be
         # unrolled at build time, so unlike extract_question they can't be
