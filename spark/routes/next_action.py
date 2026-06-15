@@ -781,6 +781,30 @@ def _build_screen_directive(request, platform: str, tree: dict, screen_type: str
             build_question(f"I recognized this as {screen_type}, but its fixed automation is missing. What should I do?"),
         ])
 
+    # UNKNOWN must NEVER reach the worker. UNKNOWN is DEFINED (screen-type list,
+    # _UNKNOWN_GUIDE) as "needs mapping / human review" = the OPERATOR. The worker
+    # has no recipe for UNKNOWN, so it invents unregistered actions
+    # (describe_images / sort / verify_verdict) and fails every cycle, then
+    # escalates anyway — burning a full worker round-trip and polluting the logs.
+    # Route straight to the operator (escalate/diagnose); the worker only ever
+    # receives a CLASSIFIED screen. (Jesse 2026-06-15: "it should be impossible
+    # for them to get an unknown.") Transient UNKNOWNs are handled upstream by the
+    # classify re-queue (f60cadf); a persistent UNKNOWN is genuinely the operator's
+    # to map.
+    if screen_type == "UNKNOWN":
+        logger.warning(
+            "_build_screen_directive: screen_type=UNKNOWN -> OPERATOR escalation "
+            "(worker never receives UNKNOWN). platform=%s", platform,
+        )
+        return _escalate_to_claude_diagnosing(
+            platform=platform,
+            tree=tree,
+            consultation_id="",
+            reason="UNKNOWN classification — operator mapping required; the worker must never receive UNKNOWN",
+            screen_type_hint="UNKNOWN",
+            screenshot_b64=request.screenshot_b64,
+        )
+
     consult_result = request_consultation(
         platform=platform,
         tree=tree,
