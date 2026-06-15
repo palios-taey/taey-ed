@@ -486,6 +486,34 @@ def classify_screen(tree: dict, screenshot_b64: Optional[str], platform: str) ->
                 "platform_variant": det_subtype,
             }
 
+        # DETERMINISTIC per-question POST-ANSWER transition: a "Next question"
+        # AXButton is the unambiguous post-answer advance — no exercise / nav /
+        # article ever shows it (distinct from nav's "Next in course"), so it is
+        # SAFE to resolve deterministically (unlike the "mastery points"/"up next"
+        # text markers, which a nav content-list also carries). Routing it to
+        # TRANSITION__SUMMARY here makes it reach the deterministic-serve path
+        # (next_action line 681) and run the PROVEN fixed BT, taking the
+        # variance-prone worker OUT of the path. Root cause (2026-06-15, operator):
+        # cef8155e looped because the per-question transition classified
+        # flakily -> worker-rebuilt -> freelanced {name:"click_element", ...} ->
+        # "element not found" -> the failed click reinforced a retry loop, even
+        # though the SAME recipe advanced sibling transitions (8287ab5/550502).
+        if "TRANSITION__SUMMARY" in _load_screen_type_registry(platform):
+            def _has_next_question_button(n):
+                if isinstance(n, dict):
+                    if (n.get("role") == "AXButton"
+                            and (n.get("name") or "").strip().lower() == "next question"):
+                        return True
+                    return any(_has_next_question_button(c) for c in (n.get("children") or []))
+                return False
+            if _has_next_question_button(scoped_tree):
+                return {
+                    "success": True,
+                    "screen_type": "TRANSITION__SUMMARY",
+                    "confidence_note": "Deterministic 'Next question' button -> TRANSITION__SUMMARY (post-answer advance; overrides cache/LLM).",
+                    "platform_variant": "TRANSITION__SUMMARY",
+                }
+
         hash_result = lookup_by_hash(platform, skel_hash)
         if hash_result:
             canonical = canonicalize_screen_type(platform, hash_result.get("variant", "UNKNOWN"), scoped_tree)
