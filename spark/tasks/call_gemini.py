@@ -914,7 +914,7 @@ async def generate_answer(
 
         letters = "ABCDEFGHIJ"
         options_block = "\n".join(
-            f"{letters[i]}) {opt}" for i, opt in enumerate(options) if i < len(letters)
+            f"{letters[i]}) {_option_text(opt)}" for i, opt in enumerate(options) if i < len(letters)
         )
 
         prompt = SOLVE_CHECKBOX_PROMPT.format(
@@ -934,7 +934,7 @@ async def generate_answer(
 
         letters = "ABCDEFGHIJ"
         options_block = "\n".join(
-            f"{letters[i]}) {opt}" for i, opt in enumerate(options) if i < len(letters)
+            f"{letters[i]}) {_option_text(opt)}" for i, opt in enumerate(options) if i < len(letters)
         )
 
         # Use text-field-aware prompt if quiz has both radio + text area
@@ -1044,9 +1044,15 @@ async def generate_answer(
             }
 
         elif question_type == "solve_checkbox" and options:
-            # Parse comma-separated letters: "A, C, D" → list of option texts
+            # Parse comma-separated letters: "A, C, D" → list of option texts.
+            # Resolve EVERY option to text first: find_all options are DICTS
+            # ({description, element:AXUIElementRef, ...}); using the raw dict made
+            # `selected` hold dicts -> `s[:40]` -> KeyError: slice(...) -> 422 on
+            # every checkbox recipe (RCA 2026-06-15, d2b842 multi-select). Mirrors
+            # match_to_option / the dedicated checkbox path, which already do this.
             letters = "ABCDEFGHIJ"
-            letter_to_opt = {letters[i]: opt for i, opt in enumerate(options) if i < len(letters)}
+            opt_texts = [_option_text(o) for o in options]
+            letter_to_opt = {letters[i]: opt_texts[i] for i in range(len(opt_texts)) if i < len(letters)}
             selected = []
             # Split by comma, strip, and map to options
             for part in raw_answer.replace(" ", "").split(","):
@@ -1055,9 +1061,9 @@ async def generate_answer(
                     selected.append(letter_to_opt[part])
             # If no letters found, try matching raw text to options
             if not selected:
-                for opt in options:
-                    if opt.lower() in raw_answer.lower():
-                        selected.append(opt)
+                for ot in opt_texts:
+                    if ot and ot.lower() in raw_answer.lower():
+                        selected.append(ot)
             logger.info(f"Checkbox: selected {len(selected)} of {len(options)}: {[s[:40] for s in selected]}")
             result = {
                 "success": True,
