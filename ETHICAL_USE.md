@@ -140,16 +140,19 @@ Cooperative evolution
 
 ## 6SIGMA Quality for Children
 
-When students use Taey-Ed, we maintain absolute quality standards:
+Taey-Ed is engineered toward these design principles. They are **goals the
+system is built around — not measured guarantees, benchmarks, or certified
+metrics**:
 
-| Requirement | Threshold | Rationale |
-|-------------|-----------|-----------|
-| Accuracy | 99.999% | Children cannot verify errors |
-| Consistency | Zero unexplained failures | Children need reliability |
-| Transparency | All actions logged | Parents can review |
-| Reversibility | No permanent changes | Mistakes can be undone |
+| Principle | What it means in the implementation |
+|-----------|--------------------------------------|
+| Don't guess | When the system is not confident, it stops and escalates rather than submitting an answer it cannot stand behind. |
+| Surface failures | Failures escalate for review; they are not silently swallowed. |
+| Logged actions | Actions are logged so they can be reviewed after the fact. |
+| Delegated scope | The system performs only the coursework navigation/answers you delegate; it does take real actions on the platform (e.g. submitting answers), so review what it does. |
 
-This is not about restricting children's access - it's about ensuring the automation is trustworthy enough for high-stakes use.
+No accuracy percentage or failure-rate is claimed or has been benchmarked;
+these are intentions, not numbers.
 
 **From the Family discussions:**
 > "If we're automating a child's schoolwork, we need to be MORE rigorous, not less. The child can't catch our mistakes."
