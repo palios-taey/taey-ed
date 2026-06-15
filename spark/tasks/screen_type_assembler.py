@@ -50,7 +50,14 @@ SIGNATURE_ACTIONS = {
     "conditional",
     "discover_menu",
     "drag",
-    "extract_question",
+    # extract_question deliberately NOT required (2026-06-15, operator+supervisor):
+    # it is REDUNDANT with a screenshot-reading send_to_llm, so the worker reliably
+    # OMITS it -> conformance deadlock (hit TEXT_INPUT, MULTIPLE_SELECT; latent in
+    # MATCHER/LABEL_IMAGE/GRAPH_POINTS/SORTER). Dropping it from the REQUIRED
+    # signature set closes that deadlock class for every recipe that still leads
+    # with it: the worker may omit it, the vision-solve still reads the question
+    # from the screenshot. It stays in KNOWN_ACTIONS (allowed if emitted). The
+    # standard exercise pattern is find_all-widget + vision send_to_llm anyway.
     "fallback",
     "find_all",
     "find_and_type",
@@ -527,8 +534,15 @@ def _split_top_level_sections(text: str) -> dict[str, str]:
 def _collect_tree_actions(node: dict) -> set[str]:
     found: set[str] = set()
     node_type = node.get("type", "action")
-    if node_type == "fallback":
-        found.add("fallback")
+    # Count composable node TYPES (not just `action` fields). RCA 2026-06-15
+    # (MULTIPLE_SELECT for_each "omitted" deadlock): only "fallback" was counted
+    # by type, so a CORRECTLY-FORMED for_each / conditional (type=for_each, no
+    # `action` field) was never added to actual_actions — and for_each is a
+    # required SIGNATURE_ACTION (not subtracted like conditional/fallback), so
+    # conformance ALWAYS reported it omitted. The worker wasn't malforming it; the
+    # collector wasn't looking for it.
+    if node_type in ("fallback", "for_each", "conditional"):
+        found.add(node_type)
     action_name = node.get("action")
     if isinstance(action_name, str):
         found.add(action_name)

@@ -183,6 +183,25 @@ def _normalize_bt_nodes(node) -> None:
     the worker wrote the key.
     """
     if isinstance(node, dict):
+        # CANONICALIZE a MALFORMED for_each / conditional FIRST. These are
+        # LOAD-BEARING composables (a click-loop over N runtime items cannot be
+        # unrolled at build time, so unlike extract_question they can't be
+        # dropped). The worker sometimes emits them as an ACTION
+        # ({type:action, action:for_each}) or nests their structural keys under
+        # params: ({type:for_each, params:{items,variable,do}}). The Mac reads
+        # items/variable/do/condition/then/else at NODE level (Rule 6). Run this
+        # BEFORE the missing-type inference (which looks for items/variable at node
+        # level) and the action-param-nesting. (2026-06-15, operator for_each RCA.)
+        if node.get("action") in ("for_each", "conditional"):
+            node["type"] = node.pop("action")
+        if node.get("type") in ("for_each", "conditional"):
+            _p = node.get("params")
+            if isinstance(_p, dict):
+                for _k in ("items", "variable", "do", "condition", "then", "else"):
+                    if _k in _p and _k not in node:
+                        node[_k] = _p.pop(_k)
+                if not _p:
+                    node.pop("params", None)
         # INFER a MISSING node `type` from the node's shape. Worker variance
         # (live RCA 2026-06-15, consult ...23bce8af -> TERMINAL): the worker
         # returns a `tree` root with NO `type` field at all -> _validate_bt
