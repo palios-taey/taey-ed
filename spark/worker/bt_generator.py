@@ -205,6 +205,18 @@ def _normalize_bt_nodes(node) -> None:
                     node["params"] = {"seconds": _val}
                 else:
                     node["params"] = {}
+        # ACTION-IN-NAME-FIELD form: the worker sometimes puts the action in the
+        # `name` field instead of `action` — {type:action, name:"find_and_click",
+        # target:.., role:..} (flat params). _collect_tree_actions reads `action`
+        # (None here) so it reports the action OMITTED and conformance rejects an
+        # otherwise-correct BT. (RCA 2026-06-15: 2f83dfe4 multi-select built a
+        # CORRECT direct-solve B+D but as name-field nodes; same shape as cef8155e's
+        # freelance.) Treat `name` as the action ONLY when there is no `action`
+        # field AND name is EXACTLY a registered action (else name is a legitimate
+        # label). The flat params then nest via the action-param block below.
+        if "action" not in node and node.get("name") in KNOWN_ACTIONS:
+            node["action"] = node.pop("name")
+            node.setdefault("type", "action")
         # CANONICALIZE a MALFORMED for_each / conditional FIRST. These are
         # LOAD-BEARING composables (a click-loop over N runtime items cannot be
         # unrolled at build time, so unlike extract_question they can't be
