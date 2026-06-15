@@ -390,6 +390,29 @@ def classify_screen(tree: dict, screenshot_b64: Optional[str], platform: str) ->
         scoped_tree = _find_web_area(tree)
         skel_hash = skeleton_hash(extract_skeleton(scoped_tree))
 
+        # DETERMINISTIC WIDGET READ WINS FIRST. An unambiguous answer-widget
+        # signature (AXComboBox 'select an answer' -> DROPDOWN; '(choice...'
+        # radio/checkbox -> single/multi choice) is GROUND TRUTH from the live
+        # tree — a cached/hinted/LLM guess must never override it. Root-cause fix
+        # (2026-06-15, operator-found): this dropdown kept classifying
+        # EXERCISE_TEXT_INPUT because _infer_exercise_subtype only ran as a
+        # subtype FALLBACK inside canonicalize_screen_type (reached only for
+        # non-registered variants); since EXERCISE_TEXT_INPUT is itself a
+        # registered type, canonicalize returned it directly and the deterministic
+        # DROPDOWN read never ran. The worker then correctly re-read the widget,
+        # re-classified, and conformance rejected "worker changed screen_type" ->
+        # loop. _infer_exercise_subtype returns UNKNOWN for ANY ambiguous shape,
+        # so running it first can only ever CORRECT an unambiguous case, never
+        # introduce a wrong guess.
+        det_subtype = _infer_exercise_subtype(scoped_tree)
+        if det_subtype != "UNKNOWN" and det_subtype in _load_screen_type_registry(platform):
+            return {
+                "success": True,
+                "screen_type": det_subtype,
+                "confidence_note": f"Deterministic answer-widget signature -> {det_subtype} (ground truth, overrides cache/LLM).",
+                "platform_variant": det_subtype,
+            }
+
         hash_result = lookup_by_hash(platform, skel_hash)
         if hash_result:
             canonical = canonicalize_screen_type(platform, hash_result.get("variant", "UNKNOWN"), scoped_tree)
