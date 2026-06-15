@@ -49,16 +49,23 @@ def extract_skeleton(tree: dict, viewport_height: int = 900,
     # the hash. Root-cause fix (2026-06-15, operator-confirmed): Khan/Perseus
     # wraps answer widgets 13–25 AXGroup layers deep, past _walk's max_depth=15,
     # so the structural walk DROPPED them — every exercise sub-type (dropdown,
-    # text-input, multiple-choice, matcher, numeric) collapsed to the SAME
-    # skeleton -> ONE hash (8646957) mapped to SIX screen types -> the worker
-    # correctly re-read the live widget, re-classified, and conformance rejected
-    # it as "worker changed screen_type" -> deadlock/terminal thrash. The
-    # presence-set of answer-input roles, collected over the FULL web area with
-    # no depth cap, is the discriminating feature; it separates the sub-types
-    # without fragmenting within one (count is ignored on purpose). This
-    # CORRECTS the data shape upstream so each sub-type recognizes to its own
-    # hash — it does not add a bypass.
-    lines.append(_answer_widget_signature(root))
+    # text-input, multiple-choice) collapsed to the SAME skeleton -> ONE hash
+    # (8646957) mapped to SIX screen types -> the worker correctly re-read the
+    # live widget, re-classified, and conformance rejected it as "worker changed
+    # screen_type" -> deadlock/terminal thrash.
+    #
+    # CONDITIONAL (2026-06-15): only prepend when answer widgets are actually
+    # present. A first cut prepended the line UNCONDITIONALLY, which re-keyed
+    # EVERY skeleton — including video/article/transition that have no answer
+    # widgets and never collided — orphaning their learned-only mappings
+    # (VIDEO_UNSTARTED's 314 successes etc., keyed solely by hash with no YAML/
+    # classify block to re-derive them). Gating on a non-empty set leaves
+    # non-exercise skeletons BYTE-IDENTICAL to the pre-signature form, so their
+    # original hashes — and learned mappings — are preserved; only exercise
+    # screens (the ones that actually collided) get the discriminating line.
+    widget_sig = _answer_widget_signature(root)
+    if widget_sig != "WIDGETS:":
+        lines.append(widget_sig)
     _walk(root, depth=0, sibling_idx=0, viewport_height=viewport_height, lines=lines)
     return "\n".join(lines)
 
@@ -69,12 +76,17 @@ def skeleton_hash(skeleton: str) -> str:
 
 
 # Interactive roles that constitute an ANSWER to an exercise — the feature that
-# distinguishes exercise sub-types (dropdown vs text-input vs choice vs matcher).
-# Distinct from chrome controls (tab strip, Share, Extensions), which live above
-# the AXWebArea and are already excluded by web_content_only scoping.
+# distinguishes exercise sub-types (dropdown vs text-input vs choice). Restricted
+# (2026-06-15) to roles that appear ONLY in exercise answer areas:
+#   - DROPPED AXPopUpButton: appears in video/player settings + chrome (Share,
+#     View progress); AXComboBox already distinguishes Khan dropdowns.
+#   - DROPPED AXSlider/AXIncrementor: a video SCRUBBER is an AXSlider — including
+#     it re-keyed every video skeleton (orphaning VIDEO_UNSTARTED's 314 learned
+#     successes). Slider/incrementor exercises are rare; not worth re-keying all
+#     videos. Chrome controls live above the AXWebArea and are already excluded by
+#     web_content_only scoping.
 ANSWER_WIDGET_ROLES = (
-    "AXComboBox", "AXPopUpButton", "AXTextField", "AXTextArea",
-    "AXCheckBox", "AXRadioButton", "AXSlider", "AXIncrementor",
+    "AXComboBox", "AXTextField", "AXTextArea", "AXCheckBox", "AXRadioButton",
 )
 
 
