@@ -34,6 +34,16 @@ SPLIT_MASTER_CATEGORIES = {"NAVIGATION", "ARTICLE", "VIDEO", "TRANSITION"}
 # descriptive-sentence threshold with a chrome exclusion set/patterns. The gate
 # errs toward INCLUSION (a false positive just adds a short block the worker's
 # relevance-first step discards; a false negative makes the worker guess).
+# Complex-ENTER exercise types: the figure drives a multi-step interaction
+# (drag-to-rank, drag-to-match, plot points, place labels), NOT a read-and-answer.
+# The hard-image injection's "read the alt-text and USE it" framing suppresses the
+# worker's full enter sequence on these (regression 2026-06-15: the sorter staged
+# instead of dragging), so they are EXEMPT from the injection and keep their
+# proven worker-built enter. GRID_MEASURE is not here — it is auto-resolved
+# upstream (alt-text Tier-0) and never reaches this worker path.
+_COMPLEX_ENTER_EXERCISE_TYPES = {
+    "EXERCISE_SORTER", "EXERCISE_MATCHER", "EXERCISE_GRAPH_POINTS", "EXERCISE_LABEL_IMAGE",
+}
 _FIGURE_MIN_WORDS = 5
 _CHROME_IMAGE_EXACT = {
     "", "article", "exercise", "video", "completed", "complete", "incomplete",
@@ -463,11 +473,25 @@ def _render_hard_image_block(tree: dict, screen_type: str) -> str:
     worker prompt ONLY for EXERCISE screens that carry a load-bearing question-
     area figure — so prompts without figures stay lean (the 25K cap is real).
     EXERCISE_GRID_MEASURE is auto-resolved upstream (alt-text Tier-0 in
-    _build_screen_directive, 553b209); this covers the OTHER figure-bearing
-    exercise types (choice/select/sorter/interpretation). Wording finalized by
-    the operator. The figure alt-texts are surfaced inline so the worker reads
-    Khan's own description (often the exact answer) instead of eyeballing."""
+    _build_screen_directive, 553b209); this covers the figure-bearing
+    READ-AND-ANSWER types (choice / select / interpretation). The figure
+    alt-texts are surfaced inline so the worker reads Khan's own description
+    (often the exact answer) instead of eyeballing.
+
+    REGRESSION FIX 2026-06-15 (Jesse: "this is a regression, restore it"): the
+    injection's GET-THE-ANSWER framing ("read the alt-text, USE it") SUPPRESSED
+    the worker's full ENTER sequence on COMPLEX-ENTER types — the sorter built a
+    conformant drag BT 4x before the injection (09:15-10:02) and STAGED (scroll
+    only, omitted drag) right after it (15:40, injection committed 15:20). For a
+    sorter the alt-text gives the ANSWER (the ranking) but the answer still has
+    to be ENTERED via the full drag — which the injection short-circuited. So
+    complex-enter types (where the figure drives a multi-step interaction, not a
+    read-and-answer) are EXEMPT — they keep their proven worker-built enter. (Re-
+    adding exact alt-text ranking for sorters via reworded injection that
+    preserves the drag is a future enhancement, not this restore.)"""
     if get_master_category(screen_type) != "EXERCISE":
+        return ""
+    if screen_type in _COMPLEX_ENTER_EXERCISE_TYPES:
         return ""
     figures = find_load_bearing_figures(tree)
     if not figures:
