@@ -181,6 +181,26 @@ def _normalize_bt_nodes(node) -> None:
     the worker wrote the key.
     """
     if isinstance(node, dict):
+        # INFER a MISSING node `type` from the node's shape. Worker variance
+        # (live RCA 2026-06-15, consult ...23bce8af -> TERMINAL): the worker
+        # returns a `tree` root with NO `type` field at all -> _validate_bt
+        # rejects ("tree missing 'type'") -> wasted attempt -> 4-tier
+        # exhaustion -> terminal, on an EXERCISE_TEXT_INPUT screen that is
+        # otherwise handleable. Same class as every other normalization in this
+        # function: canonicalize the shape so the BT is valid regardless of
+        # whether the worker wrote the structural key. Highest-confidence
+        # inferences only (an action field, or the structural keys that uniquely
+        # name a composite/control type); ambiguous nodes are left untouched and
+        # still fail validation as before.
+        if "type" not in node:
+            if isinstance(node.get("action"), str):
+                node["type"] = "action"
+            elif "condition" in node:
+                node["type"] = "conditional"
+            elif "items" in node or "variable" in node:
+                node["type"] = "for_each"
+            elif isinstance(node.get("children"), list):
+                node["type"] = "sequence"
         # Normalize action-as-node-type -> {type: action, action: X}. The Mac
         # engine runs both `{type: find_all}` and `{type: action, action:
         # find_all}`, but the recipe-conformance collector only counts the
