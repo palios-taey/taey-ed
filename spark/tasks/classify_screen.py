@@ -270,13 +270,29 @@ def _infer_exercise_subtype(tree: dict) -> str:
     choice_radio = 0
     choice_checkbox = 0
     post_answer = False
+    wrong_verdict = False
+    has_check = False
+    has_answer_widget = False
 
     def walk(n):
         nonlocal combobox_answer, choice_radio, choice_checkbox, post_answer
+        nonlocal wrong_verdict, has_check, has_answer_widget
         if isinstance(n, dict):
             role = n.get("role") or ""
             name = (n.get("name") or "").strip().lower()
             value = str(n.get("value") or "").strip().lower()
+            if role in ("AXComboBox", "AXTextField", "AXTextArea", "AXCheckBox", "AXRadioButton"):
+                has_answer_widget = True
+            # WRONG-ANSWER state markers (operator gap #3, 2026-06-15): the answer
+            # was submitted and judged WRONG — input intact, a "Not quite yet"/
+            # "Try again" verdict, and NO "Check" button (the no-Check signal is
+            # the discriminator vs a fresh EXERCISE_*). Routed to EXERCISE_WRONG_
+            # ANSWER (escalate-only) so it does NOT mis-classify as a fresh
+            # exercise and get re-answered.
+            if "not quite" in name or name == "try again" or "try again" in name:
+                wrong_verdict = True
+            if role == "AXButton" and (name == "check" or name.startswith("check ")):
+                has_check = True
             # POST-ANSWER markers: these buttons appear ONLY after an answer is
             # submitted (the correct/incorrect verdict state). Their presence
             # means this is an answered->advance TRANSITION, not a fresh exercise
@@ -306,11 +322,16 @@ def _infer_exercise_subtype(tree: dict) -> str:
                 walk(i)
 
     walk(_find_web_area(tree) or tree)
-    # An answered / post-answer screen is not a fresh exercise — return UNKNOWN
-    # so the (non-deterministic) transition classifier routes it to advance,
-    # rather than the deterministic exercise rule preempting it.
+    # An answered / post-answer-CORRECT screen ("Next question") is not a fresh
+    # exercise — return UNKNOWN so the transition classifier routes it to advance.
     if post_answer:
         return "UNKNOWN"
+    # POST-WRONG-ANSWER state: input intact + wrong verdict + NO Check button.
+    # Distinct screen type so it ESCALATES (its recipe emits {} for a clean ladder
+    # escalation) instead of being re-classified as a fresh exercise and
+    # re-answered. The no-Check signal discriminates it from a fresh EXERCISE_*.
+    if wrong_verdict and has_answer_widget and not has_check:
+        return "EXERCISE_WRONG_ANSWER"
     if combobox_answer > 0:
         return "EXERCISE_DROPDOWN"
     if choice_checkbox > 0:
