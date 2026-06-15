@@ -262,14 +262,31 @@ def _infer_exercise_subtype(tree: dict) -> str:
     combobox_answer = 0
     choice_radio = 0
     choice_checkbox = 0
+    post_answer = False
 
     def walk(n):
-        nonlocal combobox_answer, choice_radio, choice_checkbox
+        nonlocal combobox_answer, choice_radio, choice_checkbox, post_answer
         if isinstance(n, dict):
             role = n.get("role") or ""
             name = (n.get("name") or "").strip().lower()
+            value = str(n.get("value") or "").strip().lower()
+            # POST-ANSWER markers: these buttons appear ONLY after an answer is
+            # submitted (the correct/incorrect verdict state). Their presence
+            # means this is an answered->advance TRANSITION, not a fresh exercise
+            # to solve. Live RCA 2026-06-15 (operator): without this, an answered
+            # dropdown re-entered classification, fired EXERCISE_DROPDOWN, the
+            # worker correctly omitted the solve actions to advance, and
+            # conformance rejected it -> stuck before it could advance.
+            if role == "AXButton" and ("next question" in name or "step-by-step solution" in name):
+                post_answer = True
+            # A dropdown is a fresh exercise to SOLVE only while UNANSWERED. The
+            # label name ('select an answer') is ALWAYS present; the VALUE is
+            # empty/placeholder when unanswered and the chosen option ('4','1')
+            # once answered. Gate on the value so an answered dropdown is not
+            # misclassified as fresh.
             if role == "AXComboBox" and "select an answer" in name:
-                combobox_answer += 1
+                if value in ("", "select an answer"):
+                    combobox_answer += 1
             if name.startswith("(choice"):
                 if role == "AXCheckBox":
                     choice_checkbox += 1
@@ -282,6 +299,11 @@ def _infer_exercise_subtype(tree: dict) -> str:
                 walk(i)
 
     walk(_find_web_area(tree) or tree)
+    # An answered / post-answer screen is not a fresh exercise — return UNKNOWN
+    # so the (non-deterministic) transition classifier routes it to advance,
+    # rather than the deterministic exercise rule preempting it.
+    if post_answer:
+        return "UNKNOWN"
     if combobox_answer > 0:
         return "EXERCISE_DROPDOWN"
     if choice_checkbox > 0:
