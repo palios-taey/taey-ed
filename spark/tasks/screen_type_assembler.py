@@ -150,14 +150,6 @@ SIGNATURE_ACTIONS = {
     # preserved by find_and_click being required (above). Stays in KNOWN_ACTIONS.
     "video_poll",
 }
-# A pure STAGING cycle: actions that only PREPARE the screen (bring a widget into
-# view) without actuating the answer. A multi-cycle recipe (e.g. EXERCISE_SORTER)
-# legitimately emits one of these FIRST — scroll the widget into view, END the BT,
-# then re-capture with valid coords next cycle (pre-scroll AX bboxes are stale).
-# Conformance treats such a cycle as the recipe's PHASE 1, not an omission of
-# actuation (cycle-aware, 2026-06-15).
-_STAGING_CYCLE_ACTIONS = {"scroll", "wait"}
-
 FLAT_DRAG_KEYS = {"start_x", "start_y", "from_x", "from_y", "to_x", "to_y", "end_x", "end_y"}
 TREE_VALUE_CHAR_LIMIT = 2_000
 _ALLOWED_TREE_KEYS = {
@@ -776,25 +768,9 @@ def validate_worker_bt_response(parsed: dict, platform: str, screen_type: str) -
     required = sorted((allowed_actions & SIGNATURE_ACTIONS) - {"conditional", "fallback"})
     missing = [action for action in required if action not in actual_actions]
     if missing:
-        # CYCLE-AWARE conformance (2026-06-15, root cause of the EXERCISE_SORTER
-        # stall): a multi-cycle recipe legitimately emits a STAGING cycle first —
-        # scroll the widget into view, END the BT, re-capture with valid coords
-        # next cycle (the recipe itself instructs this: "END BT here if scrolling
-        # occurred; pre-scroll coords are stale"). A scroll-only prep cycle is the
-        # recipe's PHASE 1, not an omission. Accept it when the BT consists ONLY of
-        # staging actions AND the recipe sanctions scrolling; the ACTUATION cycle
-        # (next capture, fresh coords) is conformance-checked normally, and endless
-        # staging is caught by the engine's stuck/loop guard (tree-unchanged stop).
-        if actual_actions and actual_actions <= _STAGING_CYCLE_ACTIONS and "scroll" in allowed_actions:
-            logger.info(
-                "conformance: %s — accepting scroll-only STAGING cycle "
-                "(recipe-sanctioned multi-cycle; actuation deferred to next capture)",
-                emitted_screen_type,
-            )
-        else:
-            raise ScreenTypeAssemblerError(
-                f"worker omitted required recipe phases/actions: {', '.join(missing)}"
-            )
+        raise ScreenTypeAssemblerError(
+            f"worker omitted required recipe phases/actions: {', '.join(missing)}"
+        )
 
     for node in _iter_nodes(parsed["tree"]):
         if node.get("type") == "fallback" and "fallback" not in allowed_actions:
