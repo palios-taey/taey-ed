@@ -23,6 +23,7 @@ import asyncio
 import httpx
 import json
 import logging
+import re
 from typing import List, Optional, Dict
 
 logger = logging.getLogger(__name__)
@@ -199,6 +200,37 @@ def _parse_per_square_unit(question: str):
             return float(m.group(1)), True
         return None, False   # declares a unit but unreadable -> escalate
     return 1.0, True
+
+
+# Khan describes its wave figures in AXImage alt-text with the EXACT counts, e.g.
+#   "The wave extends 4 squares from the equilibrium level. There are 5 squares
+#    from a crest to the next crest."  -> amplitude 4 squares, wavelength 5 squares
+# This is GROUND TRUTH (the platform's own accessibility description), not a CV
+# estimate — so it does NOT need the measure_grid shadow gate (that gate guards
+# against CV mis-counting). Tier 0 of the hard-image rule: read it before any CV.
+_ALT_AMPLITUDE_RE = re.compile(r"extends?\s+(\d+(?:\.\d+)?)\s+squares?\s+from\s+the\s+equilibrium", re.I)
+_ALT_WAVELENGTH_RE = re.compile(r"(\d+(?:\.\d+)?)\s+squares?\s+from\s+a?\s*crest\s+to\s+(?:the\s+)?next\s+crest", re.I)
+
+
+def resolve_measure_from_alt_text(question: str, figure_alt_texts: list[str]) -> dict | None:
+    """Resolve a grid measurement EXACTLY from figure alt-text (Tier 0). Returns
+    {value, measure, squares, per_square_unit, source:'alt_text'} when a single
+    unambiguous value is present, else None (caller falls through to CV). measure
+    + per_square_unit come from the question; the square COUNT comes from the
+    platform's own figure description."""
+    measure = _parse_measure(question or "")
+    unit, unit_ok = _parse_per_square_unit(question or "")
+    if not measure or not unit_ok:
+        return None
+    rx = {"amplitude": _ALT_AMPLITUDE_RE, "wavelength": _ALT_WAVELENGTH_RE}.get(measure)
+    if rx is None:  # 'period' needs a time axis; alt-text counts don't give it
+        return None
+    squares = {float(m.group(1)) for t in (figure_alt_texts or []) for m in [rx.search(t or "")] if m}
+    if len(squares) != 1:  # 0 = no match; >1 = ambiguous (e.g. multi-figure ranking) -> not a single measure
+        return None
+    sq = next(iter(squares))
+    return {"value": sq * unit, "measure": measure, "squares": sq,
+            "per_square_unit": unit, "source": "alt_text"}
 
 
 def _measure_grid_answer(question: str, screenshot_b64) -> dict:

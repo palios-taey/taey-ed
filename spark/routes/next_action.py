@@ -621,6 +621,25 @@ def _consultation_or_wait(consult_result: dict) -> dict:
     }
 
 
+def _collect_static_text(tree: dict) -> str:
+    """Concatenate AXStaticText/AXHeading names from the tree — used to parse the
+    question (measure word + per-square unit) for the alt-text Tier-0 fast-path."""
+    parts: list[str] = []
+
+    def walk(node) -> None:
+        if not isinstance(node, dict):
+            return
+        if node.get("role") in ("AXStaticText", "AXHeading"):
+            name = str(node.get("name") or node.get("value") or "")
+            if name:
+                parts.append(name)
+        for child in node.get("children") or []:
+            walk(child)
+
+    walk(tree)
+    return " ".join(parts)
+
+
 def _build_screen_directive(request, platform: str, tree: dict, screen_type: str, sig_hash: str,
                             user_guidance: str = None, course_id: str = "") -> dict:
     """
@@ -637,6 +656,57 @@ def _build_screen_directive(request, platform: str, tree: dict, screen_type: str
             canonical_screen_type,
         )
     screen_type = canonical_screen_type
+
+    # ── Hard-image rule, Tier 0: exact figure alt-text read (Jesse 2026-06-15) ──
+    # Khan describes its wave figures in AXImage alt-text with the EXACT square
+    # counts ("The wave extends 4 squares from the equilibrium level. There are 5
+    # squares from a crest to the next crest." = amplitude 4, wavelength 5). That
+    # is GROUND TRUTH (the platform's own accessibility description), not a CV
+    # estimate — so it solves the screen deterministically and does NOT need the
+    # measure_grid shadow gate (which exists to guard against CV mis-COUNTING, a
+    # risk that does not apply to reading Khan's own answer). On ANY non-match
+    # (no figure, ambiguous multi-figure, unparseable, period) this falls through
+    # to the normal CV/worker path — no regression. Verified: a055ab8a figure
+    # alt-text -> amplitude 4, the same value the CV computes.
+    if screen_type == "EXERCISE_GRID_MEASURE":
+        try:
+            from spark.tasks.screen_type_assembler import find_load_bearing_figures
+            from spark.tasks.call_gemini import resolve_measure_from_alt_text
+            fig_names = [f["name"] for f in find_load_bearing_figures(tree)]
+            resolved = resolve_measure_from_alt_text(_collect_static_text(tree), fig_names)
+        except Exception:
+            logger.exception("_build_screen_directive: alt-text Tier-0 resolve failed (non-fatal)")
+            resolved = None
+        if resolved:
+            value_str = "%g" % resolved["value"]
+            logger.info(
+                "_build_screen_directive: GRID_MEASURE solved by alt-text Tier-0 "
+                "(%s=%s, squares=%s, unit=%s) — deterministic type+Check, no CV/shadow gate",
+                resolved["measure"], value_str, resolved["squares"], resolved["per_square_unit"],
+            )
+            return _with_chat({
+                "directive": "execute_tree",
+                "directive_id": _make_directive_id(),
+                "tree": {
+                    "type": "sequence",
+                    "name": "grid_measure_alt_text",
+                    "children": [
+                        {"type": "action", "action": "find_and_type",
+                         "params": {"target": "", "role": "AXTextField", "text": value_str}},
+                        {"type": "action", "action": "wait_for_element",
+                         "params": {"target": "Check", "role": "AXButton", "max_wait": 3.0}},
+                        {"type": "action", "action": "find_and_click",
+                         "params": {"target": "Check", "role": "AXButton",
+                                    "strategy": "mouse_click", "match_mode": "exact", "post_delay": 2.5}},
+                    ],
+                },
+                "screen": screen_type,
+                "course_id": course_id,
+                "lesson": "",
+                "expected_next": [],
+                "skeleton_hash": sig_hash,
+            }, platform, [build_status(
+                f"Grid measure read from figure description: {resolved['measure']}={value_str}")])
 
     if not request.screenshot_b64:
         return {
