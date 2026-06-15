@@ -25,6 +25,8 @@ HASH_INDEX_DIR = DATA_DIR / "hash_index"
 FINGERPRINT_LOG_DIR = DATA_DIR / "fingerprint_log"
 
 # API secrets file (Gemini key + others). Resolved as Path so callers can .exists().
+# Provide the real path via TAEY_ED_SECRETS_PATH in deployment (systemd drop-in);
+# the default is a generic location, not an operator path.
 SECRETS_PATH = Path(os.environ.get(
     "TAEY_ED_SECRETS_PATH",
     "/etc/taey-ed/secrets.json",

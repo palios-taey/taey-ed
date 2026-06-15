@@ -1,6 +1,6 @@
 """Centralized secrets loader for the Taey-Ed central server.
 
-Reads /etc/taey-ed/secrets.json (path overridable via TAEY_ED_SECRETS_PATH).
+Reads the API secrets JSON at TAEY_ED_SECRETS_PATH (default /etc/taey-ed/secrets.json).
 Provides typed accessors for each subsystem (stripe, taey_ed, etc.).
 
 Production-mode gating:

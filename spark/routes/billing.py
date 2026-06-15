@@ -38,7 +38,7 @@ stripe.api_key = _stripe_secrets.secret_key
 def _price_id_to_credits() -> dict[str, int]:
     """Map Stripe price IDs → credits granted per purchase.
 
-    Read from palios-taey-secrets.json under stripe.price_ids.
+    Read from the API secrets file under stripe.price_ids.
     Schema: { "price_xxx": { "credits": <int>, ... } }
     """
     raw = _load_raw()
