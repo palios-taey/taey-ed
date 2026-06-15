@@ -1,0 +1,43 @@
+screen_type: EXERCISE_WRONG_ANSWER
+master_category: EXERCISE
+subtype: wrong_answer
+classify: >
+  POST-WRONG-ANSWER feedback state of an exercise: the answer widget(s) are STILL
+  present AND a wrong-answer verdict shows ("Not quite yet" / "Give it another try" /
+  red "incorrect" image) AND a "Try again" AXButton is present AND there is NO "Check"
+  AXButton. This is NOT EXERCISE_TEXT_INPUT and NOT a fresh exercise — the item is
+  already answered WRONG (mastery affected). The no-Check signal is what distinguishes
+  it: a fresh/answerable exercise shows "Check"; a wrong-answer state shows "Try again"
+  + "Show a step" + "Hints" and no "Check". (Classifier wiring owned by the engine;
+  this is the recipe.)
+recipe:                              # ESCALATE-ONLY — there is no sanctioned automated
+  # advance from a wrong-answer state. Re-answering is a banned reflex; recovery (apply
+  # a ladder-vetted answer via the reset->type->Check path) is DEFERRED pending Jesse's
+  # mastery-burn risk call. So the worker must NOT build an advancing BT. Emit an EMPTY
+  # behavior tree {} — the engine routes {} to the escalation ladder (verified: {} ->
+  # BTGenerationError -> ladder; safe-stop 27ab037 backstops any stray output).
+  - emit an empty behavior tree {} to escalate cleanly; do NOT solve, resubmit, or
+    invent a halt / escalate_user_assist action (both unregistered -> worker_fallback).
+contracts:
+  - the item is ALREADY ANSWERED WRONG (mastery affected): never re-solve, never
+    resubmit, and never click "Try again" — a reflex re-answer burns more mastery and
+    is forbidden. Recovery is escalation-gated, never a recipe action.
+  - the ONLY correct output for this screen is an empty BT {} (clean ladder escalation);
+    no registered handler advances a wrong-answer state.
+  - grid amplitude/wavelength items reach this state because LLM vision under-counts
+    (worker + 3 Family AIs read a 4-square amplitude as 1-2). The real fix is the
+    server-side measure_grid CV (deterministic-when-proven), not anything in this recipe.
+actuation:
+  strategy: none — emit {}. The escalation ladder owns the next step (a vetted answer,
+    or Jesse's recovery call), not this screen.
+verification:
+  - n/a — success here is "escalated cleanly", not "advanced". Do not expect a tree change.
+completion:
+  - escalation raised; the ladder takes over. Never mark a wrong-answer screen as
+    completed or advanced.
+failure_modes:
+  - building an advancing BT (find_and_type / Check / re-clicking the answer widget) ->
+    mastery burn + R3 violation. Emit {} instead.
+  - inventing halt / escalate_user_assist -> unregistered action -> worker_fallback spin.
+  - mis-routing back to EXERCISE_TEXT_INPUT — the absence of a "Check" button is the
+    discriminator; if "Check" is present it is a fresh/answerable exercise, not this.

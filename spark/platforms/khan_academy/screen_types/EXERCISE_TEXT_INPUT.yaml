@@ -7,14 +7,22 @@ classify: >
   (tab strip, Share, Extensions) are NOT answers. Misclassifying these as
   dropdown/matcher/assessment fails every time (observed repeatedly).
 recipe:                              # THE type-BT — intelligence steps embedded
-  - extract_question:
-      question: {role: AXStaticText, min_length: 25}
-      text: [{role: AXStaticText, min_length: 10}]
-      store: q
+  # NO extract_question (Supervisor-approved 2026-06-14): the worker omits it
+  # (deadlock) AND AXStaticText min_length=25 MISSES image/MathML-rendered
+  # questions. send_to_llm question_type=solve auto-attaches the screenshot and
+  # reads the question+diagram FROM THE IMAGE directly (same drop-the-ceremony
+  # insight as EXERCISE_DROPDOWN).
   - send_to_llm:
-      question: $q.question_text
-      question_type: solve           # screenshot auto-attached: LLM reads the
-      context: $q.reference_texts    # image/graph as context, computes the answer
+      question_type: solve                 # screenshot auto-attached -> vision
+      question: >                          # READ the question + any diagram/graph
+        from the screenshot and compute the answer. Return ONLY the bare value to
+        type — no units, no words, no label (the unit is fixed text beside the
+        field; typing it makes the answer wrong).
+        GRID/GRAPH MEASUREMENT (amplitude/wavelength/period/distance) belongs in
+        EXERCISE_GRID_MEASURE (pixel CV) — vision under-counts squares (proven); if it
+        lands here it is a LOW-CONFIDENCE fallback: amplitude = equilibrium-midline to
+        crest (NOT crest-to-trough = peak-to-peak = 2x), wavelength = one full cycle,
+        x per-square unit; number only.
       store: llm
   - find_and_type:
       target: ""                     # "" = first content field; if several
@@ -22,7 +30,7 @@ recipe:                              # THE type-BT — intelligence steps embedd
       text: $llm.answer              # AXTextArea for free-response screens.
   - wait_for_element: {target: Check, role: AXButton, max_wait: 3.0}
   - find_and_click: {target: Check, role: AXButton, strategy: mouse_click, match_mode: exact, post_delay: 2.5}
-  - store_qa: {question: $q.question_text, answer: $llm.answer, question_type: solve}
+  - store_qa: {question: <the question text, read from the screenshot>, answer: $llm.answer, question_type: solve}
 contracts:
   - numeric: type the NUMBER ONLY — the unit (J, GJ, m/s) is fixed text beside
     the field; typing the unit makes the answer wrong
@@ -40,9 +48,15 @@ completion:
   - "Next question" / "Show summary" AXButton = correct, advance
 failure_modes:
   - wrong answer -> FULL STOP, escalate (R3); never retype-and-resubmit
+  - wrong-answer STATE ("Not quite yet"/"Try again" overlay, input intact, no Check):
+    never solve/resubmit/invent halt — emit empty BT {} for clean ladder escalation
   - hash collision: distinct numeric questions share one skeleton hash — ALWAYS
     re-extract the current question; never assume a fixed answer from history
   - choice + text combo (AXCheckBox rows AND a text field): this is
     MULTIPLE_CHOICE with has_text_field=true, not TEXT_INPUT
   - image-bearing question where the figure exceeds the viewport: scroll +
     need_screenshot extra frames, pass ALL frames to the LLM
+  - HARD-IMAGE rule (Jesse 2026-06-15): never eyeball-guess a figure. 2nd pass by need —
+    a MEASURED quantity off a grid is EXERCISE_GRID_MEASURE (pixel CV; vision under-counts
+    grids, proven); an UNCERTAIN INTERPRETATION read -> ESCALATE (ladder fans the shot to
+    the 5 Family). Never guess off a hard image.

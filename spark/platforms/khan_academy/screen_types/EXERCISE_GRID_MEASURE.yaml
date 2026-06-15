@@ -1,0 +1,55 @@
+screen_type: EXERCISE_GRID_MEASURE
+master_category: EXERCISE
+subtype: grid_measure
+classify: >
+  A numeric TEXT-INPUT exercise whose answer is a quantity MEASURED off a static figure
+  on a grid: a wave/graph AXImage + "each square (on the grid) represents N units" + an
+  AXTextField answer + the question asks for amplitude / wavelength / period / a distance
+  or displacement read from the grid. NOT EXERCISE_GRAPH_POINTS (interactive Mafs
+  plot-the-points). NOT a generic text input — the discriminator is "answer is read by
+  COUNTING grid squares on a pictured figure". (Classifier wiring owned by the engine.)
+recipe:                              # CV MEASUREMENT, not LLM vision (vision can't count
+  # grid squares: worker + 3 Family AIs read a 4-square amplitude as 1-2, 2026-06-15).
+  # INTERFACE (frozen Mac, 6c423e8): the ENGINE parses measure + per_square_unit from the
+  # VERBATIM question text (Mac drops other BT params). That text MUST contain BOTH the
+  # measure word AND "each square represents N units" — on Khan these are TWO AXStaticText
+  # (caption + prompt), so extract_question must capture the whole question region, not one line.
+  - extract_question:
+      question: {role: AXStaticText, min_length: 6}   # caption ("...represents N units") + prompt ("...amplitude?")
+      store: q
+  - send_to_llm:
+      question_type: measure_grid    # engine -> measure_wave_grid(screenshot); regexes measure+unit from $q
+      question: $q.question          # VERBATIM (both sentences); never paraphrase
+      store: meas                    # confident -> $meas.value_units ; else engine ESCALATES + corpus-logs
+  # type+Check is gated by the engine SHADOW/SUBMIT flag (measure_grid_submit.flag, Jesse's
+  # call): shadow = log $meas + escalate (no type); submit (post-validation) = type + Check.
+  - find_and_type: {target: "", role: AXTextField, text: $meas.value_units}
+  - wait_for_element: {target: Check, role: AXButton, max_wait: 3.0}
+  - find_and_click: {target: Check, role: AXButton, strategy: mouse_click, match_mode: exact, post_delay: 2.5}
+  - store_qa: {question: $q.question, answer: $meas.value_units, question_type: measure_grid}
+contracts:
+  - the answer is MEASURED by CV, never eyeballed by the LLM — vision under-counts grid
+    squares (proven). measure_grid is the only sanctioned solver for these.
+  - the engine parses measure + per_square_unit from the VERBATIM question text, so the
+    extracted question MUST include both the measure word AND "each square represents N
+    units"; typed answer = value_units = squares x N (NOT the raw square count if N != 1).
+  - amplitude = displacement equilibrium->crest; wavelength = one full cycle
+    (crest-to-crest); period only with a time axis. measure_grid derives crest /
+    equilibrium / spacing mechanically.
+  - a not-confident measurement (non-square grid / non-integer / asymmetric / no wave)
+    => the ENGINE ESCALATES; the recipe never submits an ungated value.
+  - SUBMIT (type + Check) is gated by the engine shadow/submit mode (Jesse's call); until
+    the CV is validated across many screens AND approved, this runs in shadow.
+actuation:
+  strategy: measure_grid (server-side CV) -> find_and_type the gated value -> Check
+    (mouse_click, post 2.5s). No mouse interaction with the figure (it is static).
+verification:
+  - field shows $meas.value_units before Check; same-skeleton after Check = wrong/ungated.
+  - "Not quite" / red after Check = WRONG ANSWER -> EXERCISE_WRONG_ANSWER state + escalate (R3).
+completion:
+  - "Next question" / "Show summary" AXButton after Check = correct, advance.
+failure_modes:
+  - falling back to question_type=solve for a gridded measurement -> LLM under-counts ->
+    wrong answer. Use measure_grid; if it is not confident, escalate, never LLM-guess.
+  - typing the raw square count when per_square_unit != 1 -> wrong by a factor of N.
+  - treating an interactive Mafs graph as this -> that is EXERCISE_GRAPH_POINTS.

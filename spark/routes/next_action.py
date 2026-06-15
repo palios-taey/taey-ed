@@ -178,7 +178,8 @@ def _escalate_to_claude_diagnosing(
     try:
         _st = (screen_type_hint or "").strip()
         if _st and _st != "UNKNOWN" and not escalation_state.is_terminal(platform, _screen_hash):
-            _yaml = Path(f"/home/user/taey-ed/spark/platforms/{platform}/screen_types/{_st}.yaml")
+            from spark.tasks.paths import PLATFORMS_DIR as _PLATFORMS_DIR
+            _yaml = _PLATFORMS_DIR / platform / "screen_types" / f"{_st}.yaml"
             _es_state = escalation_state.get(platform, _screen_hash)
             _last = float(_es_state.get("updated_at", 0) or 0)
             if _yaml.exists() and _es_state.get("attempt", 0) and _yaml.stat().st_mtime > _last:
@@ -357,9 +358,8 @@ def _escalate_to_claude_diagnosing(
                 # skip if a REVIEW already landed OR a dispatch marker exists. The
                 # marker lives in diag_dir, which is cleared on advance/user-Stop —
                 # so a NEW screen_hash or an explicit re-open dispatches fresh.
-                _review = Path(
-                    f"/home/user/taey-ed/consultations/REVIEWS/{platform}_{_screen_hash[:12]}_{tier}.md"
-                )
+                from spark.tasks.paths import REPO_ROOT as _REPO_ROOT
+                _review = _REPO_ROOT / "consultations" / "REVIEWS" / f"{platform}_{_screen_hash[:12]}_{tier}.md"
                 _marker = diag_dir / f"chat_dispatched_{tier}.flag"
                 if _review.exists() or _marker.exists():
                     logger.info(
@@ -1031,7 +1031,8 @@ def session_reset(platform: str = "khan_academy"):
                 logger.exception(f"failed to clear consult {d}")
 
     # 3. Pending validations for this platform
-    pv_root = Path("/home/user/taey-ed-data/pending_validations") / platform
+    from spark.tasks.paths import DATA_DIR as _DATA_DIR
+    pv_root = _DATA_DIR / "pending_validations" / platform
     if pv_root.exists():
         for f in pv_root.glob("*.json"):
             try:
@@ -1046,7 +1047,7 @@ def session_reset(platform: str = "khan_academy"):
     # reset screen resumes at its stale tier (e.g. Tier 3 -> terminal) instead
     # of fresh. This is a LEGITIMATE clear (user-Stop is one of the two allowed
     # resets); the Operator correctly refused to clear it by hand and handed up.
-    es_root = Path("/home/user/taey-ed-data/escalation_state")
+    es_root = _DATA_DIR / "escalation_state"
     cleared["escalation_state"] = 0
     if es_root.exists():
         for f in es_root.glob(f"{platform}_*.json"):

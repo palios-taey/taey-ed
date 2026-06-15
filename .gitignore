@@ -33,3 +33,9 @@ consultations/ESCALATIONS/
 logs/
 *.pre_migration_bak
 /tmp/taey-ed-mac-raw-dumps/
+
+# Runtime consultation / review artifacts (Family review dumps, unsolved log,
+# corpus) — process output, regenerated each run, not part of the published code.
+consultations/REVIEWS/
+consultations/UNSOLVED.md
+consultations/*.jsonl

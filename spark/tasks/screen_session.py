@@ -32,7 +32,8 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-_BASE = Path("/home/user/taey-ed-data/screen_sessions")
+from spark.tasks.paths import DATA_DIR
+_BASE = DATA_DIR / "screen_sessions"
 _ALLOWED_AUTHORS = {"worker", "machine"}
 _MAX_LIVE_ATTEMPTS = 6
 _MAX_LIVE_LESSONS = 6

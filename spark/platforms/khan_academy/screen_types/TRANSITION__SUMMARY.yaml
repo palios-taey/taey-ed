@@ -3,31 +3,64 @@ master_category: TRANSITION
 subtype: summary
 deterministic: true
 classify: >
-  A post-set summary / completion card: exercise score card, mastery-points
-  card ("X out of 100 Mastery points", Proficient/Mastered), or end-of-set
-  review state with "(Choice X, Correct)" markers + "Show summary". The set is
-  DONE; advance via "Up next: <X>" (or click "Show summary" first if present).
-fixed_behavior_tree:                 # navigate handler resolves the exact
-  # "Up next"/"Show summary"/"Next question" forward link at execution time
+  TRIGGER: a FORWARD-ADVANCE control is present and the item/set is DONE (no active answer
+  widget to fill) — advance, do NOT re-answer. The control is ONE of: an "Up next:<item>"
+  AXLink (end-of-set -> next lesson/activity), a "Next question" AXButton (per-question
+  post-answer, with a verdict popover), or a "Show summary" AXButton (end-of-set review). A "Try again" button, a mastery/score result
+  card ("X/Y correct", "Keep on practicing!", "X out of 100 Mastery points", energy pts), or
+  the visible unit content list do NOT disqualify — the Up next / Next question / Show
+  summary control IS the signal. Never re-click an answer widget / choice / "Try again".
+  NOT a NAVIGATION / content-list menu (MANY lessons/quizzes to choose among) = NAV; this
+  has ONE forward advance from a JUST-COMPLETED question/set.
+fixed_behavior_tree:                 # UNIFIED, Mac-executable (NO fallback — banned in the
+  # worker-rebuilt path -> freelance, cef8155e). find_all the "Up next" LINK; conditional:
+  # exists -> click it by element ref (skip-safe, matches ONLY "Up next"); else navigate BUTTONS.
   type: sequence
-  name: transition_summary
+  name: transition_advance
   children:
-    - {type: action, action: find_all, params: {role: AXLink}, store: links}
-    - {type: action, action: send_to_llm,
-       params: {question_type: navigate, items: "$links"}, store: nav}
-    - {type: action, action: find_and_click,
-       params: {target: "$nav.answer", role: AXLink, strategy: mouse_click,
-                match_mode: exact, post_delay: 3.0}}
+    - {type: action, action: find_all,
+       params: {role: AXLink, description_contains: "Up next"}, store: upnext}
+    - type: action
+      action: conditional
+      condition: "$upnext"
+      then:
+        type: sequence
+        children:
+          - {type: action, action: click,
+             params: {element: "$upnext.0.element", strategy: mouse_click}}
+          - {type: action, action: wait, params: {seconds: 3.0}}
+      else:
+        type: sequence
+        children:
+          - {type: action, action: find_all, params: {role: AXButton}, store: btns}
+          - {type: action, action: send_to_llm,
+             params: {question_type: navigate, items: "$btns",
+                      question: "Pick the ONE forward-ADVANCE control: prefer 'Next question', else 'Show summary', else an 'Up next:<item>' control. NEVER pick 'See a step-by-step solution', 'Report a problem', 'Start over', 'Hints', 'Skip', or 'Try again' — they do not advance."},
+             store: nav}
+          - {type: action, action: find_and_click,
+             params: {target: "$nav.answer", role: AXButton, strategy: mouse_click,
+                      match_mode: exact, post_delay: 2.5}}
 contracts:
-  - post-completion "Up next:" is the CANONICAL advance here (the mid-content
-    "never click Up next" rule does NOT apply to completion/transition screens)
-  - NEVER click "Try again" on a summary — it re-does the COMPLETED set
+  - the item is ALREADY ANSWERED: never re-answer, re-open a widget, or re-click a choice.
+    NEVER click "Try again" — it re-does the answered item.
+  - END-OF-SET "Up next:<item>" is a LINK with a VARIABLE suffix: match the stable prefix
+    "Up next" via find_all description_contains, click by ELEMENT REF ($upnext.0.element) —
+    never exact-name it, never a {name,role,bbox} SPEC (a spec -> 'element not found').
+  - NEVER navigate-over-LINKS: the unit content list (Quiz 1/2, Unit test, other lessons)
+    is on screen; picking one SKIPS modules. The LINK path is description_contains "Up next"
+    ONLY; the navigate path is over BUTTONS only.
+  - emit a SEQUENCE / conditional, never a `fallback` node (rejected in the rebuilt path ->
+    the worker freelances a malformed BT).
 actuation:
-  strategy: mouse_click on the resolved AXLink; post_delay 3.0
+  strategy: find_all "Up next" link -> conditional: click {element} + wait 3.0 (LINK), else
+    find_all AXButton -> navigate(steered) -> find_and_click (BUTTON, post 2.5).
 verification:
-  - tree changes to the next content item
+  - tree changes to the next question (per-question) or next lesson/activity (end-of-set).
 completion:
-  - n/a — succeeds on advancing
+  - n/a — succeeds on advancing.
 failure_modes:
-  - "(Choice X, Correct)" review markers = ALREADY ANSWERED — never re-click
-    choices; the forward move is the summary/up-next link
+  - `fallback` root -> the worker freelances ("?(AXButton)"/"?(AXLink)", action in `name`).
+    Use sequence + conditional.
+  - navigate picking "See a step-by-step solution" / "Start over" -> not a forward advance;
+    the question-steer + button-only navigate avoid it.
+  - clicking a link by {name,role,bbox} SPEC -> 'element not found'. Use the element ref.

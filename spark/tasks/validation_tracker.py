@@ -35,7 +35,8 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-PENDING_DIR = Path("/home/user/taey-ed-data/pending_validations")
+from spark.tasks.paths import DATA_DIR
+PENDING_DIR = DATA_DIR / "pending_validations"
 TAEY_NOTIFY_BIN = "/usr/local/bin/taey-notify"
 
 

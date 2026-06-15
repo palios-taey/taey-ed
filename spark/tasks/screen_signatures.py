@@ -43,7 +43,7 @@ from spark.tasks.skeleton import _find_web_area
 
 logger = logging.getLogger(__name__)
 
-SIGNATURES_DIR = Path("/home/user/taey-ed-data/signatures")
+from spark.tasks.paths import SIGNATURES_DIR  # DATA_DIR/"signatures" (env TAEY_ED_DATA_DIR)
 
 # Roles with stable developer-set text labels — text contributes to the
 # signature. The same "Check" / "Submit" / "Next" button on every visit

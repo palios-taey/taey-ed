@@ -172,8 +172,9 @@ def _navigate_eligible(desc: str) -> bool:
 #     mastery risk.
 #   SUBMIT (flag present): a CONFIDENT reading is typed; a low-confidence one
 #     still escalates (the CV's own hard gate).
-_MEASURE_GRID_SUBMIT_FLAG = "/home/user/taey-ed-data/measure_grid_submit.flag"
-_MEASURE_GRID_LOG = "/home/user/taey-ed-data/measure_grid_corpus.jsonl"
+from spark.tasks.paths import DATA_DIR
+_MEASURE_GRID_SUBMIT_FLAG = str(DATA_DIR / "measure_grid_submit.flag")
+_MEASURE_GRID_LOG = str(DATA_DIR / "measure_grid_corpus.jsonl")
 
 
 def _parse_measure(question: str):

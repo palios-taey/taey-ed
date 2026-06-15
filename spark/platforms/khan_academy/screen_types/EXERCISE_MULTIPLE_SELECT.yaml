@@ -1,34 +1,36 @@
 screen_type: EXERCISE_MULTIPLE_SELECT
 classify: >
-  "(Choice X)"-prefixed AXCheckBox rows among the ANSWER WIDGETS, and the
-  question says "Select all that apply" / "Choose N answers" (multiple answers).
-  Same widget role as MULTIPLE_CHOICE — the question TEXT decides which type.
-  Classify from the CURRENT widgets + question, never page history.
-recipe:                              # THE type-BT — intelligence steps embedded
-  - extract_question:
-      question: {role: AXStaticText, min_length: 20}
-      options: {role: AXCheckBox, exclude_titles: ["Draw on exercise", "Bonus question"]}
-      store: q
-  - send_to_llm:
-      question: $q.question_text
-      question_type: solve_checkbox  # images in question area -> solve_complex
-      options: $q.options            # raw AX names incl "(Choice X) " prefix
-      context: $q.reference_texts
-      store: llm                     # returns {selected: [full option names]}
-  - for_each:                        # items/variable/do at TOP LEVEL, never in params
-      items: $llm.selected
-      variable: sel
-      do:
-        find_and_click: {target: $sel, role: AXCheckBox, strategy: mouse_click,
-                         match_mode: exact, post_delay: 1.0}
+  MULTIPLE-SELECT (pick MORE THAN ONE): "(Choice X)"-prefixed AXCheckBox rows AND the
+  instruction expects multiple answers — ANY of "Choose N answers" (N>=2), "Select all that
+  apply", or "Select the true/correct statements". Distinguish from EXERCISE_MULTIPLE_CHOICE
+  (single answer, SAME "(Choice X)" AXCheckBox widget) ONLY by that question text: a
+  "Choose 2/3 answers" / "select all" / "select the ... statements" phrase => MULTIPLE_SELECT;
+  no such phrase => MULTIPLE_CHOICE. Classify from the CURRENT widgets + question text only.
+  QUIZ context ("Quiz N" heading / .../quiz/ URL) is the SAME widget as practice — classify
+  IDENTICALLY, never fall to UNKNOWN/recipe-less-checkbox for a quiz. A streak/"hot streak"
+  toast over the top is CHROME: read the (Choice X) AXCheckBoxes + the instruction, ignore it.
+recipe:                              # DIRECT-SOLVE (Supervisor decision 2026-06-15): READ the
+  # question + all "(Choice X)" statements FROM THE SCREENSHOT, determine the TRUE ones, click
+  # each. find_all->send_to_llm->for_each is intentionally NOT forced: find_all->options 422s
+  # (raw AXUIElementRef), and the structured flow adds no grounding here (kb_chunks=0). REQUIRED
+  # = the choice clicks + Check + store_qa. The worker reasons the answer and emits the clicks.
+  - find_and_click:                  # ONE per CORRECT choice — "Choose N" => N find_and_clicks.
+      target: <a TRUE "(Choice X) <full statement>" checkbox label, copied VERBATIM from screen>
+      role: AXCheckBox               # determine truth from the question; click ONLY the true ones,
+      strategy: mouse_click          # NEVER "Draw on exercise". A box already checked must NOT be
+      match_mode: exact              # re-clicked (re-click toggles it OFF).
+      post_delay: 1.0
   - wait 1.5                         # Check-enable race: React re-render gates the button
   - wait_for_element: {target: Check, role: AXButton, max_wait: 3.0}
   - find_and_click: {target: Check, role: AXButton, strategy: mouse_click, match_mode: exact, post_delay: 2.5}
-  - store_qa: {question: $q.question_text, answer: $llm.selected, question_type: solve_checkbox}
+  - store_qa: {question: <the question, read from the screenshot>, answer: <the chosen choices>, question_type: solve_checkbox}
 contracts:
-  - LLM returns FULL option names VERBATIM in selected — never bare letters
-  - options ALWAYS flow from extract_question ($q.options) — hardcoding loses
-    the "(Choice X) " prefix and exact-match clicks fail
+  - DIRECT-SOLVE: the worker reads the question + choices from the screenshot, determines the
+    true ones, and emits ONE find_and_click per correct choice ("Choose N" => N clicks). No
+    find_all / send_to_llm / for_each required (find_all->options 422s; kb_chunks=0 here).
+  - click targets are the EXACT "(Choice X) <full statement>" AX names, VERBATIM (match_mode
+    exact) — never bare letters, never "Draw on exercise". A wrong answer is acceptable
+    collateral for advancing the mapping (the wrong-answer state escalates + RCAs).
 actuation:
   strategy: mouse_click ALWAYS — focus_space silently no-ops on Chrome web
     widgets (proven live 2026-06-11)

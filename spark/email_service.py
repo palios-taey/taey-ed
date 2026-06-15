@@ -10,6 +10,7 @@ In DEV mode, if no Resend key is configured, emails are logged but not sent.
 
 import json
 import logging
+import os
 import urllib.error
 import urllib.request
 from typing import Optional
@@ -17,6 +18,9 @@ from typing import Optional
 from spark.secrets_loader import _load_raw, is_production
 
 logger = logging.getLogger(__name__)
+
+# Public-facing app URL for verification/receipt links (env-overridable).
+APP_BASE_URL = os.environ.get("TAEY_ED_APP_URL", "https://app.taey.ai")
 
 
 class EmailError(RuntimeError):
@@ -86,7 +90,7 @@ def send_email(
         raise EmailError(f"Resend request failed: {e}") from e
 
 
-def send_verification_email(to: str, token: str, base_url: str = "https://app.taey.ai") -> None:
+def send_verification_email(to: str, token: str, base_url: str = APP_BASE_URL) -> None:
     """Send the post-signup email verification link.
 
     The link points at the static verify.html page on app.taey.ai (NOT at

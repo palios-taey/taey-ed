@@ -33,9 +33,10 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-ESCALATIONS_DIR = Path("/home/user/taey-ed/consultations/ESCALATIONS")
-TEMPLATES_DIR = Path("/home/user/taey-ed/spark/escalation_templates")
-UNSOLVED_LOG = Path("/home/user/taey-ed/consultations/UNSOLVED.md")
+from spark.tasks.paths import REPO_ROOT
+ESCALATIONS_DIR = REPO_ROOT / "consultations" / "ESCALATIONS"
+TEMPLATES_DIR = REPO_ROOT / "spark" / "escalation_templates"
+UNSOLVED_LOG = REPO_ROOT / "consultations" / "UNSOLVED.md"
 
 
 # --- Tier resolution ---------------------------------------------------------

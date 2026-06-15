@@ -7,7 +7,12 @@ classify: >
   start affordance ("Let's go", "Start quiz", "Start Unit test"), or a
   "Don't give up yet!" / welcome modal with a single dismiss button. Buttons
   but no answer widgets, no player, no content to read.
-fixed_behavior_tree:
+fixed_behavior_tree:                 # navigate over BUTTONS is intentional here: the
+  # start affordance text is VARIABLE ("Let's go" / "Start quiz" / "Start Unit test" /
+  # a dismiss button) so there is no fixed name to target deterministically. navigate
+  # is ENGINE-FENCED (call_gemini hard-guard e613e62): it cannot select 'Next in
+  # course'/'Previous in course'/skip-links/'Try again'/chrome — so even if this runs
+  # on a mis-classified screen it can no longer module-skip; none-eligible -> escalate.
   type: sequence
   name: transition_intro
   children:

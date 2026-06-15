@@ -5,27 +5,24 @@ classify: >
   answer). Khan renders single-answer choices as AXCheckBox, NOT AXRadioButton
   — the tree's AXRadioButtons are browser chrome. Classify from the CURRENT
   widgets, never page history: the same hash hosts different types on revisit.
-recipe:                              # THE type-BT — intelligence steps embedded
-  - extract_question:                # never hardcode options
-      question: {role: AXStaticText, min_length: 20}
-      options: {role: AXCheckBox, exclude_titles: ["Draw on exercise", "Bonus question"]}
-      store: q
-  - send_to_llm:
-      question: $q.question_text
-      question_type: solve_choice    # images in question area -> solve_complex (see failure_modes)
-      options: $q.options            # raw AX names incl "(Choice X) " prefix
-      context: $q.reference_texts
-      store: llm
-  - find_and_click: {target: $llm.answer, role: AXCheckBox, strategy: mouse_click, match_mode: exact}
+recipe:                              # DIRECT-SOLVE (Supervisor decision 2026-06-15): READ the
+  # question + all "(Choice X)" choices FROM THE SCREENSHOT, determine the ONE correct answer,
+  # click it. find_all->send_to_llm is intentionally NOT forced (find_all->options 422s on the
+  # raw AXUIElementRef; kb_chunks=0 adds no grounding). REQUIRED = the choice click + Check + store_qa.
+  - find_and_click:                  # the ONE correct choice
+      target: <the correct "(Choice X) <full answer>" checkbox label, copied VERBATIM from screen>
+      role: AXCheckBox               # never "Draw on exercise"; if it is already selected, skip
+      strategy: mouse_click          # this click (re-click toggles OFF) and go straight to Check.
+      match_mode: exact
   - wait 1.5                         # Check-enable race: React re-render gates the button
   - wait_for_element: {target: Check, role: AXButton, max_wait: 3.0}
   - find_and_click: {target: Check, role: AXButton, strategy: mouse_click, match_mode: exact, post_delay: 2.5}
-  - store_qa: {question: $q.question_text, answer: $llm.answer, question_type: solve_choice}
+  - store_qa: {question: <the question, read from the screenshot>, answer: <the chosen choice>, question_type: solve_choice}
 contracts:
-  - LLM returns the FULL option name VERBATIM — "(Choice D) ..." — never a bare
-    letter; find_and_click is exact-match and a bare "A" matches nothing
-  - options ALWAYS flow from extract_question ($q.options): hardcoded plain text
-    loses the "(Choice X) " prefix and the click fails (ACTION RETURNED NONE)
+  - DIRECT-SOLVE: the worker reads the question + choices from the screenshot, determines the
+    ONE correct answer, and clicks it. No find_all / send_to_llm required (find_all->options
+    422s; kb_chunks=0 here). The click target is the EXACT "(Choice X) <full answer>" AX name,
+    VERBATIM (match_mode exact) — never a bare letter, never "Draw on exercise".
 actuation:
   strategy: mouse_click ALWAYS — focus_space silently no-ops on Chrome web
     widgets (proven live 2026-06-11)
