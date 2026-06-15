@@ -499,18 +499,37 @@ def classify_screen(tree: dict, screenshot_b64: Optional[str], platform: str) ->
         # "element not found" -> the failed click reinforced a retry loop, even
         # though the SAME recipe advanced sibling transitions (8287ab5/550502).
         if "TRANSITION__SUMMARY" in _load_screen_type_registry(platform):
-            def _has_next_question_button(n):
+            # All three post-answer FORWARD CONTROLS are unambiguous and appear
+            # ONLY on post-answer/transition screens (never a fresh exercise):
+            #   - "Next question" AXButton  (per-question advance)
+            #   - "Show summary" AXButton   (end-of-set, this cef8155e case)
+            #   - "Up next:<item>" AXLink   (end-of-set result -> next lesson)
+            # GUARD: present WITHOUT a "Check" button = answered state (a fresh
+            # exercise always has Check). Distinct from nav's "Next in course"; the
+            # navigate hard-guard (e613e62) backstops the link case against skips.
+            # Reaching this -> deterministic-serve (line 681) -> the PROVEN
+            # TRANSITION__SUMMARY fixed BT runs, worker OUT of the path (kills the
+            # per-question + end-of-set freelance variance). (2026-06-15, operator.)
+            _fwd = {"forward": False, "check": False}
+            def _scan_transition(n):
                 if isinstance(n, dict):
-                    if (n.get("role") == "AXButton"
-                            and (n.get("name") or "").strip().lower() == "next question"):
-                        return True
-                    return any(_has_next_question_button(c) for c in (n.get("children") or []))
-                return False
-            if _has_next_question_button(scoped_tree):
+                    role = n.get("role") or ""
+                    name = (n.get("name") or "").strip().lower()
+                    if role == "AXButton":
+                        if name in ("next question", "show summary"):
+                            _fwd["forward"] = True
+                        elif name == "check" or name.startswith("check "):
+                            _fwd["check"] = True
+                    elif role == "AXLink" and name.startswith("up next"):
+                        _fwd["forward"] = True
+                    for c in n.get("children") or []:
+                        _scan_transition(c)
+            _scan_transition(scoped_tree)
+            if _fwd["forward"] and not _fwd["check"]:
                 return {
                     "success": True,
                     "screen_type": "TRANSITION__SUMMARY",
-                    "confidence_note": "Deterministic 'Next question' button -> TRANSITION__SUMMARY (post-answer advance; overrides cache/LLM).",
+                    "confidence_note": "Deterministic post-answer forward control (Next question / Show summary / Up next) + no Check -> TRANSITION__SUMMARY.",
                     "platform_variant": "TRANSITION__SUMMARY",
                 }
 
