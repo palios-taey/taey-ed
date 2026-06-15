@@ -112,7 +112,7 @@ fi
 
 # ── 7. worker liveness ──
 section "consultation worker"
-WORKER_LOG=/home/user/taey-ed/logs/worker.log
+WORKER_LOG="$(cd "$(dirname "$0")/.." && pwd)/logs/worker.log"
 if [ -f "$WORKER_LOG" ]; then
     RECENT=$(tail -200 "$WORKER_LOG" 2>/dev/null | grep -c "consultation worker starting\|picked up job\|processing\|completed")
     if [ "$RECENT" -gt 0 ]; then

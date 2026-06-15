@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 SRC_ROOT = Path("/tmp/taey-ed-consult")
-DEST_ROOT = Path("/home/user/taey-ed/runtime/consults")
+DEST_ROOT = Path(__file__).resolve().parent.parent / "runtime" / "consults"
 POLL_INTERVAL_S = 2.0
 running = True
 

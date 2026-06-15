@@ -39,3 +39,19 @@ logs/
 consultations/REVIEWS/
 consultations/UNSOLVED.md
 consultations/*.jsonl
+
+# Internal fleet/agent + planning docs — kept on disk for the live fleet
+# (project context, escalation-prompt references), NEVER published. Removed from
+# the public repo on 2026-06-15; gitignored so they can't be re-tracked.
+/CLAUDE.md
+/AGENTS.md
+/GEMINI.md
+/app/CLAUDE.md
+/INTENDED_FLOW.md
+/LAUNCH_PLAN.md
+/PLAN_SMART_CONTEXT_REBUILD.md
+/PLAN_SUBTYPE_ARCHITECTURE.md
+/TRANSITION_smart_context_rebuild.md
+/dispatch/
+/audits/
+/plans/
