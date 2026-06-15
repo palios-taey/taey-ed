@@ -21,6 +21,62 @@ KB_CHAR_BUDGET = 5_000
 HANDOFF_ROOT = Path("/tmp/taey-ed-worker-handoff")
 SPLIT_MASTER_CATEGORIES = {"NAVIGATION", "ARTICLE", "VIDEO", "TRANSITION"}
 
+# ── Load-bearing figure detection (hard-image rule, Jesse 2026-06-15) ────────
+# Goal: decide if an EXERCISE screen carries a QUESTION-AREA figure the worker
+# must read, vs chrome/sidebar/status images. Evidence (captured Khan trees):
+# load-bearing figures are AXImages whose accessibility NAME is a DESCRIPTIVE
+# SENTENCE — Khan often states the exact answer there, e.g.
+#   "The wave extends 4 squares from the equilibrium level. There are 5 squares
+#    from a crest to the next crest."  (= amplitude 4, wavelength 5, exact)
+# Chrome images are short status words ('incomplete', 'correct', 'Video', '') OR
+# known status phrases ('80 out of 100 Mastery points', 'Streak not maintained
+# this week.'). Word-count alone misclassifies the latter two, so we pair a
+# descriptive-sentence threshold with a chrome exclusion set/patterns. The gate
+# errs toward INCLUSION (a false positive just adds a short block the worker's
+# relevance-first step discards; a false negative makes the worker guess).
+_FIGURE_MIN_WORDS = 5
+_CHROME_IMAGE_EXACT = {
+    "", "article", "exercise", "video", "completed", "complete", "incomplete",
+    "in progress", "correct", "incorrect", "mastery information",
+}
+_CHROME_IMAGE_PATTERNS = (
+    re.compile(r"out of .*mastery points", re.I),
+    re.compile(r"\bstreak\b", re.I),
+    re.compile(r"maintained this week", re.I),
+    re.compile(r"^\d+%?$"),
+)
+
+
+def _is_chrome_image_name(name: str) -> bool:
+    n = (name or "").strip()
+    if n.lower() in _CHROME_IMAGE_EXACT:
+        return True
+    return any(p.search(n) for p in _CHROME_IMAGE_PATTERNS)
+
+
+def find_load_bearing_figures(tree: dict) -> list[dict]:
+    """Return question-area figure nodes (role, name) on this screen — AXImages
+    whose name is a descriptive sentence and is not chrome/status. The name IS
+    the figure's alt-text, which the hard-image rule reads first (Tier 0, free +
+    exact) before any CV / native-res / Family 2nd pass. Returns [] when the
+    screen has no load-bearing figure (text-only or chrome-only)."""
+    figures: list[dict] = []
+
+    def walk(node) -> None:
+        if not isinstance(node, dict):
+            return
+        role = node.get("role") or ""
+        if role in ("AXImage", "AXFigure"):
+            name = str(node.get("name") or node.get("description") or node.get("title") or "")
+            if len(name.split()) >= _FIGURE_MIN_WORDS and not _is_chrome_image_name(name):
+                figures.append({"role": role, "name": name})
+        for child in node.get("children") or []:
+            walk(child)
+
+    walk(tree)
+    return figures
+
+
 KNOWN_ACTIONS = {
     "click",
     "click_at",
