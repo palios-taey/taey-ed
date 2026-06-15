@@ -2184,8 +2184,26 @@ def _next_action_impl(request: NextActionRequest):
     if variant != "UNKNOWN":
         register_hash(platform, skel_hash, variant)
 
-    # LOOP GUARD: If Flash reclassifies as a variant that already failed, STOP
-    if variant != "UNKNOWN" and _check_variant_failed(platform, variant):
+    # LOOP GUARD: If Flash reclassifies as a variant that already failed, STOP.
+    # EXEMPT deterministic-served types (fixed_behavior_tree): re-classifying to
+    # them is NOT re-classify churn — it deterministic-serves the SAME canonical
+    # fixed BT. Prior failures on such a type came from a DIFFERENT mechanism (a
+    # worker freelance while it classified flakily, or a mid-hydration capture),
+    # now superseded by the deterministic-serve path. Blocking it here traps the
+    # screen forever (RCA 2026-06-15: cef8155e — deterministic-classify fired
+    # correctly to TRANSITION__SUMMARY but this guard STOPPED it because the
+    # earlier worker-freelance had marked the variant failed). A genuinely-broken
+    # fixed BT is still caught by the Step-3 BT-failed guard (delete hash +
+    # escalate), which is the correct place for that.
+    _is_deterministic_served = False
+    if variant != "UNKNOWN":
+        try:
+            from spark.tasks.screen_type_assembler import load_screen_artifact_metadata as _lsam
+            _meta = _lsam(platform, variant)
+            _is_deterministic_served = bool(_meta and _meta.get("deterministic") and _meta.get("fixed_behavior_tree"))
+        except Exception:
+            _is_deterministic_served = False
+    if variant != "UNKNOWN" and not _is_deterministic_served and _check_variant_failed(platform, variant):
         logger.error(
             f"  Step 5B: LOOP GUARD — Flash classified as {variant} which has failed "
             f"{MAX_VARIANT_FAILURES}+ times. STOPPING."
