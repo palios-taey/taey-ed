@@ -1873,6 +1873,26 @@ def _next_action_impl(request: NextActionRequest):
     logger.info(f"  Step 4: Exact hash lookup (hash={skel_hash[:12]})")
 
     hash_result = lookup_by_hash(platform, skel_hash)
+    # BARE-MASTER guard (2026-06-15, Family RCA on d2b842 multi-select): a cached
+    # variant that is a bare MASTER (subtype never resolved — e.g. "EXERCISE"
+    # without _MULTIPLE_SELECT) and UNVALIDATED has NO recipe. Serving it hands the
+    # worker the generic guide -> freelance/{} -> conformance fails forever. Same
+    # class as the UNKNOWN cache-trap: treat it as a MISS and re-classify, so the
+    # deterministic subtype resolver (_infer_exercise_subtype resolves it on a good
+    # capture) AND the Step-5 hydration guard run instead of being short-circuited.
+    if hash_result and not hash_result.get("validated"):
+        from spark.tasks.screen_type_util import get_master_category as _gmc_bare
+        _cv = hash_result.get("variant") or ""
+        if _cv and _gmc_bare(_cv) == _cv:  # master == variant => no subtype
+            logger.warning(
+                f"  Step 4: cached variant '{_cv}' is a bare MASTER (no subtype) + "
+                f"unvalidated — deleting and re-classifying (subtype never resolved)"
+            )
+            try:
+                delete_hash(platform=platform, skel_hash=skel_hash)
+            except Exception:
+                logger.exception("Step 4: bare-master delete_hash failed")
+            hash_result = None
     if hash_result:
         variant = hash_result["variant"]
         logger.info(f"  Step 4: Hash hit → variant={variant}")
