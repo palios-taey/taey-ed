@@ -48,6 +48,20 @@ LEGACY_VARIANT_MAP = {
     "TRANSITION_SUMMARY": "TRANSITION__SUMMARY",
     "TRANSITION_PRACTICE_INTRO": "TRANSITION__INTRO",
     "TRANSITION_EXERCISE_NEXT": "TRANSITION__SUMMARY",
+    # Legacy learned SUMMARY-class names (post-answer / end-of-set / mastery-
+    # complete advance) -> the canonical TRANSITION__SUMMARY, whose fixed BT
+    # handles all three forward-control shapes (Next question button / Show
+    # summary button / variable "Up next:<item>" link via element-ref, never a
+    # hardcoded name). RCA 2026-06-15 (54a34edd): the end-of-exercise mastery-
+    # complete screen ("Proficient 100%" + "Up next:" link, no Check) classified
+    # to TRANSITION_EXERCISE_COMPLETE — which has NO recipe -> worker freelanced
+    # a HARDCODED wrong link name -> NONE. Mapping it canonical -> deterministic-
+    # serve -> the up-next THEN-branch clicks the link by ELEMENT (variable-safe).
+    "TRANSITION_EXERCISE_COMPLETE": "TRANSITION__SUMMARY",
+    "TRANSITION_EXERCISE_SUMMARY": "TRANSITION__SUMMARY",
+    "TRANSITION_SUMMARY_CARD": "TRANSITION__SUMMARY",
+    "TRANSITION_SHOW_SUMMARY": "TRANSITION__SUMMARY",
+    "TRANSITION_POST_ANSWER_CORRECT": "TRANSITION__SUMMARY",
 }
 
 CLASSIFICATION_PROMPT = """\
