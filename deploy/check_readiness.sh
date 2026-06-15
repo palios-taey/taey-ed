@@ -6,8 +6,9 @@
 set -u
 
 HOSTNAME="https://taey-ed-api.taey.ai"
-TEST_EMAIL="***REMOVED-TEST-ACCOUNT***"
-TEST_PW="***REMOVED***"
+# Readiness-check test account — provide via env, never hardcode (public repo).
+TEST_EMAIL="${TEST_EMAIL:?set TEST_EMAIL to the readiness-check account}"
+TEST_PW="${TEST_PW:?set TEST_PW to the readiness-check account password}"
 
 green="\033[32m" red="\033[31m" yellow="\033[33m" dim="\033[2m" reset="\033[0m"
 fail=0
