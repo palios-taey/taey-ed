@@ -837,16 +837,33 @@ def _validate_last_action(platform: str, lr, current_tree: dict) -> dict:
                 else:
                     wrong_answer = True
             else:
-                # Same skeleton, different label — collision territory.
-                # Without a content-fingerprint delta we cannot claim the
-                # question advanced. Neutral: no validation, no map damage.
-                not_advanced = True
-                logger.info(
-                    f"Step 2: after-skeleton equals directive skeleton "
-                    f"({after_hash[:12]}) with label mismatch "
-                    f"({lr.screen} → {new_screen}) — NOT validating "
-                    f"(cannot prove the question advanced)."
-                )
+                # Same skeleton, different label. QUIZ questions SHARE one
+                # skeleton hash (Q3 sorter / Q4 checkbox both hash 2f83dfe4), so
+                # skeleton-equality cannot tell "advanced to the next question"
+                # from "stuck". Use the DETERMINISTIC answer-widget read as ground
+                # truth: if the after-tree's widgets resolve to a DIFFERENT
+                # exercise subtype than the one we acted on, the question genuinely
+                # CHANGED -> ADVANCED. RCA 2026-06-15 (Jesse): the SORTER SOLVED and
+                # advanced to a checkbox question, but this branch mis-flagged it
+                # not-advanced -> looped -> terminal, on a capability that works.
+                from spark.tasks.classify_screen import _infer_exercise_subtype as _ies
+                _after_sub = _ies(after_tree_to_match or {})
+                if _after_sub != "UNKNOWN" and _after_sub != lr.screen:
+                    logger.info(
+                        f"Step 2: same skeleton, but the answer-widgets CHANGED "
+                        f"({lr.screen} → {_after_sub} by deterministic read) — the "
+                        f"question ADVANCED (shared quiz skeleton). Validating."
+                    )
+                    # advanced: leave not_advanced False so `validated` can hold
+                else:
+                    # widgets unchanged/unresolvable — can't prove advance; neutral.
+                    not_advanced = True
+                    logger.info(
+                        f"Step 2: after-skeleton equals directive skeleton "
+                        f"({after_hash[:12]}) with label mismatch "
+                        f"({lr.screen} → {new_screen}) and no widget delta — NOT "
+                        f"validating (cannot prove the question advanced)."
+                    )
         elif (screen_master == "EXERCISE" and after_hash and directive_hash
                 and after_hash != directive_hash):
             logger.info(
