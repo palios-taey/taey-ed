@@ -19,7 +19,9 @@ from spark.tasks.claude_runner import (
     DEFAULT_MAX_BUDGET_USD,
 )
 from spark.tasks.screen_type_assembler import (
+    KNOWN_ACTIONS,
     ScreenTypeAssemblerError,
+    _collect_tree_actions,
     create_worker_handoff,
     validate_worker_bt_response,
 )
@@ -283,6 +285,25 @@ def _validate_bt(parsed: dict, consultation_id: str) -> None:
     if "type" not in parsed["tree"]:
         raise BTGenerationError(
             f"BT response for {consultation_id}: tree missing 'type' field"
+        )
+    # GLOBAL REGISTERED-HANDLER FLOOR (2026-06-15). EVERY action must be a real
+    # Mac handler — regardless of artifact kind (the recipe conformance check only
+    # runs for YAML artifacts; UNKNOWN-guide BTs were never action-validated, so a
+    # hallucinated action reached the Mac and FAILED THERE). RCA: on a hard
+    # exercise it couldn't solve, the worker invented `halt`/`escalate_user_assist`
+    # to "stop and ask"; `halt` isn't a registered action, so the Mac failed at
+    # step 1 and the intended halt+escalate never ran — the wrong-answer SAFE-STOP
+    # was itself broken. Rejecting here routes to worker_fallback -> the escalation
+    # ladder, which IS the real safe-stop. A genuine stop is the ladder, never a
+    # BT action.
+    actions = _collect_tree_actions(parsed["tree"])
+    unregistered = sorted(a for a in actions if a not in KNOWN_ACTIONS)
+    if unregistered:
+        raise BTGenerationError(
+            f"BT response for {consultation_id} uses unregistered action(s): "
+            f"{', '.join(unregistered)} — the Mac has no such handler. The worker "
+            f"must never invent actions (e.g. 'halt'/'escalate_user_assist'); a "
+            f"genuine stop is the escalation ladder, not a BT action."
         )
     if "_session" in parsed and not isinstance(parsed["_session"], dict):
         raise BTGenerationError(
