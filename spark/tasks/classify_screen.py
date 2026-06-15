@@ -64,6 +64,25 @@ LEGACY_VARIANT_MAP = {
     "TRANSITION_POST_ANSWER_CORRECT": "TRANSITION__SUMMARY",
 }
 
+# Gemini sometimes emits intuitive widget names instead of the canonical
+# exercise screen_type. A checkbox group = multiple-select (>=1 answer); a
+# radio group = multiple-choice (exactly 1). RCA 2026-06-15 (shared Quiz-1
+# skeleton 2f83dfe4): the hash was mislabeled EXERCISE_CHECKBOX (non-canonical)
+# -> no stored BT -> canonicalize -> UNKNOWN on any hydrating tree -> trap.
+# This is a FLOOR, applied ONLY after live-tree inference fails to resolve, so
+# the worst case is the correct exercise type instead of UNKNOWN. The live
+# tree (_infer_exercise_subtype) always wins when it can read widgets — that
+# matters on a shared-skeleton quiz where one hash hosts heterogeneous
+# question types and a static label would otherwise mis-force the subtype.
+_EXERCISE_NAME_FLOOR = {
+    "EXERCISE_CHECKBOX": "EXERCISE_MULTIPLE_SELECT",
+    "EXERCISE_CHECKBOXES": "EXERCISE_MULTIPLE_SELECT",
+    "EXERCISE_RADIO": "EXERCISE_MULTIPLE_CHOICE",
+    "EXERCISE_CHOICE": "EXERCISE_MULTIPLE_CHOICE",
+    "EXERCISE_TEXT": "EXERCISE_TEXT_INPUT",
+    "EXERCISE_INPUT": "EXERCISE_TEXT_INPUT",
+}
+
 CLASSIFICATION_PROMPT = """\
 You are classifying a screen from an educational platform (LMS).
 
@@ -409,6 +428,18 @@ def canonicalize_screen_type(platform: str, screen_type: object, tree: dict | No
             inferred = _infer_exercise_subtype(tree)
             if inferred in allowed:
                 return inferred
+            # Live tree couldn't resolve (hydrating / widgets not yet named).
+            # Fall back to the static name floor so a known intuitive label
+            # (EXERCISE_CHECKBOX, ...) lands on its canonical type instead of
+            # UNKNOWN. Only reached when the tree read failed.
+            floored = _EXERCISE_NAME_FLOOR.get(normalized)
+            if floored in allowed:
+                return floored
+
+    # No tree available: apply the exercise name floor before giving up.
+    floored = _EXERCISE_NAME_FLOOR.get(normalized)
+    if floored in allowed:
+        return floored
 
     master = get_master_category(normalized)
     if master in SPLIT_MASTER_CATEGORIES:
