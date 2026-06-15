@@ -22,6 +22,7 @@ V21 (2026-02-28):
   - Data files under TAEY_ED_DATA_DIR (see spark/tasks/paths.py)
 """
 
+import base64
 import json
 import logging
 import time
@@ -45,6 +46,32 @@ from spark.tasks.chat_store import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# Per-platform last-screenshot stash. The Mac alternates screenshot-bearing and
+# no-screenshot /next_action polls; an escalation that fires on a no-screenshot
+# poll otherwise produced a packet with NO screenshot, so the operator could not
+# "read the screenshot FIRST" (operator-reported 2026-06-15). The Mac is frozen,
+# so the server retains the most recent frame and escalations fall back to it.
+_LAST_SHOT_DIR = Path("/tmp/taey-ed-last-screenshot")
+
+
+def _stash_last_screenshot(platform: str, screenshot_b64: str) -> None:
+    try:
+        _LAST_SHOT_DIR.mkdir(parents=True, exist_ok=True)
+        (_LAST_SHOT_DIR / f"{platform}.png").write_bytes(base64.b64decode(screenshot_b64))
+    except Exception:
+        logger.exception("failed to stash last screenshot")
+
+
+def _load_last_screenshot_b64(platform: str) -> str | None:
+    try:
+        p = _LAST_SHOT_DIR / f"{platform}.png"
+        if p.exists():
+            return base64.b64encode(p.read_bytes()).decode()
+    except Exception:
+        logger.exception("failed to load stashed screenshot")
+    return None
+
 
 def _escalate_to_claude_diagnosing(
     platform: str,
@@ -101,9 +128,13 @@ def _escalate_to_claude_diagnosing(
             (diag_dir / "tree.json").write_text(json.dumps(tree, indent=2))
         except Exception:
             logger.exception("escalate: failed to write tree.json")
+    # Fall back to the last stashed screenshot when this poll arrived without one,
+    # so the packet always carries the most recent frame (operator must be able to
+    # read the screenshot FIRST). 2026-06-15.
+    if not screenshot_b64:
+        screenshot_b64 = _load_last_screenshot_b64(platform)
     if screenshot_b64:
         try:
-            import base64
             (diag_dir / "screenshot.png").write_bytes(base64.b64decode(screenshot_b64))
         except Exception:
             logger.exception("escalate: failed to write screenshot.png")
@@ -1181,6 +1212,11 @@ def _next_action_impl(request: NextActionRequest):
         f"has_last_result={'yes' if lr else 'no'} "
         f"active_consultation={cs.active_consultation_id or 'none'}"
     )
+
+    # Retain the latest frame per platform so a later escalation on a
+    # no-screenshot poll can still attach a screenshot (see _LAST_SHOT_DIR).
+    if request.screenshot_b64:
+        _stash_last_screenshot(platform, request.screenshot_b64)
     if lr:
         logger.info(
             f"    last_result: success={lr.success} screen={lr.screen} "
