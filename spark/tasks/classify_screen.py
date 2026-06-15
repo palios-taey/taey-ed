@@ -237,10 +237,17 @@ def _infer_article_subtype(tree: dict) -> str:
 
 def _infer_transition_subtype(tree: dict) -> str:
     text = _flatten_text(_find_web_area(tree))
-    if any(token in text for token in ("let’s go", "let's go", "start quiz", "start unit test", "keep going", "don't give up yet")):
-        return "TRANSITION__INTRO"
+    # SUMMARY-DEFINITIVE markers FIRST. An end-of-set summary carries forward
+    # controls ("Keep going" / "Let's go" to the next item) that ALSO match the
+    # INTRO tokens — so checking INTRO first mislabels every summary as an intro
+    # (live RCA 2026-06-15: a summary with "mastery points"+"up next" matched
+    # "keep going" -> TRANSITION__INTRO -> the button-hunting INTRO fixed BT ran
+    # on a link-based summary -> 422/find-fail). "mastery points" / "show summary"
+    # / "up next" only appear post-completion, so they are the stronger signal.
     if any(token in text for token in ("mastery points", "show summary", "up next", "correct)", "try again")):
         return "TRANSITION__SUMMARY"
+    if any(token in text for token in ("let’s go", "let's go", "start quiz", "start unit test", "keep going", "don't give up yet")):
+        return "TRANSITION__INTRO"
     return "UNKNOWN"
 
 
