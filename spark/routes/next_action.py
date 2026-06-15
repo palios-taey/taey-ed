@@ -984,10 +984,12 @@ def _looks_like_hydrating_exercise(tree: dict) -> bool:
     web = _find_web_area(tree) or tree
     has_submit = False
     answer_widgets = 0
+    choice_widgets = 0          # checkbox/radio — their (Choice X) NAME is the subtype signal
+    named_choice_widgets = 0    # choice widgets that have actually loaded a name
     text_chars = 0
 
     def walk(n):
-        nonlocal has_submit, answer_widgets, text_chars
+        nonlocal has_submit, answer_widgets, choice_widgets, named_choice_widgets, text_chars
         if isinstance(n, dict):
             role = n.get("role") or ""
             name = (n.get("name") or "").strip()
@@ -995,6 +997,10 @@ def _looks_like_hydrating_exercise(tree: dict) -> bool:
                 has_submit = True
             if role in ("AXComboBox", "AXRadioButton", "AXCheckBox", "AXTextField", "AXTextArea", "AXSlider"):
                 answer_widgets += 1
+            if role in ("AXRadioButton", "AXCheckBox"):
+                choice_widgets += 1
+                if name:
+                    named_choice_widgets += 1
             if role == "AXStaticText":
                 text_chars += len(name) + len(str(n.get("value") or ""))
             for c in n.get("children") or []:
@@ -1004,7 +1010,20 @@ def _looks_like_hydrating_exercise(tree: dict) -> bool:
                 walk(i)
 
     walk(web)
-    return has_submit and answer_widgets == 0 and text_chars > 80
+    if not (has_submit and text_chars > 80):
+        return False
+    # (a) NO answer widgets yet — the original mid-hydration shape.
+    if answer_widgets == 0:
+        return True
+    # (b) choice widgets present but NONE have loaded a name yet — the subtype
+    # resolver keys on the "(Choice X)" name, so an unnamed choice grid is still
+    # hydrating and abstains -> bare master -> cached -> worker {}. Re-poll until
+    # the names populate. (2026-06-15, Family RCA on d2b842 multi-select: the
+    # checkbox widgets render before their names.) Targeted to choice widgets so
+    # legitimately-nameless text-input fields don't false-trigger.
+    if choice_widgets > 0 and named_choice_widgets == 0:
+        return True
+    return False
 
 
 @router.post("/next_action")

@@ -152,6 +152,19 @@ def lookup_by_hash(platform: str, skel_hash: str) -> dict | None:
 
 
 def register_hash(platform: str, skel_hash: str, variant: str):
+    # NEVER cache a bare MASTER (subtype unresolved, e.g. "EXERCISE" without
+    # _MULTIPLE_SELECT) — it has no recipe, so serving it later hands the worker
+    # the generic guide -> freelance/{}. RCA 2026-06-15 (d2b842): a mid-hydration
+    # capture classified to the bare master and it got cached -> the bare-master
+    # Step-4 guard deleted it -> re-classified -> re-cached = churn. Don't store
+    # it at all; the next (hydrated) capture will resolve and cache the subtype.
+    from spark.tasks.screen_type_util import get_master_category
+    if variant and get_master_category(variant) == variant:
+        logger.info(
+            f"variant_cache: NOT caching bare master '{variant}' for hash "
+            f"{skel_hash[:12]} (subtype unresolved — will re-classify next capture)"
+        )
+        return
     data = _load_hash_index(platform)
     now = datetime.now(timezone.utc).isoformat()
     data["hashes"][skel_hash] = {
