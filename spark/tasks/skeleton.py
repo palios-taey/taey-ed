@@ -45,6 +45,20 @@ def extract_skeleton(tree: dict, viewport_height: int = 900,
             root = web_area
 
     lines = []
+    # ANSWER-WIDGET SIGNATURE (depth-independent) — prepended so it is part of
+    # the hash. Root-cause fix (2026-06-15, operator-confirmed): Khan/Perseus
+    # wraps answer widgets 13–25 AXGroup layers deep, past _walk's max_depth=15,
+    # so the structural walk DROPPED them — every exercise sub-type (dropdown,
+    # text-input, multiple-choice, matcher, numeric) collapsed to the SAME
+    # skeleton -> ONE hash (8646957) mapped to SIX screen types -> the worker
+    # correctly re-read the live widget, re-classified, and conformance rejected
+    # it as "worker changed screen_type" -> deadlock/terminal thrash. The
+    # presence-set of answer-input roles, collected over the FULL web area with
+    # no depth cap, is the discriminating feature; it separates the sub-types
+    # without fragmenting within one (count is ignored on purpose). This
+    # CORRECTS the data shape upstream so each sub-type recognizes to its own
+    # hash — it does not add a bypass.
+    lines.append(_answer_widget_signature(root))
     _walk(root, depth=0, sibling_idx=0, viewport_height=viewport_height, lines=lines)
     return "\n".join(lines)
 
@@ -52,6 +66,37 @@ def extract_skeleton(tree: dict, viewport_height: int = 900,
 def skeleton_hash(skeleton: str) -> str:
     """SHA256 hash of skeleton string, first 16 chars. For dedup."""
     return hashlib.sha256(skeleton.encode()).hexdigest()[:16]
+
+
+# Interactive roles that constitute an ANSWER to an exercise — the feature that
+# distinguishes exercise sub-types (dropdown vs text-input vs choice vs matcher).
+# Distinct from chrome controls (tab strip, Share, Extensions), which live above
+# the AXWebArea and are already excluded by web_content_only scoping.
+ANSWER_WIDGET_ROLES = (
+    "AXComboBox", "AXPopUpButton", "AXTextField", "AXTextArea",
+    "AXCheckBox", "AXRadioButton", "AXSlider", "AXIncrementor",
+)
+
+
+def _answer_widget_signature(root: dict) -> str:
+    """Depth-independent presence-set of answer-widget roles in the subtree.
+
+    Walks the ENTIRE subtree (no max_depth cap — Perseus nests widgets far
+    deeper than the structural walk reaches) and returns a deterministic
+    `WIDGETS:role,role,...` line of the DISTINCT answer-widget roles present.
+    Presence (not count) is intentional: it separates exercise sub-types
+    without splitting one sub-type across blank-count variants.
+    """
+    present: set[str] = set()
+    stack = [root]
+    while stack:
+        n = stack.pop()
+        role = n.get("role", "")
+        if role in ANSWER_WIDGET_ROLES:
+            present.add(role)
+        for child in n.get("children", []):
+            stack.append(child)
+    return "WIDGETS:" + ",".join(sorted(present))
 
 
 def extract_dynamic_text(tree: dict) -> list[str]:
