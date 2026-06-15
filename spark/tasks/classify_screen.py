@@ -273,16 +273,31 @@ def _infer_exercise_subtype(tree: dict) -> str:
     wrong_verdict = False
     has_check = False
     has_answer_widget = False
+    has_image = False
+    has_textfield = False
+    grid_phrase = False
+    measure_kw = False
 
     def walk(n):
         nonlocal combobox_answer, choice_radio, choice_checkbox, post_answer
         nonlocal wrong_verdict, has_check, has_answer_widget
+        nonlocal has_image, has_textfield, grid_phrase, measure_kw
         if isinstance(n, dict):
             role = n.get("role") or ""
             name = (n.get("name") or "").strip().lower()
             value = str(n.get("value") or "").strip().lower()
             if role in ("AXComboBox", "AXTextField", "AXTextArea", "AXCheckBox", "AXRadioButton"):
                 has_answer_widget = True
+            if role == "AXImage":
+                has_image = True
+            if role == "AXTextField":
+                has_textfield = True
+            # GRID-MEASURE signals (from question/figure text on this screen):
+            _txt = name + " " + value
+            if any(p in _txt for p in ("each square", "per square", "square represents", "each grid")):
+                grid_phrase = True
+            if any(k in _txt for k in ("amplitude", "wavelength", "period")):
+                measure_kw = True
             # WRONG-ANSWER state markers (operator gap #3, 2026-06-15): the answer
             # was submitted and judged WRONG — input intact, a "Not quite yet"/
             # "Try again" verdict, and NO "Check" button (the no-Check signal is
@@ -332,6 +347,14 @@ def _infer_exercise_subtype(tree: dict) -> str:
     # re-answered. The no-Check signal discriminates it from a fresh EXERCISE_*.
     if wrong_verdict and has_answer_widget and not has_check:
         return "EXERCISE_WRONG_ANSWER"
+    # GRID-MEASURE: a numeric text-input whose answer is COUNTED off a static
+    # gridded figure (wave image + 'each square = N units' + asks amplitude/
+    # wavelength/period). Routed to the measure_grid CV handler — LLM vision
+    # cannot count grid squares. Requires ALL of: an image, a text field, the
+    # per-square-unit phrase, and a measure keyword (specific conjunction, so a
+    # plain numeric input never mis-routes here).
+    if has_image and has_textfield and grid_phrase and measure_kw:
+        return "EXERCISE_GRID_MEASURE"
     if combobox_answer > 0:
         return "EXERCISE_DROPDOWN"
     if choice_checkbox > 0:

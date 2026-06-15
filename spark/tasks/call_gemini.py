@@ -161,6 +161,103 @@ def _navigate_eligible(desc: str) -> bool:
     return True
 
 
+# ─── MEASURE_GRID (deterministic CV; NO LLM) ───
+# LLM vision cannot count grid squares (all 5 Family reasoners undercounted the
+# same wave). This routes to spark.tasks.measure_grid.measure_wave_grid. `measure`
+# and `per_square_unit` are parsed from the question text (frozen-Mac: no new
+# request fields). SHADOW vs SUBMIT is a flag FILE so the flip is a config toggle:
+#   SHADOW (default): measure + log to the corpus, then ALWAYS escalate (422) —
+#     never submit, so the multi-screen validation corpus is built with ZERO
+#     mastery risk.
+#   SUBMIT (flag present): a CONFIDENT reading is typed; a low-confidence one
+#     still escalates (the CV's own hard gate).
+_MEASURE_GRID_SUBMIT_FLAG = "/home/user/taey-ed-data/measure_grid_submit.flag"
+_MEASURE_GRID_LOG = "/home/user/taey-ed-data/measure_grid_corpus.jsonl"
+
+
+def _parse_measure(question: str):
+    q = (question or "").lower()
+    for kw in ("amplitude", "wavelength", "period"):
+        if kw in q:
+            return kw
+    return None
+
+
+def _parse_per_square_unit(question: str):
+    """(unit, ok). If the question declares a per-square unit, REQUIRE a number
+    (never assume); if it declares none, default 1.0 (standard grid)."""
+    import re
+    q = (question or "").lower()
+    if any(p in q for p in ("each square", "per square", "square represents", "square =", "square is")):
+        m = re.search(r"square[^0-9]{0,30}?([0-9]+(?:\.[0-9]+)?)", q)
+        if m:
+            return float(m.group(1)), True
+        return None, False   # declares a unit but unreadable -> escalate
+    return 1.0, True
+
+
+def _measure_grid_answer(question: str, screenshot_b64) -> dict:
+    import base64, os, tempfile, json
+    measure = _parse_measure(question)
+    unit, unit_ok = _parse_per_square_unit(question)
+    submit_mode = os.path.exists(_MEASURE_GRID_SUBMIT_FLAG)
+
+    def _escalate(reason):  # success=False -> /generate 422 -> BT fails -> escalate
+        return {"success": False, "error": f"measure_grid: {reason}",
+                "answer": "", "question_type": "measure_grid", "model": "measure_grid_cv"}
+
+    if not measure:
+        return _escalate("measure (amplitude/wavelength/period) not found in question")
+    if not unit_ok:
+        return _escalate("per-square unit declared but unparseable")
+    if not screenshot_b64:
+        return _escalate("no screenshot to measure")
+
+    try:
+        fd, path = tempfile.mkstemp(suffix=".png", prefix="measure_grid_")
+        with os.fdopen(fd, "wb") as f:
+            f.write(base64.b64decode(screenshot_b64))
+    except Exception as e:
+        return _escalate(f"screenshot decode failed: {type(e).__name__}")
+
+    try:
+        from spark.tasks.measure_grid import measure_wave_grid
+        res = measure_wave_grid(path, measure=measure, per_square_unit=unit)
+    except Exception as e:
+        logger.exception("measure_grid: CV crashed")
+        return _escalate(f"CV crashed: {type(e).__name__}")
+    finally:
+        try: os.remove(path)
+        except Exception: pass
+
+    try:  # corpus log (both modes) — builds the validation set
+        with open(_MEASURE_GRID_LOG, "a") as f:
+            f.write(json.dumps({"measure": measure, "per_square_unit": unit,
+                                "value_units": res.get("value_units"),
+                                "value_squares": res.get("value_squares"),
+                                "raw": res.get("value_squares_raw"),
+                                "confident": res.get("confident"), "reason": res.get("reason"),
+                                "v_spacing_px": res.get("v_spacing_px"),
+                                "h_spacing_px": res.get("h_spacing_px"),
+                                "submit_mode": submit_mode,
+                                "question": (question or "")[:200]}) + "\n")
+    except Exception:
+        logger.exception("measure_grid: corpus log failed (non-fatal)")
+
+    logger.info(f"measure_grid: {measure} unit={unit} -> value={res.get('value_units')} "
+                f"confident={res.get('confident')} reason={res.get('reason')} "
+                f"mode={'SUBMIT' if submit_mode else 'SHADOW'}")
+
+    if not submit_mode:
+        return _escalate(f"SHADOW (measured {measure}={res.get('value_units')} "
+                         f"confident={res.get('confident')}) — escalating for validation corpus")
+    if not res.get("confident"):
+        return _escalate(f"low-confidence ({res.get('reason')}) — not submitting")
+    return {"success": True, "answer": ("%g" % res["value_units"]),
+            "value_units": res["value_units"], "value_squares": res.get("value_squares"),
+            "question_type": "measure_grid", "model": "measure_grid_cv", "confident": True}
+
+
 SOLVE_MATCHING_PROMPT = """You are a helpful tutor assisting a student with their homework. This is a matching quiz from an online course. Your job is to match each numbered item to its correct description from the given options.
 
 {context_block}
@@ -682,6 +779,16 @@ async def generate_answer(
             context_block=context_block,
             screenshot_b64=screenshot_b64,
         )
+
+    # =========================================================================
+    # MEASURE_GRID: deterministic CV measurement (NO LLM). LLM vision cannot
+    # count grid squares (all 5 Family reasoners undercounted the same wave) —
+    # this measures them mechanically. measure + per_square_unit are parsed from
+    # the question text (frozen-Mac: no new request fields). Shadow vs submit is
+    # gated by a flag file so the flip is a config toggle, not a code change.
+    # =========================================================================
+    if question_type == "measure_grid":
+        return _measure_grid_answer(question, screenshot_b64)
 
     # =========================================================================
     # SOLVE_MATCHING + SCREENSHOT: Route to Gemini (vision needed for diagrams)
