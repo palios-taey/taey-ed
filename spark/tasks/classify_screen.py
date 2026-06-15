@@ -295,9 +295,10 @@ def _infer_exercise_subtype(tree: dict) -> str:
 
     Role-accurate (AXComboBox / AXRadioButton / AXCheckBox), and deterministic
     ONLY for the unambiguous widget signatures (dropdown, single-vs-multi
-    choice). Genuinely ambiguous shapes (matcher vs sorter, graph points,
-    label-image, table, free text) return UNKNOWN so the Claude classifier
-    picks the subtype — never a wrong guess (wrong answer = catastrophic).
+    choice) PLUS the SORTER (unambiguous 'perseus-sortable' widget class). Other
+    genuinely ambiguous shapes (matcher, graph points, label-image, table, free
+    text) return UNKNOWN so the Claude classifier picks the subtype — never a
+    wrong guess (wrong answer = catastrophic).
     """
     combobox_answer = 0
     choice_radio = 0
@@ -310,15 +311,26 @@ def _infer_exercise_subtype(tree: dict) -> str:
     has_textfield = False
     grid_phrase = False
     measure_kw = False
+    has_sortable = False
 
     def walk(n):
         nonlocal combobox_answer, choice_radio, choice_checkbox, post_answer
         nonlocal wrong_verdict, has_check, has_answer_widget
-        nonlocal has_image, has_textfield, grid_phrase, measure_kw
+        nonlocal has_image, has_textfield, grid_phrase, measure_kw, has_sortable
         if isinstance(n, dict):
             role = n.get("role") or ""
             name = (n.get("name") or "").strip().lower()
             value = str(n.get("value") or "").strip().lower()
+            # SORTER: the Perseus Sortable (ranking) widget self-identifies via the
+            # CSS class 'perseus-sortable' on its AXList. This is GROUND TRUTH from
+            # the widget itself — sorter-specific (a matcher is perseus-matcher /
+            # -categorizer), so it does NOT have the matcher-vs-sorter ambiguity that
+            # made this subtype LLM-only. RCA 2026-06-15 (984b161): the LLM classifier
+            # floored to bare EXERCISE on the oversized tree (~34.5K tok) -> UNKNOWN ->
+            # worker freelanced describe_images/sort. A deterministic read bypasses the
+            # classifier-starve. dOMClassList is a list of class strings on the node.
+            if "perseus-sortable" in str(n.get("dOMClassList") or "").lower():
+                has_sortable = True
             if role in ("AXComboBox", "AXTextField", "AXTextArea", "AXCheckBox", "AXRadioButton"):
                 has_answer_widget = True
             if role == "AXImage":
@@ -380,6 +392,14 @@ def _infer_exercise_subtype(tree: dict) -> str:
     # re-answered. The no-Check signal discriminates it from a fresh EXERCISE_*.
     if wrong_verdict and has_answer_widget and not has_check:
         return "EXERCISE_WRONG_ANSWER"
+    # SORTER: unambiguous Perseus Sortable widget class (ranking/ordering). The
+    # drag recipe + hard-image alt-text injection handle the solve; this just
+    # gets it OUT of the LLM-starve UNKNOWN trap. Checked before the choice/grid
+    # signatures: a sortable's draggable image items never carry '(choice' radio/
+    # checkbox names, so there is no conflict, but the explicit class is the
+    # strongest signal and should win.
+    if has_sortable:
+        return "EXERCISE_SORTER"
     # GRID-MEASURE: a numeric text-input whose answer is COUNTED off a static
     # gridded figure (wave image + 'each square = N units' + asks amplitude/
     # wavelength/period). Routed to the measure_grid CV handler — LLM vision
