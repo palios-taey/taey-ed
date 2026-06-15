@@ -14,3 +14,4 @@ httpx
 # Phase 5: Content extraction and storage
 Pillow                  # Image cropping for VLM
 numpy                   # Embedding array handling (for future vector search)
+scipy                   # measure_grid CV: ndimage.label connected-components (grid amplitude/wavelength)
