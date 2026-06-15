@@ -458,6 +458,44 @@ def _render_proven_knowledge_block(platform: str, screen_type: str) -> str:
     )
 
 
+def _render_hard_image_block(tree: dict, screen_type: str) -> str:
+    """Lean, CONDITIONAL hard-image rule (Jesse 2026-06-15). Injected into the
+    worker prompt ONLY for EXERCISE screens that carry a load-bearing question-
+    area figure — so prompts without figures stay lean (the 25K cap is real).
+    EXERCISE_GRID_MEASURE is auto-resolved upstream (alt-text Tier-0 in
+    _build_screen_directive, 553b209); this covers the OTHER figure-bearing
+    exercise types (choice/select/sorter/interpretation). Wording finalized by
+    the operator. The figure alt-texts are surfaced inline so the worker reads
+    Khan's own description (often the exact answer) instead of eyeballing."""
+    if get_master_category(screen_type) != "EXERCISE":
+        return ""
+    figures = find_load_bearing_figures(tree)
+    if not figures:
+        return ""
+    seen, alt_lines = set(), []
+    for fig in figures:
+        name = fig["name"].strip()
+        if name and name not in seen:
+            seen.add(name)
+            alt_lines.append(f'  - "{name}"')
+    alt_block = "\n".join(alt_lines)
+    return (
+        "=== HARD-IMAGE RULE (this screen has a question-area figure) ===\n"
+        "1. RELEVANCE: is the figure LOAD-BEARING (you must read it to answer) or\n"
+        "   DECORATIVE (the text already states the question + all data; the figure\n"
+        "   just illustrates)? DECORATIVE -> answer from the TEXT, ignore the figure.\n"
+        "2. ALT-TEXT FIRST (load-bearing): the figure's accessibility description\n"
+        "   often states the exact answer (e.g. \"The wave extends 4 squares from the\n"
+        "   equilibrium level\" = amplitude 4). FREE + EXACT — if it answers, USE it.\n"
+        "   Figure description(s) on this screen:\n"
+        f"{alt_block}\n"
+        "3. ONLY if alt-text is absent/insufficient, 2nd pass BY NEED: a MEASURED\n"
+        "   number off a grid -> the engine's measure_grid CV (vision under-counts\n"
+        "   grids); an INTERPRETATION -> read at native resolution. Never submit a\n"
+        "   guess off a figure you could not read — let it escalate instead."
+    )
+
+
 def assemble_worker_prompt(
     *,
     tree: dict,
@@ -486,6 +524,11 @@ def assemble_worker_prompt(
     sections.append(
         f"=== SCREEN PROGRAM ===\nsource: {artifact['path']}\nkind: {artifact['kind']}\n\n{artifact['content'].rstrip()}"
     )
+    # Universal hard-image rule — conditional (only when a load-bearing
+    # question-area figure is present), so figure-less prompts stay lean.
+    hard_image_block = _render_hard_image_block(tree, screen_type)
+    if hard_image_block:
+        sections.append(hard_image_block)
     # NOTE (2026-06-13): the concrete behavior_tree_template now lives in the
     # per-screen recipe YAML and supersedes the verbose knowledge-note dump that
     # used to be injected here. Injecting both blew the 25K prompt cap
