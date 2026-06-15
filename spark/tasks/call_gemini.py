@@ -120,6 +120,47 @@ Clickable items (in page order):
 Reply with ONLY the exact DESCRIPTION text of the first incomplete curriculum item. Nothing else. Just the description text, copied exactly."""
 
 
+# ─── HARD NAVIGATE GUARD (2026-06-15, catastrophic module-skip RCA) ───
+# A 'navigate over find_all(links/buttons)' once picked "Next in course" — Khan's
+# top-nav course-POSITION JUMP — and skipped entire lessons. navigate must NEVER
+# be able to select a course-position jump, a skip link, a backward control, a
+# breadcrumb, chrome, or a footer link. These are removed from the candidate set
+# ENTIRELY (the model cannot pick what it never sees), applied IDENTICALLY in the
+# prompt-build and the number->item mapping so the numbering stays consistent.
+# Fail-safe: if nothing eligible remains, navigate returns no answer -> the BT's
+# find_and_click gets nothing -> it fails -> escalate. Rejecting can only STALL,
+# never skip — the safe direction.
+_NAVIGATE_DENY_SUBSTRINGS = (
+    "next in course", "previous in course",        # course-position JUMPS (the skip)
+    "skip to main", "skip to lesson", "skip to content",
+    "khan academy", "donate", "report a problem", "make image bigger",
+    "close content list", "close popover", "start over", "hints",
+    "show a step", "explore", "search for courses",
+    "terms of use", "privacy policy", "cookie notice", "accessibility statement",
+    "try again",                                    # re-do, never an advance
+)
+_NAVIGATE_DENY_PREFIXES = ("course:", "skip")
+import re as _nav_re
+_NAVIGATE_DENY_REGEXES = (_nav_re.compile(r"^unit \d"),)  # breadcrumb "UNIT 4", not "Unit test"
+
+
+def _navigate_eligible(desc: str) -> bool:
+    """True only if `desc` is a real curriculum/advance candidate — NOT a course
+    jump, skip link, backward control, breadcrumb, chrome, or footer link.
+    Deterministic and deny-oriented so navigate physically cannot select a
+    skip-ahead control."""
+    d = (desc or "").strip().lower()
+    if len(d) < 4:
+        return False
+    if any(s in d for s in _NAVIGATE_DENY_SUBSTRINGS):
+        return False
+    if any(d.startswith(p) for p in _NAVIGATE_DENY_PREFIXES):
+        return False
+    if any(rx.match(d) for rx in _NAVIGATE_DENY_REGEXES):
+        return False
+    return True
+
+
 SOLVE_MATCHING_PROMPT = """You are a helpful tutor assisting a student with their homework. This is a matching quiz from an online course. Your job is to match each numbered item to its correct description from the given options.
 
 {context_block}
@@ -663,12 +704,12 @@ async def generate_answer(
         idx = 0
         for item in items:
             desc = item.get("popup_desc", item.get("description", ""))
-            if len(desc) < 4:
+            if not _navigate_eligible(desc):   # HARD GUARD: drop jumps/skips/chrome/footer
                 continue
             idx += 1
             items_parts.append(f"{idx}. {desc}")
         if len(items) != idx:
-            logger.info(f"navigate: filtered {len(items)} items to {idx}")
+            logger.info(f"navigate: hard-guard filtered {len(items)} items to {idx} eligible")
         items_block = "\n".join(items_parts)
 
         # If the BT author supplied screen-specific picking rules in the
@@ -826,7 +867,7 @@ async def generate_answer(
             numbered = []  # (description, item) in displayed order, 1-based
             for item in items:
                 desc = item.get("popup_desc", item.get("description", ""))
-                if len(desc) < 4:
+                if not _navigate_eligible(desc):   # MUST mirror the prompt-build filter exactly
                     continue
                 numbered.append((desc, item))
 
