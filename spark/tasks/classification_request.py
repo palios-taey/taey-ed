@@ -55,11 +55,52 @@ def request_classification(
     if response_path.exists():
         try:
             response = _read_json(response_path)
-            return {
-                "classification_id": job_dir.name,
-                "status": "complete",
-                **response,
-            }
+            # A FAILED / UNKNOWN classification must NOT be cached as a permanent
+            # 'complete' result. RCA 2026-06-15 (recurring — dropdown then
+            # transition): the LLM classifier returning nothing once
+            # ({"success": false, "screen_type": "UNKNOWN"}) was served forever,
+            # trapping the screen as UNKNOWN -> worker gets the generic guide ->
+            # freelance. Treat a failed cached result as STALE and re-queue so the
+            # next poll re-classifies (tree/screenshot may be better hydrated, or
+            # the transient LLM hiccup clears). Bounded by a small retry cap so a
+            # genuinely-unclassifiable screen still settles to UNKNOWN (-> Step 5D
+            # worker / escalation) instead of re-running the LLM every poll.
+            _ok = response.get("success", True) and \
+                str(response.get("screen_type") or "").strip().upper() != "UNKNOWN"
+            _retries = 0
+            if meta_path.exists():
+                try:
+                    _retries = int(_read_json(meta_path).get("failed_classify_retries", 0))
+                except Exception:
+                    _retries = 0
+            if _ok or _retries >= 3:
+                return {
+                    "classification_id": job_dir.name,
+                    "status": "complete",
+                    **response,
+                }
+            logger.info(
+                "classification_request: cached result for %s/%s is failed/UNKNOWN "
+                "(retry %d/3) — re-queueing instead of serving stale UNKNOWN",
+                platform, skel_hash[:12], _retries + 1,
+            )
+            try:
+                response_path.unlink()
+            except Exception:
+                pass
+            existing_meta = {}
+            if meta_path.exists():
+                try:
+                    existing_meta = _read_json(meta_path)
+                except Exception:
+                    existing_meta = {}
+            existing_meta["failed_classify_retries"] = _retries + 1
+            existing_meta["status"] = "stale_requeue"
+            try:
+                atomic_write_json(meta_path, existing_meta)
+            except Exception:
+                logger.exception("classification_request: failed to bump retry meta")
+            # fall through to re-queue a fresh pending job below
         except Exception as e:
             logger.warning(
                 "classification_request: unreadable response for %s/%s: %s",
@@ -111,6 +152,9 @@ def request_classification(
         "status": "pending",
         "created_at_epoch": existing_meta.get("created_at_epoch", now),
         "updated_at_epoch": now,
+        # carry the failed-classification retry counter across the re-queue so the
+        # cap (3) actually bounds re-runs (the fresh dict would otherwise reset it)
+        "failed_classify_retries": existing_meta.get("failed_classify_retries", 0),
     }
     atomic_write_json(meta_path, metadata)
 
