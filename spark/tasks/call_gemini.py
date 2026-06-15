@@ -176,9 +176,14 @@ _MEASURE_GRID_LOG = "/home/user/taey-ed-data/measure_grid_corpus.jsonl"
 
 
 def _parse_measure(question: str):
+    # WHOLE-WORD match: Khan's standard caption ("A snapshot of a PERIODIC wave is
+    # modeled below") contains the substring "period" — a naive `in` check returns
+    # measure='period' on every amplitude/wavelength screen (caught in shadow test
+    # 2026-06-15). \bperiod\b does not match "periodic".
+    import re
     q = (question or "").lower()
     for kw in ("amplitude", "wavelength", "period"):
-        if kw in q:
+        if re.search(rf"\b{kw}\b", q):
             return kw
     return None
 
@@ -202,12 +207,27 @@ def _measure_grid_answer(question: str, screenshot_b64) -> dict:
     unit, unit_ok = _parse_per_square_unit(question)
     submit_mode = os.path.exists(_MEASURE_GRID_SUBMIT_FLAG)
 
+    def _corpus(entry):  # ALWAYS log (incl. parse-fails) — reveals what extract_question returned
+        try:
+            with open(_MEASURE_GRID_LOG, "a") as f:
+                f.write(json.dumps(entry) + "\n")
+        except Exception:
+            logger.exception("measure_grid: corpus log failed (non-fatal)")
+
     def _escalate(reason):  # success=False -> /generate 422 -> BT fails -> escalate
+        _corpus({"event": "escalate", "reason": reason, "measure": measure,
+                 "per_square_unit": unit, "submit_mode": submit_mode,
+                 "question": (question or "")[:300]})
         return {"success": False, "error": f"measure_grid: {reason}",
                 "answer": "", "question_type": "measure_grid", "model": "measure_grid_cv"}
 
     if not measure:
-        return _escalate("measure (amplitude/wavelength/period) not found in question")
+        # The verbatim question may be split across AXStaticText (caption has the
+        # unit, prompt has the measure word) and extract_question may return only
+        # one. This parse-fail is LOGGED with the question text so the corpus shows
+        # what extract_question actually returned -> decides whether the vision-
+        # transcription fallback is needed before the submit flip (operator ask).
+        return _escalate("measure (amplitude/wavelength/period) not found in question text")
     if not unit_ok:
         return _escalate("per-square unit declared but unparseable")
     if not screenshot_b64:
