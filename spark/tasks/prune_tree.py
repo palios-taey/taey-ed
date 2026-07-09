@@ -73,15 +73,91 @@ def _has_content(node: dict) -> bool:
     return False
 
 
+# CLASSIFIER-ONLY sibling-run collapse (2026-07-09, live hs-bio baseline run):
+# even the allowlist output of a Khan COURSE DASHBOARD is ~281K chars / ~70K
+# tokens — the mastery map is 57 near-identical sibling AXLists (AXImage+AXLink
+# rows, 3-6K chars each) plus 9-17-long AXLink runs inside unit lists. That
+# blew the classify budget (error_max_budget_usd at ~149K cache tokens) ->
+# empty result -> silent UNKNOWN -> guide-mode freelance click_at -> App Store
+# badge -> wrong-window loop. Classification needs SIGNALS (which roles are
+# present, exemplar names, how many), never every skill cell. So: consecutive
+# siblings with the SAME structural fingerprint (role + child-role multiset)
+# in runs longer than _RUN_COLLAPSE_THRESHOLD keep the first
+# _RUN_KEEP_HEAD + last _RUN_KEEP_TAIL exemplars and the elided middle is
+# replaced by ONE explicit annotation node stating exactly what was filtered
+# (filtering with a receipt — never a silent cut; REQUIREMENTS.md C9/R7.7).
+# The WORKER path (filter_tree_base) is UNTOUCHED — navigate needs every link.
+_RUN_COLLAPSE_THRESHOLD = 6
+_RUN_KEEP_HEAD = 3
+_RUN_KEEP_TAIL = 1
+
+
+def _run_fingerprint(node: dict):
+    # Role + the SET of child roles (not counts — a 6-row and an 11-row
+    # mastery list are the same structural class). A node with a unique
+    # structure is a singleton class and can NEVER be elided.
+    child_roles = frozenset(
+        str(c.get("role")) for c in node.get("children", []) if isinstance(c, dict)
+    )
+    return (node.get("role"), child_roles)
+
+
+def _collapse_sibling_runs(children: list) -> list:
+    """Class-based sibling collapse: group siblings by structural fingerprint
+    (role + child-role set); for any class with more than the threshold of
+    members among these siblings, keep the first _RUN_KEEP_HEAD and last
+    _RUN_KEEP_TAIL occurrences IN PLACE (order preserved, wherever they occur —
+    Khan interleaves heading/list/heading/list so consecutive-run detection
+    misses the repetition) and replace the first elided member with ONE
+    explicit annotation node for that class. Never elides annotation nodes,
+    never elides singleton/unique structures."""
+    from collections import Counter
+
+    fps = [_run_fingerprint(c) for c in children]
+    counts = Counter(fps)
+    big = {fp for fp, n in counts.items() if n > _RUN_COLLAPSE_THRESHOLD}
+    if not big:
+        return children
+
+    keep_idx: dict = {}   # fp -> set of kept indices
+    for fp in big:
+        idxs = [i for i, f in enumerate(fps) if f == fp]
+        keep_idx[fp] = set(idxs[:_RUN_KEEP_HEAD] + idxs[-_RUN_KEEP_TAIL:])
+
+    out: list = []
+    annotated: set = set()
+    for i, (child, fp) in enumerate(zip(children, fps)):
+        if fp not in big or i in keep_idx[fp]:
+            out.append(child)
+            continue
+        if fp not in annotated:
+            annotated.add(fp)
+            elided = counts[fp] - _RUN_KEEP_HEAD - _RUN_KEEP_TAIL
+            out.append({
+                "role": child.get("role"),
+                "name": (
+                    f"[FILTERED FOR CLASSIFICATION: {elided} more "
+                    f"{child.get('role')} siblings of this same structural "
+                    f"class ({counts[fp]} total among these siblings) elided; "
+                    f"first {_RUN_KEEP_HEAD} and last {_RUN_KEEP_TAIL} kept in "
+                    f"place as exemplars. The solver path receives the full "
+                    f"tree.]"
+                ),
+            })
+    return out
+
+
 def prune_tree_for_prompt(tree: dict) -> dict:
     """Return a filtered copy of the tree for LLM prompt inclusion.
 
     Keeps content (role + name/title/description/value), drops coordinate noise,
-    and collapses contentless structural wrappers. The root node itself is never
-    collapsed. Uses the CLASSIFIER tight allowlist — coordinates and AX-internal
-    noise are not needed to classify (the LLM reads role+name+structure).
+    collapses contentless structural wrappers, and collapses long runs of
+    structurally-identical siblings behind explicit annotations. The root node
+    itself is never collapsed. Uses the CLASSIFIER tight allowlist — coordinates
+    and AX-internal noise are not needed to classify (the LLM reads
+    role+name+structure). CLASSIFIER-ONLY: the worker path is filter_tree_base.
     """
-    return _prune_node(tree, keep_only=_CLASSIFIER_KEEP_FIELDS)
+    return _prune_node(tree, keep_only=_CLASSIFIER_KEEP_FIELDS, collapse_runs=True)
 
 
 def filter_tree_base(tree: dict) -> dict:
@@ -105,11 +181,12 @@ def filter_tree_base(tree: dict) -> dict:
     return _prune_node(web)
 
 
-def _prune_node(node: dict, keep_only: set | None = None) -> dict:
+def _prune_node(node: dict, keep_only: set | None = None, collapse_runs: bool = False) -> dict:
     """Prune a single node recursively, collapsing contentless wrappers among
     its children. If keep_only is given, keep ONLY those fields (allowlist, used
     by the classifier path); otherwise drop _DROP_FIELDS (denylist, worker path
-    which still needs visible_bbox for click_at/drag)."""
+    which still needs visible_bbox for click_at/drag). collapse_runs additionally
+    collapses long structurally-identical sibling runs (classifier path only)."""
     pruned = {}
 
     for key, val in node.items():
@@ -124,7 +201,7 @@ def _prune_node(node: dict, keep_only: set | None = None) -> dict:
             for child in val:
                 if not isinstance(child, dict):
                     continue
-                pruned_child = _prune_node(child, keep_only=keep_only)
+                pruned_child = _prune_node(child, keep_only=keep_only, collapse_runs=collapse_runs)
                 # Collapse a contentless structural wrapper: splice its (already
                 # pruned) children in place of the wrapper itself.
                 if (
@@ -134,6 +211,8 @@ def _prune_node(node: dict, keep_only: set | None = None) -> dict:
                     collapsed.extend(pruned_child.get("children", []))
                 else:
                     collapsed.append(pruned_child)
+            if collapsed and collapse_runs:
+                collapsed = _collapse_sibling_runs(collapsed)
             if collapsed:
                 pruned["children"] = collapsed
             continue
