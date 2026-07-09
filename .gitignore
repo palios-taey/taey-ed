@@ -28,14 +28,15 @@ spark/platforms/*/learned/
 # Mirrored consult artifacts
 runtime/
 
-# Runtime escalation / consult dumps (large, regenerated each run)
+# Legacy in-repo runtime artifacts. New writes go under
+# TAEY_ED_DATA_DIR/consultations/; keep these ignored for existing disk history.
 consultations/ESCALATIONS/
 logs/
 *.pre_migration_bak
 /tmp/taey-ed-mac-raw-dumps/
 
-# Runtime consultation / review artifacts (Family review dumps, unsolved log,
-# corpus) — process output, regenerated each run, not part of the published code.
+# Legacy in-repo consultation / review artifacts (Family review dumps,
+# unsolved log, corpus) — process output, not part of the published code.
 consultations/REVIEWS/
 consultations/UNSOLVED.md
 consultations/*.jsonl

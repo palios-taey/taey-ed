@@ -6,7 +6,8 @@ Mira-local (/home/user/...). The /var/spark/* paths from the original Spark
 deployment are deprecated and not referenced anywhere else in code.
 
 Env overrides:
-  TAEY_ED_DATA_DIR     persistent data root (default /home/user/taey-ed-data)
+  TAEY_ED_DATA_DIR     persistent data root (required in production;
+                       default /home/user/taey-ed-data in dev)
   TAEY_ED_SECRETS_PATH path to API secrets json (default /etc/taey-ed/secrets.json)
   TAEY_ED_PORT         server port (default 5003)
   TAEY_ED_HOST         server host used in self-referencing prompts (default 127.0.0.1)
@@ -16,13 +17,31 @@ import base64
 import os
 from pathlib import Path
 
+from spark.secrets_loader import is_production
+
+
+def _resolve_data_dir() -> Path:
+    raw = os.environ.get("TAEY_ED_DATA_DIR")
+    if raw:
+        return Path(raw).expanduser()
+    if is_production():
+        raise RuntimeError(
+            "TAEY_ED_DATA_DIR is required in production; refusing to use an implicit runtime data root"
+        )
+    return Path("/home/user/taey-ed-data")
+
+
 # Persistent server state (signatures, variant BTs, hash index, fingerprint log).
-DATA_DIR = Path(os.environ.get("TAEY_ED_DATA_DIR", "/home/user/taey-ed-data"))
+DATA_DIR = _resolve_data_dir()
 
 SIGNATURES_DIR = DATA_DIR / "signatures"
 VARIANT_BTS_DIR = DATA_DIR / "variant_bts"
 HASH_INDEX_DIR = DATA_DIR / "hash_index"
 FINGERPRINT_LOG_DIR = DATA_DIR / "fingerprint_log"
+CONSULTATIONS_DIR = DATA_DIR / "consultations"
+ESCALATIONS_DIR = CONSULTATIONS_DIR / "ESCALATIONS"
+REVIEWS_DIR = CONSULTATIONS_DIR / "REVIEWS"
+UNSOLVED_LOG = CONSULTATIONS_DIR / "UNSOLVED.md"
 
 # API secrets file (Gemini key + others). Resolved as Path so callers can .exists().
 # Provide the real path via TAEY_ED_SECRETS_PATH in deployment (systemd drop-in);
@@ -44,7 +63,15 @@ PLATFORMS_DIR = REPO_ROOT / "spark" / "platforms"
 
 def ensure_data_dirs() -> None:
     """Create all persistent-data subdirs if they don't exist (idempotent)."""
-    for d in (SIGNATURES_DIR, VARIANT_BTS_DIR, HASH_INDEX_DIR, FINGERPRINT_LOG_DIR):
+    for d in (
+        SIGNATURES_DIR,
+        VARIANT_BTS_DIR,
+        HASH_INDEX_DIR,
+        FINGERPRINT_LOG_DIR,
+        CONSULTATIONS_DIR,
+        ESCALATIONS_DIR,
+        REVIEWS_DIR,
+    ):
         d.mkdir(parents=True, exist_ok=True)
 
 

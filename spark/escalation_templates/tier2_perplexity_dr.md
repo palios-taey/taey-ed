@@ -8,7 +8,8 @@ display :6). Do **NOT** re-dispatch. Your job here is synthesis.
    identity, screen artifacts (tree.json + screenshot.png), system capabilities,
    and **ALL prior attempts**.
 2. Wait for the `response_ready` notification (the verbatim response is saved
-   under `/home/user/taey-ed/consultations/REVIEWS/`). **Do NOT touch any flag
+   under the configured data root: `TAEY_ED_DATA_DIR/consultations/REVIEWS/`).
+   **Do NOT touch any flag
    while waiting** — auto-resume handles timing; there is no flag for you to set.
 3. Synthesize the research and fold it into the **per-screen YAML**
    (`spark/platforms/<platform>/screen_types/<SCREEN_TYPE>.yaml`) — this is what
