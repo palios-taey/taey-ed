@@ -40,22 +40,13 @@ def get(platform: str, screen_hash: str) -> dict:
     return {"attempt": 0, "terminal": False}
 
 
-def attempt(platform: str, screen_hash: str) -> int:
-    return int(get(platform, screen_hash).get("attempt", 0))
-
-
 def is_terminal(platform: str, screen_hash: str) -> bool:
     return bool(get(platform, screen_hash).get("terminal", False))
 
 
-def bump(platform: str, screen_hash: str) -> int:
-    """Increment the attempt counter (monotonic). Returns the new value."""
-    _DIR.mkdir(parents=True, exist_ok=True)
-    s = get(platform, screen_hash)
-    s["attempt"] = int(s.get("attempt", 0)) + 1
-    s["updated_at"] = time.time()
-    _path(platform, screen_hash).write_text(json.dumps(s))
-    return s["attempt"]
+# attempt() and bump() removed 2026-07-09 (cleanup-dead-apis): both dead —
+# superseded by note_attempt(), which is the ONLY legitimate ladder-climb
+# (once per distinct failed consult id, never on a timer).
 
 
 def note_attempt(platform: str, screen_hash: str, consult_id: str) -> int:
@@ -97,3 +88,20 @@ def clear(platform: str, screen_hash: str, reason: str) -> None:
     logging.getLogger("taey-ed").info(
         f"escalation_state: cleared {platform}_{screen_hash[:16]} (reason={reason})"
     )
+
+
+def clear_platform(platform: str, reason: str) -> int:
+    """Clear ALL escalation state for a platform. ONLY legitimate caller:
+    user-Stop full session reset (/session/reset). Added 2026-07-09
+    (cleanup-dead-apis) so the reset route stops raw-unlinking this store's
+    files around the module API. Returns the number of entries cleared."""
+    import logging
+    cleared = 0
+    if _DIR.exists():
+        for f in _DIR.glob(f"{platform}_*.json"):
+            f.unlink(missing_ok=True)
+            cleared += 1
+    logging.getLogger("taey-ed").info(
+        f"escalation_state: cleared ALL {cleared} entries for {platform} (reason={reason})"
+    )
+    return cleared

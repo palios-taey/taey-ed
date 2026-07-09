@@ -119,10 +119,18 @@ def _load_platform(platform: str) -> dict:
 
 
 def _save_platform(platform: str, data: dict):
-    """Save platform signature data to JSON."""
+    """Save platform signature data to JSON.
+
+    ATOMIC (2026-07-09, inventory finding): this store is written from BOTH
+    daemons (match_signature's knowledge-invalidation path runs in the API and
+    the worker) and read on every 0.5-3s Mac poll — the previous bare
+    write_text could tear a concurrent read. tempfile+rename like every other
+    JSON store here.
+    """
     SIGNATURES_DIR.mkdir(parents=True, exist_ok=True)
     path = SIGNATURES_DIR / f"{platform}.json"
-    path.write_text(json.dumps(data, indent=2))
+    from spark.tasks.atomic_write import atomic_write_json
+    atomic_write_json(path, data)
 
 
 def _recompute_common(data: dict) -> list:
@@ -373,22 +381,5 @@ def mark_validated(platform: str, sig_hash: str):
         logger.info(f"mark_validated: {sig_hash}")
 
 
-def get_stats(platform: Optional[str] = None) -> dict:
-    """Get signature stats for health endpoint / debugging."""
-    SIGNATURES_DIR.mkdir(parents=True, exist_ok=True)
-    if platform:
-        data = _load_platform(platform)
-        return {
-            "platform": platform,
-            "screens": len(data["screens"]),
-            "common_elements": len(data["common"]),
-        }
-    stats = {}
-    for f in SIGNATURES_DIR.glob("*.json"):
-        p = f.stem
-        data = json.loads(f.read_text())
-        stats[p] = {
-            "screens": len(data["screens"]),
-            "common_elements": len(data["common"]),
-        }
-    return stats
+# get_stats removed 2026-07-09 (cleanup-dead-apis): no callers anywhere —
+# the /screen-memory/stats health endpoint uses variant_cache.get_stats.

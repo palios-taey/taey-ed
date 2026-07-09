@@ -23,12 +23,6 @@ from .paths import HASH_INDEX_DIR, VARIANT_BTS_DIR
 logger = logging.getLogger("taey-ed")
 
 
-def is_non_deterministic(platform: str, variant: str) -> bool:
-    """A variant is deterministic iff a canonical stored BT exists for it."""
-    entry = lookup_variant_bt(platform, variant)
-    return not bool(entry and entry.get("behavior_tree"))
-
-
 def _atomic_write(path: Path, data: dict):
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
@@ -75,33 +69,6 @@ def lookup_variant_bt(platform: str, variant: str) -> dict | None:
         "success_count": entry.get("success_count", 0),
         "source": entry.get("source"),
     }
-
-
-def store_variant_bt(
-    platform: str,
-    variant: str,
-    bt: dict,
-    extract: dict = None,
-    expected_next: list = None,
-    source="worker",
-):
-    data = _load_variants(platform)
-    now = datetime.now(timezone.utc).isoformat()
-    master_type = variant.split("_")[0] if "_" in variant else variant
-    existing = data["variants"].get(variant, {})
-    data["variants"][variant] = {
-        "master_type": master_type,
-        "behavior_tree": bt,
-        "extract": extract,
-        "expected_next": expected_next or [],
-        "validated": existing.get("validated", False),
-        "success_count": existing.get("success_count", 0),
-        "consecutive_failures": existing.get("consecutive_failures", 0),
-        "last_updated": now,
-        "source": source,
-    }
-    _atomic_write(_variant_path(platform), data)
-    logger.info(f"variant_cache: stored BT for {variant} on {platform} (source={source})")
 
 
 def mark_variant_validated(platform: str, variant: str):

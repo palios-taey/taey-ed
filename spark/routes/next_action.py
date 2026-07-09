@@ -1093,15 +1093,8 @@ def session_reset(platform: str = "khan_academy"):
     # reset screen resumes at its stale tier (e.g. Tier 3 -> terminal) instead
     # of fresh. This is a LEGITIMATE clear (user-Stop is one of the two allowed
     # resets); the Operator correctly refused to clear it by hand and handed up.
-    es_root = _DATA_DIR / "escalation_state"
-    cleared["escalation_state"] = 0
-    if es_root.exists():
-        for f in es_root.glob(f"{platform}_*.json"):
-            try:
-                f.unlink()
-                cleared["escalation_state"] += 1
-            except Exception:
-                logger.exception(f"failed to clear escalation_state {f}")
+    from spark.tasks import escalation_state as _es
+    cleared["escalation_state"] = _es.clear_platform(platform, reason="user-Stop session reset")
 
     logger.warning(
         f"SESSION RESET for {platform}: cleared "

@@ -83,20 +83,12 @@ def load_knowledge(platform: str) -> dict:
         return {}
 
 
-def load_learned(platform: str, screen_type: str) -> dict:
-    learned_path = _platforms_dir() / platform / "learned" / f"{screen_type}.json"
-    if not learned_path.exists():
-        return {}
-    try:
-        return json.loads(learned_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as e:
-        logger.warning(f"Failed to load learned/{screen_type}.json for {platform}: {e}")
-        return {}
-
-
-def get_quirks_for_screen(knowledge: dict, screen_type: str) -> list:
-    all_quirks = knowledge.get("global", {}).get("platform_quirks", [])
-    return [q for q in all_quirks if screen_type in q.get("affects", [])]
+# load_learned() and get_quirks_for_screen() removed 2026-07-09
+# (cleanup-dead-apis): zero callers — orphaned by the scr1 knowledge-shrink
+# (screen knowledge moved to screen_types/*.yaml). The WRITE side
+# (save_learned_observation) stays live until its replacement lands
+# (taey-ed-state-context p2 events/qa_captures); learned/*.json migrate-or-drop
+# is decided at p2-importer. REQUIREMENTS.md O1.
 
 
 def get_knowledge_version(platform: str) -> Optional[str]:
