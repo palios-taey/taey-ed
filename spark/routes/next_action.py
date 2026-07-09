@@ -399,6 +399,17 @@ def _escalate_to_claude_diagnosing(
 _variant_failures: dict[str, dict] = {}
 MAX_VARIANT_FAILURES = 1  # ONE SHOT: after 1 failure, escalate to claude (was 2 — Jesse 2026-05-18)
 
+# ── Scroll-staging bound (2026-06-15, Jesse + operator) ──
+# PHASE-1 scroll-staging is legitimate progress (not advance, not failure) and
+# falls through to a fresh PHASE-2 build — but if the worker keeps emitting
+# scroll BTs and never reaches the drag, that fall-through would loop with NO
+# rate-limit (it does not escalate). Bound consecutive staging cycles per
+# directive hash; past the bound, treat as stuck and escalate (which the tier
+# backoff DOES rate-limit). Reset on a genuine advance.
+# Key: directive_skeleton_hash → consecutive staging count.
+_staging_counts: dict[str, int] = {}
+MAX_STAGING_CYCLES = 3
+
 
 def _record_variant_failure(platform: str, variant: str):
     """Record that a variant's BT failed. Used to prevent reclassify loops."""
@@ -889,6 +900,41 @@ def _validate_last_action(platform: str, lr, current_tree: dict) -> dict:
                 wrong_answer = True
     except Exception:
         logger.exception("verdict scan failed (continuing with movement checks)")
+
+    # PHASE-1 scroll-staging detection (2026-06-15, Jesse + operator — live $1k
+    # loop). The two-phase drag recipe (sorter/matcher) scrolls the below-fold
+    # widget into view as PHASE-1, then drags as PHASE-2 from a fresh capture
+    # (pre-scroll coords are stale). On Khan the scroll CHANGES the AX tree, so
+    # the tree-changed scroll FALSELY validated as ADVANCED -> session archived
+    # -> worker restarted PHASE-1 -> tight loop (each iter a worker claude call
+    # on the 6MB tree). A scroll-only BT cannot advance (no submit) and is not a
+    # failure; an after-tree that still deterministically infers EXERCISE_SORTER
+    # with NO recognized transition (new_screen=None) is likewise still staging.
+    # Either => PHASE-1 complete: return a distinct "scroll_staging" verdict that
+    # is NEITHER validated (no archive-as-advance) NOR not_advanced (no escalate)
+    # -> the Step-2 chain's final else logs and falls through to a fresh PHASE-2
+    # build. Mirrors the Step 2.5 scroll_phase_complete intent for the tree-
+    # CHANGED case it could not reach (that path requires the tree UNCHANGED).
+    if not wrong_answer and _is_scroll_only_bt(getattr(lr, "bt_debug_tail", "") or ""):
+        # The executed BT was scroll/wait-only -> it has NO submit, so it can be
+        # neither an advance nor a wrong/failed answer (unlike a drag BT that
+        # leaves the tree a sorter, which would be a genuine not-advanced). This
+        # is the reliable staging discriminator; a tree-shape heuristic cannot
+        # tell scroll-staging from a failed drag, so we key on the BT shape only.
+        logger.info(
+            f"Step 2: PHASE-1 scroll-only staging BT (new_screen={new_screen!r}) "
+            f"— NOT an advance, NOT a failure. Falling through to PHASE-2 build."
+        )
+        return {
+            "validated": False,
+            "screen_transitioned": tree_changed,
+            "new_screen": new_screen,
+            "wrong_answer": False,
+            "not_advanced": False,
+            "expected_next_match": None,
+            "after_skeleton_hash": after_hash,
+            "reason": "scroll_staging",
+        }
 
     if not wrong_answer and new_screen:
         from spark.tasks.screen_type_util import get_master_category
@@ -1516,6 +1562,7 @@ def _next_action_impl(request: NextActionRequest):
 
             # Success: clear failure tracking for this platform
             _clear_variant_failures(platform)
+            _staging_counts.pop(lr.directive_skeleton_hash or "", None)
 
             # Screen session: the screen ADVANCED — record + archive its
             # working memory (Jesse 2026-06-11: stored until the screen
@@ -1658,6 +1705,45 @@ def _next_action_impl(request: NextActionRequest):
                 failed_bt=lr.failed_bt,
                 screenshot_b64=request.screenshot_b64,
             )
+
+        elif vr.get("reason") == "scroll_staging":
+            # PHASE-1 scroll-staging: legitimate intermediate progress (scroll-only
+            # BT, no submit). NOT an advance (don't archive), NOT a failure (don't
+            # escalate) — fall through to a fresh PHASE-2 build from the post-scroll
+            # capture. BUT bound consecutive staging per hash so a worker that never
+            # reaches the drag cannot loop UNRATE-LIMITED (this fall-through does not
+            # escalate, so the tier backoff never engages). Past the bound, treat as
+            # stuck and escalate (the backoff rate-limits that path).
+            _sh = lr.directive_skeleton_hash or ""
+            _sc = _staging_counts.get(_sh, 0) + 1
+            _staging_counts[_sh] = _sc
+            if _sc > MAX_STAGING_CYCLES:
+                logger.error(
+                    f"Step 2: {_sc} consecutive scroll-staging cycles on {lr.screen} "
+                    f"({_sh[:12]}) — scroll never progressed to the drag phase. "
+                    f"Escalating (the backoff rate-limits from here)."
+                )
+                _staging_counts.pop(_sh, None)
+                _record_screen_failure(platform, _sh, lr.bt_debug_tail, "staging_stuck",
+                                       "repeated scroll-staging without reaching the drag phase")
+                return _escalate_to_claude_diagnosing(
+                    platform=platform,
+                    tree=tree,
+                    consultation_id="",
+                    reason=(f"SCROLL-STAGING STUCK on '{lr.screen}': the worker kept "
+                            f"emitting scroll-only BTs and never reached the drag phase "
+                            f"after {_sc - 1} staging cycles."),
+                    screen_type_hint=lr.screen or "EXERCISE",
+                    bt_debug_tail=lr.bt_debug_tail or "",
+                    failed_bt=lr.failed_bt,
+                    screenshot_b64=request.screenshot_b64,
+                )
+            logger.info(
+                f"Step 2: PHASE-1 scroll-staging complete for {lr.screen} "
+                f"(cycle {_sc}/{MAX_STAGING_CYCLES}) — rebuilding PHASE-2 from the "
+                f"post-scroll capture. No archive, no escalation."
+            )
+
         else:
             logger.warning(
                 f"Step 2: Validation failed for {lr.screen}: {vr.get('reason')} "

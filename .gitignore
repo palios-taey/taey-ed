@@ -55,3 +55,9 @@ consultations/*.jsonl
 /dispatch/
 /audits/
 /plans/
+
+# 2026-07-09: state-context rebuild internal docs — on-disk for the fleet, not published.
+/PLAN_STATE_CONTEXT_REBUILD.md
+/dispatches/
+/.claude/
+/taey35b_verify_responses/

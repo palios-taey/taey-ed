@@ -5,10 +5,17 @@ classify: >
   wording) or items sorted into category buckets. Same mouse-event Sortable as
   the matcher; items may be images. Never bare EXERCISE (bare gets no actuation
   guidance) and never a dropdown.
-recipe:                              # THE type-BT — intelligence steps embedded
-  - scroll: {direction: down, amount: 5}    # PHASE 1 — widget fully in view.
-  - wait 0.5                                # END BT here if scrolling occurred;
-  # next capture has actuation-valid coords (pre-scroll coords are stale).
+recipe:                              # DEAD-SIMPLE: build the move from what THIS capture shows.
+  # NO unconditional scroll-first — that re-fires every cycle = infinite scroll loop.
+  # Decide from the CURRENT tree which ONE move to build:
+  #
+  # CASE A — the sortable tile items are NOT in this tree (widget below the fold):
+  #   the ENTIRE move is ONE scroll to reveal them; then re-request. The page scroll
+  #   PERSISTS across requests, so once revealed they STAY in view -> next request is CASE B.
+  - scroll: {direction: down, amount: 5}     # ONLY when the sortable items are absent
+  #
+  # CASE B — the sortable items ARE in the tree (visible, have visible_bbox):
+  #   build the FULL solve in THIS one BT. Do NOT scroll again. Do NOT stage/END early.
   - extract_question:
       question: {role: AXStaticText, min_length: 20}
       store: q

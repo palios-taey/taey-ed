@@ -765,12 +765,32 @@ def validate_worker_bt_response(parsed: dict, platform: str, screen_type: str) -
             f"worker emitted actions not present in the canonical recipe: {', '.join(disallowed)}"
         )
 
-    required = sorted((allowed_actions & SIGNATURE_ACTIONS) - {"conditional", "fallback"})
-    missing = [action for action in required if action not in actual_actions]
-    if missing:
-        raise ScreenTypeAssemblerError(
-            f"worker omitted required recipe phases/actions: {', '.join(missing)}"
-        )
+    # 2026-06-15 (Jesse + operator, live 984b161 sorter loop): the sorter/matcher
+    # recipe is intentionally TWO-PHASE — PHASE 1 scrolls the below-fold widget
+    # into view and ENDS the BT ("END BT here if scrolling occurred"; pre-scroll
+    # coords are stale, so the next capture re-derives valid coords), PHASE 2 does
+    # extract/solve/drag. A recipe-sanctioned scroll-only STAGING cycle must not be
+    # rejected for "omitting" the answer actions it deliberately defers to PHASE 2.
+    # Accept a pure {scroll[,wait]} staging BT when the recipe HAS a scroll phase;
+    # the full required-action check still applies to every non-staging BT (a
+    # genuinely incomplete answer BT — solve without the click — is still rejected
+    # because its actions are NOT a subset of the staging set). Paired with the
+    # next_action.py advance-detection guard so the scroll does not archive the
+    # live session (B alone looped — c9cbdba).
+    _STAGING_ACTIONS = {"scroll", "wait"}
+    is_staging_cycle = (
+        bool(actual_actions)
+        and actual_actions <= _STAGING_ACTIONS
+        and "scroll" in actual_actions
+        and "scroll" in allowed_actions
+    )
+    if not is_staging_cycle:
+        required = sorted((allowed_actions & SIGNATURE_ACTIONS) - {"conditional", "fallback"})
+        missing = [action for action in required if action not in actual_actions]
+        if missing:
+            raise ScreenTypeAssemblerError(
+                f"worker omitted required recipe phases/actions: {', '.join(missing)}"
+            )
 
     for node in _iter_nodes(parsed["tree"]):
         if node.get("type") == "fallback" and "fallback" not in allowed_actions:
