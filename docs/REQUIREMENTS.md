@@ -27,7 +27,7 @@ Sources are cited per rule: `[CLAUDE.md]` = project instructions; `[mem:<slug>]`
 
 ## 3. Exercise discipline
 - **R3.1 ONE TRY ONLY.** Stuck (screen unchanged after action) or wrong answer = full stop and ask; no silent retries, no re-pick, no resubmit. `[CLAUDE.md Cardinal Rule 3; yaml:*/failure_modes]`
-- **R3.2 NEVER click "Skip" or "Up next" on exercises** — exercises are solved, not skipped. `[CLAUDE.md Cardinal Rule 4]`
+- **R3.2 Never SKIP work.** "Skip" buttons are banned. "Up Next" is banned **as a skip** — but clicking "Up Next" is CORRECT when it is the navigation to the next item AND the current screen shows a completion indicator (exercise solved / video complete). Completion first, then advance by whatever control the platform offers. `[CLAUDE.md Cardinal Rule 4, corrected J:2026-07-09]`
 - **R3.3 Question context is captured on every exercise**: the question (verbatim), the enumerated options, the chosen answer, and correctness — persisted (store_qa / qa_captures) so solved screens are never re-derived from scratch. `[J:2026-07-09; yaml:* store_qa steps]`
 - **R3.4 Enumerate before ask:** when options live in a widget (dropdown menus), open + enumerate them and pass the exact option set to the LLM; the answer must be selected from the enumerated set, never free-generated. `[yaml:EXERCISE_DROPDOWN contracts]`
 - **R3.5** Answer widgets are targeted by element reference + position, never by name/label when names are identical. `[yaml:EXERCISE_DROPDOWN contracts]`
@@ -64,6 +64,7 @@ Sources are cited per rule: `[CLAUDE.md]` = project instructions; `[mem:<slug>]`
 - **R7.5** Every LLM call's served context is receipted (what was included, what was dropped, why) for audit. `[taey-ed-state-context p4]`
 
 ## 8. Retry / escalation / operator discipline
+> **INCOMPLETE (J:2026-07-09): "The escalation process is completely missing from this requirements file."** The full AS-BUILT escalation process (tier ladder, triggers, consultation lifecycle, diagnosing/resume semantics, image escalation tiers, Chats/DR dispatch, terminal/give-up, user_input_needed) is being reconstructed by a dedicated fleet discovery pass and will replace this section. The rules below are fragments, not the process.
 - **R8.1** One retry with failure context, then stop and ask — never loop the same failing BT. `[CLAUDE.md Escalation Model]`
 - **R8.2** Escalation state is monotonic and sticky-terminal; it is cleared only by user-Stop, genuine screen advance, or a recipe (YAML) change — never by manually deleting flags. `[escalation_state.py header, J:2026-06-14]`
 - **R8.3** Every human-review hold carries a plain-language note in the session's dashboard chat lineage; holds that don't need the human are cleared, not parked. Operator-UI messages get a UI reply. `[mem:needs_you_badge_requires_chat_note, J:2026-06-28]`
