@@ -17,7 +17,16 @@ recipe:                                # ENUMERATE-OPTIONS positional wiring (en
   # tree order = top-to-bottom = blank order). POSITIONAL BY CONSTRUCTION: one
   # open+discover+answer+select PER BOX. select_dropdown_option does the actual
   # SELECTION; NO solve_matching, NO lookup_match, NO matches keying. No page move.
-  - wait 2.0                           # settle; the screen just transitioned
+  - wait_for_element: {role: AXComboBox, max_wait: 6.0}   # HYDRATION GATE (scr3 flicker,
+  #   2026-07-09): Perseus briefly unmounts/remounts the combobox after a transition, so a
+  #   blind settle + naked find_all can catch the unmount window and return [] -> dead BT.
+  #   Gate on the widget actually MOUNTED — the same proven wait_for_element pattern this
+  #   recipe already uses for AXMenuItem and Check. 6.0s covers the observed ~3s window
+  #   with margin. If it never mounts, the node fails -> normal ONE-retry/escalation
+  #   ladder (never freelance). Replaces the old blind `wait 2.0`.
+  - wait 2.0                           # post-mount settle — the proven per-box timing
+  #   (failure_modes: ">=2s before the first box" opens) is PRESERVED; the gate above
+  #   only replaces the blind wait's flicker-cover duty, not its settle duty.
   - find_all: {role: AXComboBox, store: popups}   # tree order = top-to-bottom = blank order
   - per visible popup i (UNROLLED from the CURRENT find_all count — a stored BT
     whose popup count mismatches the live capture is REBUILT, never replayed):
@@ -92,8 +101,10 @@ actuation:
     -> discover_menu(AXMenuItem) -> press_escape, then select_dropdown_option
     open_strategy mouse_click (Wonder Blocks SingleSelect is React-synthetic;
     ax_press silently no-ops on Chrome).
-  settle: 2.0s before the first box; 1.0s between boxes; wait_for_element gates the
-    open menu AND Check.
+  settle: wait_for_element AXComboBox (max 6s) gates INITIAL presence — never a naked
+    find_all after a blind sleep (hydration flicker returns []); then the proven 2.0s
+    settle before the first box; 1.0s between boxes; wait_for_element gates the open
+    menu AND Check.
   no_scroll: dropdowns are element-based — solve in ONE pass regardless of fold.
 verification:
   - per box: after select, its AXComboBox value flips from "Select an answer" to the
