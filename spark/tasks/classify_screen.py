@@ -303,6 +303,7 @@ def _infer_exercise_subtype(tree: dict) -> str:
     combobox_answer = 0
     choice_radio = 0
     choice_checkbox = 0
+    multi_select_phrase = False
     post_answer = False
     wrong_verdict = False
     has_check = False
@@ -314,7 +315,7 @@ def _infer_exercise_subtype(tree: dict) -> str:
     has_sortable = False
 
     def walk(n):
-        nonlocal combobox_answer, choice_radio, choice_checkbox, post_answer
+        nonlocal combobox_answer, choice_radio, choice_checkbox, multi_select_phrase, post_answer
         nonlocal wrong_verdict, has_check, has_answer_widget
         nonlocal has_image, has_textfield, grid_phrase, measure_kw, has_sortable
         if isinstance(n, dict):
@@ -375,6 +376,22 @@ def _infer_exercise_subtype(tree: dict) -> str:
                     choice_checkbox += 1
                 elif role == "AXRadioButton":
                     choice_radio += 1
+            # MULTI-SELECT distinguisher (2026-07-09, live 984b161 466-loop RCA):
+            # MULTIPLE_SELECT and MULTIPLE_CHOICE render the IDENTICAL "(Choice X)"
+            # AXCheckBox widget — the ONLY reliable distinguisher is the question
+            # instruction (per EXERCISE_MULTIPLE_SELECT.yaml's own classify rule).
+            # Checkbox-alone was mapping EVERY single-answer question to SELECT; the
+            # worker read the text, correctly reclassified to CHOICE, and conformance
+            # rejected the type-change -> infinite escalate/auto-resume loop. Detect
+            # the explicit multi-answer phrase; its ABSENCE means the checkbox verdict
+            # is ambiguous (see below).
+            if any(p in _txt for p in (
+                "select all that apply", "choose all that apply",
+                "select all the", "select the true", "select the correct",
+                "choose 2", "choose 3", "choose 4", "choose two", "choose three",
+                "select 2", "select 3", "check all",
+            )):
+                multi_select_phrase = True
             for c in n.get("children") or []:
                 walk(c)
         elif isinstance(n, list):
@@ -410,8 +427,16 @@ def _infer_exercise_subtype(tree: dict) -> str:
         return "EXERCISE_GRID_MEASURE"
     if combobox_answer > 0:
         return "EXERCISE_DROPDOWN"
+    # A "(Choice X)" CHECKBOX set is MULTIPLE_SELECT only when the instruction
+    # explicitly asks for multiple ("select all" / "choose N>=2" / ...). WITHOUT
+    # that phrase the widget is ambiguous — Khan renders single-answer questions
+    # with the SAME checkbox — so DEFER to the Claude classifier (which reads the
+    # full question text + screenshot) rather than hard-asserting SELECT and
+    # looping when the worker disagrees. Never deterministically assert CHOICE
+    # here: a mis-detected select-all answered as single = a catastrophic wrong
+    # answer, so the fail-safe is UNKNOWN -> LLM, not CHOICE.
     if choice_checkbox > 0:
-        return "EXERCISE_MULTIPLE_SELECT"
+        return "EXERCISE_MULTIPLE_SELECT" if multi_select_phrase else "UNKNOWN"
     if choice_radio > 0:
         return "EXERCISE_MULTIPLE_CHOICE"
     return "UNKNOWN"
