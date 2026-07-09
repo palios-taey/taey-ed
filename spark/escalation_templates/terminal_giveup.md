@@ -13,7 +13,7 @@ notification to the Supervisor automatically**. You do not drive any of that.
 
 1. Review the packet once. Was the failure mode consistent across tiers (→ a
    handler gap), or did each tier try different things and none worked (→ subtler)?
-2. Append an entry to `/home/user/taey-ed/consultations/UNSOLVED.md` (create if
+2. Append an entry to `TAEY_ED_DATA_DIR/consultations/UNSOLVED.md` (create if
    missing): escalation id, platform, screen_hash, variant, a one-paragraph
    failure-mode summary, the strongest approach tried across tiers, and your best
    read on the **missing capability** (new handler / primitive / question_type /

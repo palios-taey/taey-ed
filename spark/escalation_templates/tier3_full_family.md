@@ -10,8 +10,8 @@ Clarity/Perplexity :6). Do **NOT** re-dispatch.
 
 1. Open the escalation packet — identity, screen artifacts, system capabilities,
    **ALL prior attempts**, and the Tier-2 research. It says `tier3_round: 1 of 1`.
-2. Wait for the `response_ready` notifications (verbatim under
-   `/home/user/taey-ed/consultations/REVIEWS/`). **Do NOT touch any flag while
+2. Wait for the `response_ready` notifications (verbatim under the configured
+   data root: `TAEY_ED_DATA_DIR/consultations/REVIEWS/`). **Do NOT touch any flag while
    waiting** — auto-resume handles timing.
 3. **Synthesize** the five perspectives (synthesis, NOT a vote — cite which member
    contributed which insight, cannot-lie provenance) into one approach, and fold

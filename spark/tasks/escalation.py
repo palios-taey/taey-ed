@@ -33,10 +33,8 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-from spark.tasks.paths import REPO_ROOT
-ESCALATIONS_DIR = REPO_ROOT / "consultations" / "ESCALATIONS"
+from spark.tasks.paths import ESCALATIONS_DIR, REPO_ROOT, REVIEWS_DIR, UNSOLVED_LOG
 TEMPLATES_DIR = REPO_ROOT / "spark" / "escalation_templates"
-UNSOLVED_LOG = REPO_ROOT / "consultations" / "UNSOLVED.md"
 
 
 # --- Tier resolution ---------------------------------------------------------
@@ -167,11 +165,12 @@ def dispatch_body_for_tier(
 
     screenshot_path = packet_path.parent / "screenshot.png"
     reviews_name = f"{platform}_{screen_hash[:12]}_tier{tier[-1]}"
+    review_path = REVIEWS_DIR / f"{reviews_name}.md"
     response_routing = (
         f"ROUTE EVERY RESPONSE BACK via:\n"
         f"  taey-notify taey-ed-operator --type response_ready --from taeys-hands\n"
         f"with the verbatim response saved to:\n"
-        f"  /home/user/taey-ed/consultations/REVIEWS/{reviews_name}.md\n"
+        f"  {review_path}\n"
     )
     if tier == "tier2":
         return (
@@ -350,7 +349,7 @@ def build_packet(
     """Build the rich-context escalation packet and return its path.
 
     Layout on disk:
-        consultations/ESCALATIONS/ESC_<platform>_<hash16>_<utc>/
+        {TAEY_ED_DATA_DIR}/consultations/ESCALATIONS/ESC_<platform>_<hash16>_<utc>/
             packet.md
             screenshot.png   (copied from consult_path)
             tree.json        (copied from consult_path)
@@ -731,6 +730,6 @@ def notify_body_for_tier(
         "\n"
         "ACTION (terminal): this screen is a system bug / capability gap. It is HANDED UP to the\n"
         "Supervisor automatically (the defect notification routes there). Append an entry to\n"
-        "/home/user/taey-ed/consultations/UNSOLVED.md. Do NOT touch any flag — terminal is\n"
+        f"{UNSOLVED_LOG}. Do NOT touch any flag — terminal is\n"
         "code-owned (escalation_state). Follow terminal_giveup.md.\n"
     )

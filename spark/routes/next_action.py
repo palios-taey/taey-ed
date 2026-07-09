@@ -358,8 +358,8 @@ def _escalate_to_claude_diagnosing(
                 # skip if a REVIEW already landed OR a dispatch marker exists. The
                 # marker lives in diag_dir, which is cleared on advance/user-Stop —
                 # so a NEW screen_hash or an explicit re-open dispatches fresh.
-                from spark.tasks.paths import REPO_ROOT as _REPO_ROOT
-                _review = _REPO_ROOT / "consultations" / "REVIEWS" / f"{platform}_{_screen_hash[:12]}_{tier}.md"
+                from spark.tasks.paths import REVIEWS_DIR as _REVIEWS_DIR
+                _review = _REVIEWS_DIR / f"{platform}_{_screen_hash[:12]}_{tier}.md"
                 _marker = diag_dir / f"chat_dispatched_{tier}.flag"
                 if _review.exists() or _marker.exists():
                     logger.info(
