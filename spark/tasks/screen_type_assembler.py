@@ -112,6 +112,12 @@ KNOWN_ACTIONS = {
     "wait",
     "wait_for_element",
 }
+# The two exercise subtypes that share the identical "(Choice X)" AXCheckBox
+# widget and are distinguishable ONLY by the question instruction. The worker
+# (which reads the question text) may reclassify between them; the widget-only
+# classifier cannot. See validate_worker_bt_response.
+_CHECKBOX_SIBLING_TYPES = {"EXERCISE_MULTIPLE_SELECT", "EXERCISE_MULTIPLE_CHOICE"}
+
 SIGNATURE_ACTIONS = {
     "conditional",
     "discover_menu",
@@ -750,9 +756,31 @@ def validate_worker_bt_response(parsed: dict, platform: str, screen_type: str) -
 
     emitted_screen_type = str(parsed.get("screen_type") or "").strip()
     if emitted_screen_type != artifact["screen_type"]:
-        raise ScreenTypeAssemblerError(
-            f"worker changed screen_type from {artifact['screen_type']!r} to {emitted_screen_type!r}"
-        )
+        # SIBLING SWAP (2026-07-09, live 984b161 466-loop RCA): MULTIPLE_SELECT and
+        # MULTIPLE_CHOICE render the IDENTICAL "(Choice X)" AXCheckBox widget and
+        # differ ONLY by the question instruction ("select all"/"choose N" => SELECT,
+        # else CHOICE — per EXERCISE_MULTIPLE_SELECT.yaml's own classify rule). The
+        # widget-only classifier cannot tell them apart and pins SELECT; the worker
+        # reads the full question text and is AUTHORITATIVE on this one distinction.
+        # Rejecting its correct SELECT->CHOICE reclassification created an infinite
+        # conformance-fail/escalate/auto-resume loop against a non-existent operator.
+        # Allow the swap WITHIN this checkbox sibling pair ONLY (re-validate the BT
+        # against the emitted sibling's recipe); every other type-change stays a hard
+        # reject (a worker inventing an unrelated type is still a real fallback).
+        if (
+            emitted_screen_type.upper() in _CHECKBOX_SIBLING_TYPES
+            and str(artifact["screen_type"]).upper() in _CHECKBOX_SIBLING_TYPES
+        ):
+            logger.info(
+                "conformance: accepting checkbox-sibling reclassification %s -> %s "
+                "(worker read the question text; re-validating against %s recipe)",
+                artifact["screen_type"], emitted_screen_type, emitted_screen_type,
+            )
+            artifact = _load_screen_artifact(platform, emitted_screen_type)
+        else:
+            raise ScreenTypeAssemblerError(
+                f"worker changed screen_type from {artifact['screen_type']!r} to {emitted_screen_type!r}"
+            )
 
     sections = _split_top_level_sections(str(artifact["content"]))
     recipe_text = sections.get("recipe", "")
