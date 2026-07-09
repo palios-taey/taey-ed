@@ -43,4 +43,4 @@ journalctl -u taey-ed-api.service -f
 - All three run as user `mira` so the venv at `/home/user/taey-ed/.venv` and the OAuth state under `/home/user/.claude/` are reachable.
 - The worker needs `HOME=/home/user` set explicitly so the headless `claude` CLI finds its Max-subscription OAuth state.
 - API takes `TAEY_ED_USE_WORKER=1` so it skips the legacy tmux-notify path and lets the worker pick up consults from disk.
-- Production mode is not yet enabled (`TAEY_ED_MODE=production` is unset). Flip when Mac is fully on Bearer JWT and we've audited that no caller still relies on the loopback X-API-Key path.
+- Production mode is controlled by `TAEY_ED_PRODUCTION=1` on the API unit; leave it unset only for local/dev runs that tolerate ephemeral secrets.
