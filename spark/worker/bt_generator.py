@@ -217,6 +217,21 @@ def _normalize_bt_nodes(node) -> None:
         if "action" not in node and node.get("name") in KNOWN_ACTIONS:
             node["action"] = node.pop("name")
             node.setdefault("type", "action")
+        # ACTION-IN-TOOL-FIELD form: the worker sometimes names the action in a
+        # `tool` field instead of `action` — {type:action, name:"click_choice_B",
+        # tool:"find_and_click", params:{...}}. _collect_tree_actions and the Mac
+        # engine read `action` (None here), so the action is reported OMITTED and
+        # conformance rejects an otherwise-correct BT. (RCA 2026-07-09, live 984b161:
+        # the worker built a correct MULTIPLE_CHOICE solve but emitted the
+        # load-bearing choice + Check clicks as {type:action, tool:"find_and_click"};
+        # the sibling-swap accepted the type but the tool-field actions read as
+        # "omitted find_and_click".) Treat `tool` as the action ONLY when there is no
+        # `action` field AND tool names a registered action (else leave it — `tool`
+        # is not otherwise meaningful, but be conservative). Flat params then nest
+        # via the action-param block below.
+        if "action" not in node and node.get("tool") in KNOWN_ACTIONS:
+            node["action"] = node.pop("tool")
+            node.setdefault("type", "action")
         # CANONICALIZE a MALFORMED for_each / conditional FIRST. These are
         # LOAD-BEARING composables (a click-loop over N runtime items cannot be
         # unrolled at build time, so unlike extract_question they can't be
