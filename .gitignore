@@ -62,3 +62,4 @@ consultations/*.jsonl
 /dispatches/
 /.claude/
 /taey35b_verify_responses/
+/OPERATOR.md
