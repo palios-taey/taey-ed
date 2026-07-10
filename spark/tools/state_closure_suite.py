@@ -123,6 +123,35 @@ P('F10.validated-zero', None, ("INSERT INTO behavior_trees(bt_id,screen_id,revis
 P('base.decrement', None, ("UPDATE coordination SET attempt_count=1 WHERE screen_id='s1'",()), lambda c: val(c,"SELECT attempt_count FROM coordination WHERE screen_id='s1'")==4)
 P('base.unterminate', None, ("UPDATE coordination SET terminal=0 WHERE screen_id='s1'",()), lambda c: val(c,"SELECT terminal FROM coordination WHERE screen_id='s1'")==1)
 
+# --- Horizon r4: UPSERT (ON CONFLICT DO UPDATE) path, slice_blobs REPLACE,
+#     cleared-frozen omitted columns, tier NULL-bridge, timestamp floor gaps ---
+P('r4A.slice-upsert-rewrite', d_slice_setup,
+  ("INSERT INTO context_slices(slice_id,platform,level,selector,source_path,source_sha) VALUES('sl2',NULL,0,'core','evil','FORGED') ON CONFLICT(ifnull(platform,'*'),level,selector) WHERE trust<>'superseded' DO UPDATE SET source_path=excluded.source_path, source_sha=excluded.source_sha",()),
+  lambda c: val(c,"SELECT source_sha FROM context_slices WHERE selector='core' AND trust<>'superseded'")=='ORIG')
+P('r4B.bt-upsert-provenance', d_bt_setup,
+  ("INSERT INTO behavior_trees(bt_id,screen_id,revision,bt_json,built_by,source_kind,type_artifact_sha,created_at) VALUES('b2','s1',1,'NEW','worker','recipe','TYPE_FORGED',1720000000009) ON CONFLICT(screen_id,revision) DO UPDATE SET type_artifact_sha=excluded.type_artifact_sha",()),
+  lambda c: no_row(c,"SELECT 1 FROM behavior_trees WHERE type_artifact_sha='TYPE_FORGED'"))
+def r4c_setup(c):
+    c.execute("INSERT INTO slice_blobs(sha,body,bytes) VALUES('h','ORIGINAL',8)"); c.commit()
+P('r4C.slice_blobs-replace', r4c_setup,
+  ("INSERT OR REPLACE INTO slice_blobs(sha,body,bytes) VALUES('h','FORGED',6)",()),
+  lambda c: val(c,"SELECT body FROM slice_blobs WHERE sha='h'")=='ORIGINAL')
+P('r4D.cleared-mutate-noncore', b_setup,
+  ("UPDATE coordination SET response_pending_until=1720000009999, yaml_sha_at_attempt='FORGED', user_instructions='FORGED' WHERE screen_id='sb'",()),
+  lambda c: no_row(c,"SELECT 1 FROM coordination WHERE screen_id='sb' AND yaml_sha_at_attempt='FORGED'"))
+def r4e_setup(c):
+    c.execute("INSERT INTO screens(screen_id,platform) VALUES('se','p1')")
+    c.execute("INSERT INTO coordination(screen_id,platform,state,tier,attempt_count) VALUES('se','p1','diagnosing','tier3',3)")
+    c.commit()
+# The NULL bridge (tier=NULL then tier=tier1) is closed by blocking step 1:
+# tier->NULL must abort outside the re-arm, so the bridge can't even begin.
+P('r4E.tier-null-bridge', r4e_setup,
+  ("UPDATE coordination SET tier=NULL WHERE screen_id='se'",()),
+  lambda c: val(c,"SELECT tier FROM coordination WHERE screen_id='se'")=='tier3')
+P('r4F.event-second-scale-ts', None,
+  ("INSERT INTO events(kind,actor,created_at) VALUES('k','system',1720000000)",()),
+  lambda c: no_row(c,"SELECT 1 FROM events WHERE created_at=1720000000"))
+
 def run():
     closed, holes, false_closures = [], [], []
     for name, setup, violation, residue in PROBES:
@@ -159,9 +188,6 @@ def run():
         print("\nNO HOLES, NO FALSE-CLOSURES — every violation class aborts AND leaves no residue.")
     return 1 if (holes or false_closures) else 0
 
-if __name__ == '__main__':
-    sys.exit(run())
-
 # --- LIVENESS: legal operations MUST succeed (a closed-but-dead schema is also
 # a failure). Run: python state_closure_suite.py --liveness
 def liveness():
@@ -184,5 +210,5 @@ def liveness():
     for b in bad: print("  ✗", b)
     return 1 if bad else 0
 
-if __name__ == '__main__' and '--liveness' in sys.argv:
-    sys.exit(liveness())
+if __name__ == '__main__':
+    sys.exit(liveness() if '--liveness' in sys.argv else run())

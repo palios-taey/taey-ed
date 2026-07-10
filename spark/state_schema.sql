@@ -66,6 +66,16 @@ CREATE TABLE IF NOT EXISTS slice_blobs (
 CREATE TRIGGER IF NOT EXISTS slice_blobs_immutable
 BEFORE UPDATE ON slice_blobs
 BEGIN SELECT RAISE(ABORT,'slice_blobs are content-addressed and immutable'); END;
+-- Horizon r4 C: slice_blobs had only a BEFORE UPDATE guard — a same-sha
+-- INSERT OR REPLACE deleted+reinserted a forged body. Content-addressed =
+-- fully immutable: no delete, no re-insert.
+CREATE TRIGGER IF NOT EXISTS slice_blobs_no_delete
+BEFORE DELETE ON slice_blobs
+BEGIN SELECT RAISE(ABORT,'slice_blobs are immutable: never deleted/REPLACEd'); END;
+CREATE TRIGGER IF NOT EXISTS slice_blobs_no_clobber
+BEFORE INSERT ON slice_blobs
+WHEN EXISTS (SELECT 1 FROM slice_blobs WHERE sha = NEW.sha)
+BEGIN SELECT RAISE(ABORT,'slice_blob sha already stored; content-addressed bodies never change'); END;
 
 -- ---------------------------------------------------------------------------
 -- SCREEN TYPE REGISTRY — durable TYPE mapping (map once, never redo)
@@ -109,7 +119,7 @@ CREATE TABLE IF NOT EXISTS screens (
     classified_by_bundle_id TEXT REFERENCES bundle_receipts(bundle_id),
     question_fingerprint TEXT,
     first_seen      INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec')*1000 AS INTEGER)) CHECK (first_seen > 1000000000000),
-    last_seen       INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec')*1000 AS INTEGER)),
+    last_seen       INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec')*1000 AS INTEGER)) CHECK (last_seen > 1000000000000),
     retired         INTEGER NOT NULL DEFAULT 0 CHECK (retired IN (0,1)),
     FOREIGN KEY (platform, screen_type) REFERENCES screen_types(platform, screen_type),
     CHECK (classification <> 'classified'
@@ -142,7 +152,7 @@ CREATE TABLE IF NOT EXISTS screen_keys (
     key_kind        TEXT NOT NULL CHECK (key_kind IN ('skeleton','signature','widget_set')),
     key_hash        TEXT NOT NULL,
     screen_id       TEXT NOT NULL REFERENCES screens(screen_id),
-    created_at      INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec')*1000 AS INTEGER)),
+    created_at      INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec')*1000 AS INTEGER)) CHECK (created_at > 1000000000000),
     PRIMARY KEY (platform, key_kind, key_hash, screen_id)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS idx_screen_keys_lookup ON screen_keys(platform, key_kind, key_hash);
@@ -172,7 +182,7 @@ CREATE TABLE IF NOT EXISTS behavior_trees (
     success_count   INTEGER NOT NULL DEFAULT 0 CHECK (success_count >= 0),
     consecutive_failures INTEGER NOT NULL DEFAULT 0 CHECK (consecutive_failures >= 0),
     supersedes      TEXT REFERENCES behavior_trees(bt_id),
-    created_at      INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec')*1000 AS INTEGER)),
+    created_at      INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec')*1000 AS INTEGER)) CHECK (created_at > 1000000000000),
     UNIQUE (screen_id, revision),
     CHECK (status <> 'validated' OR success_count >= 1),
     CHECK (status <> 'validated' OR consecutive_failures < 2)
@@ -194,9 +204,13 @@ CREATE TRIGGER IF NOT EXISTS behavior_trees_no_delete
 BEFORE DELETE ON behavior_trees
 BEGIN SELECT RAISE(ABORT,'behavior tree history is immutable — supersede via status, never delete/REPLACE'); END;
 -- identity/content/provenance columns are immutable (only status + counters mutate)
+-- Horizon r4 B: the UPSERT (ON CONFLICT DO UPDATE) path is an UPDATE, not a
+-- REPLACE-delete — so it must be caught by naming EVERY immutable column
+-- (type_artifact_sha + created_at were omitted in v3.1). Only status +
+-- success_count + consecutive_failures may ever mutate.
 CREATE TRIGGER IF NOT EXISTS behavior_trees_identity_immutable
-BEFORE UPDATE OF bt_id, screen_id, revision, bt_json, built_by, source_kind, bundle_id, supersedes ON behavior_trees
-BEGIN SELECT RAISE(ABORT,'behavior tree identity/content/provenance is immutable'); END;
+BEFORE UPDATE OF bt_id, screen_id, revision, bt_json, built_by, source_kind, bundle_id, supersedes, type_artifact_sha, created_at ON behavior_trees
+BEGIN SELECT RAISE(ABORT,'behavior tree identity/content/provenance is immutable (only status + counters mutate)'); END;
 
 CREATE TABLE IF NOT EXISTS qa_captures (
     qa_id           TEXT NOT NULL PRIMARY KEY,
@@ -206,7 +220,7 @@ CREATE TABLE IF NOT EXISTS qa_captures (
     answer          TEXT,
     correctness     TEXT CHECK (correctness IS NULL OR correctness IN ('correct','wrong','unsubmitted')),
     kb_chunks_ref   TEXT,
-    captured_at     INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec')*1000 AS INTEGER))
+    captured_at     INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec')*1000 AS INTEGER)) CHECK (captured_at > 1000000000000)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS idx_qa_screen ON qa_captures(screen_id);
 
@@ -222,9 +236,9 @@ CREATE TABLE IF NOT EXISTS context_slices (
     source_sha      TEXT NOT NULL,
     trust           TEXT NOT NULL DEFAULT 'trusted' CHECK (trust IN ('provisional','trusted','superseded')),
     verified_count  INTEGER NOT NULL DEFAULT 0 CHECK (verified_count >= 0),
-    superseded_at   INTEGER,
+    superseded_at   INTEGER CHECK (superseded_at IS NULL OR superseded_at > 1000000000000),
     superseded_by   TEXT REFERENCES context_slices(slice_id),
-    ingested_at     INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec')*1000 AS INTEGER))
+    ingested_at     INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec')*1000 AS INTEGER)) CHECK (ingested_at > 1000000000000)
 ) STRICT, WITHOUT ROWID;
 CREATE UNIQUE INDEX IF NOT EXISTS ux_slice_current
   ON context_slices(ifnull(platform,'*'), level, selector) WHERE trust <> 'superseded';
@@ -235,6 +249,13 @@ CREATE INDEX IF NOT EXISTS idx_slices_lookup ON context_slices(platform, level, 
 CREATE TRIGGER IF NOT EXISTS context_slices_no_delete
 BEFORE DELETE ON context_slices
 BEGIN SELECT RAISE(ABORT,'context slices supersede (SCD), never delete/REPLACE'); END;
+-- Horizon r4 A: an UPSERT (ON CONFLICT DO UPDATE) on ux_slice_current rewrote a
+-- current slice's source_path/source_sha via the UPDATE path (no_delete never
+-- fires). A slice's IDENTITY + SOURCE is immutable; only the SCD lifecycle
+-- (trust->superseded + superseded_at/by + verified_count) mutates.
+CREATE TRIGGER IF NOT EXISTS context_slices_source_immutable
+BEFORE UPDATE OF slice_id, platform, level, selector, source_path, source_sha, ingested_at ON context_slices
+BEGIN SELECT RAISE(ABORT,'context slice identity/source is immutable; supersede via a new row (SCD)'); END;
 
 -- ---------------------------------------------------------------------------
 -- COORDINATION — escalation state machine. v3 closes: leaving 'cleared',
@@ -249,13 +270,13 @@ CREATE TABLE IF NOT EXISTS coordination (
     attempt_count   INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0 AND attempt_count <= 4),  -- ceiling on INSERT too (F6)
     last_attempt_key TEXT,
     terminal        INTEGER NOT NULL DEFAULT 0 CHECK (terminal IN (0,1)),
-    resume_at       INTEGER,
-    response_pending_until INTEGER,
+    resume_at       INTEGER CHECK (resume_at IS NULL OR resume_at > 1000000000000),
+    response_pending_until INTEGER CHECK (response_pending_until IS NULL OR response_pending_until > 1000000000000),
     yaml_sha_at_attempt TEXT,
     user_instructions TEXT,
     cleared_reason  TEXT CHECK (cleared_reason IS NULL OR cleared_reason IN
                     ('user_stop_abandon','user_stop_reset','advanced','yaml_fold')),
-    updated_at      INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec')*1000 AS INTEGER)),
+    updated_at      INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec')*1000 AS INTEGER)) CHECK (updated_at > 1000000000000),
     CHECK (terminal = 0 OR state IN ('terminal','cleared')),          -- F6 on INSERT
     CHECK (state <> 'cleared' OR cleared_reason IS NOT NULL)          -- reason on INSERT too
 ) STRICT, WITHOUT ROWID;
@@ -292,15 +313,33 @@ BEGIN SELECT RAISE(ABORT,'terminal is sticky (R8.3)'); END;
 -- attempt_count, tier, terminal, last_attempt_key) — aborts. (Horizon r3 B:
 -- v3 only caught cleared->consulting + decrement; a cleared row could still
 -- mutate other fields while staying cleared.)
+-- Horizon r4 D: the frozen no-op must compare EVERY column (v3.1 omitted
+-- resume_at, response_pending_until, yaml_sha_at_attempt, user_instructions,
+-- updated_at), and the re-arm must be exactly the core-field reset and NOTHING
+-- else — the four-field shape must not exempt simultaneous mutation of the
+-- others. Re-arm = the core reset AND every non-core field cleared to a
+-- well-defined fresh value.
 CREATE TRIGGER IF NOT EXISTS coordination_cleared_frozen
 BEFORE UPDATE ON coordination
 WHEN OLD.state = 'cleared'
- AND NOT (NEW.state = 'normal' AND NEW.attempt_count = 0 AND NEW.terminal = 0 AND NEW.tier IS NULL)  -- the re-arm
- AND NOT (NEW.state = 'cleared'                                                                      -- or a frozen no-op:
+ AND NOT (  -- the authorized re-arm: reset ONLY the core ladder; every non-core
+            -- field must be UNCHANGED (so the re-arm shape cannot smuggle a
+            -- forged deadline / instruction / provenance — Horizon r4 D)
+      NEW.state = 'normal' AND NEW.attempt_count = 0 AND NEW.terminal = 0 AND NEW.tier IS NULL
+      AND NEW.platform IS OLD.platform
+      AND NEW.last_attempt_key IS OLD.last_attempt_key AND NEW.resume_at IS OLD.resume_at
+      AND NEW.response_pending_until IS OLD.response_pending_until
+      AND NEW.yaml_sha_at_attempt IS OLD.yaml_sha_at_attempt
+      AND NEW.user_instructions IS OLD.user_instructions
+      AND NEW.cleared_reason IS OLD.cleared_reason)
+ AND NOT (  -- or a frozen no-op: EVERY column unchanged (updated_at may bump)
+      NEW.state = 'cleared'
       AND NEW.attempt_count = OLD.attempt_count AND NEW.terminal = OLD.terminal
       AND NEW.tier IS OLD.tier AND NEW.platform IS OLD.platform
-      AND NEW.last_attempt_key IS OLD.last_attempt_key AND NEW.cleared_reason IS OLD.cleared_reason)
-BEGIN SELECT RAISE(ABORT,'a cleared ladder is frozen: only an authorized re-arm to a fresh normal ladder is legal (R8.3/R8.5)'); END;
+      AND NEW.last_attempt_key IS OLD.last_attempt_key AND NEW.cleared_reason IS OLD.cleared_reason
+      AND NEW.resume_at IS OLD.resume_at AND NEW.response_pending_until IS OLD.response_pending_until
+      AND NEW.yaml_sha_at_attempt IS OLD.yaml_sha_at_attempt AND NEW.user_instructions IS OLD.user_instructions)
+BEGIN SELECT RAISE(ABORT,'a cleared ladder is frozen: only an authorized full re-arm to a fresh normal ladder is legal (R8.3/R8.5)'); END;
 CREATE TRIGGER IF NOT EXISTS coordination_clear_requires_reason
 BEFORE UPDATE ON coordination
 WHEN NEW.state = 'cleared' AND OLD.state <> 'cleared' AND NEW.cleared_reason IS NULL
@@ -309,12 +348,18 @@ CREATE TRIGGER IF NOT EXISTS coordination_fold_cannot_unterminate
 BEFORE UPDATE ON coordination
 WHEN NEW.state = 'cleared' AND OLD.terminal = 1 AND NEW.terminal = 0 AND NEW.cleared_reason = 'yaml_fold'
 BEGIN SELECT RAISE(ABORT,'a YAML fold clears the ladder but never un-terminates (R8.5)'); END;
+-- Horizon r4 E: the NULL bridge — set tier=NULL then tier=tier1 — downgraded
+-- the ladder because the guard required BOTH tiers non-NULL. Fix: once a tier
+-- is set, it may only advance; going to NULL or a lower rank is blocked EXCEPT
+-- through the authorized cleared->normal re-arm.
 CREATE TRIGGER IF NOT EXISTS coordination_tier_monotonic
 BEFORE UPDATE ON coordination
-WHEN OLD.tier IS NOT NULL AND NEW.tier IS NOT NULL AND NEW.state <> 'cleared'
- AND (CASE NEW.tier WHEN 'tier1' THEN 1 WHEN 'tier2' THEN 2 WHEN 'tier3' THEN 3 WHEN 'terminal' THEN 4 END)
-   < (CASE OLD.tier WHEN 'tier1' THEN 1 WHEN 'tier2' THEN 2 WHEN 'tier3' THEN 3 WHEN 'terminal' THEN 4 END)
-BEGIN SELECT RAISE(ABORT,'tier is monotonic (R8.2/R8.3)'); END;
+WHEN OLD.tier IS NOT NULL AND NEW.state <> 'cleared'
+ AND NOT (OLD.state = 'cleared' AND NEW.state = 'normal' AND NEW.tier IS NULL AND NEW.attempt_count = 0 AND NEW.terminal = 0)  -- re-arm
+ AND (NEW.tier IS NULL
+      OR (CASE NEW.tier WHEN 'tier1' THEN 1 WHEN 'tier2' THEN 2 WHEN 'tier3' THEN 3 WHEN 'terminal' THEN 4 END)
+       < (CASE OLD.tier WHEN 'tier1' THEN 1 WHEN 'tier2' THEN 2 WHEN 'tier3' THEN 3 WHEN 'terminal' THEN 4 END))
+BEGIN SELECT RAISE(ABORT,'tier is monotonic — no downgrade, no NULL bridge (R8.2/R8.3)'); END;
 CREATE TRIGGER IF NOT EXISTS coordination_terminal_implies_state
 BEFORE UPDATE ON coordination
 WHEN NEW.terminal = 1 AND NEW.state NOT IN ('terminal','cleared')
@@ -326,7 +371,7 @@ CREATE TABLE IF NOT EXISTS tier_dispatches (
     screen_id       TEXT NOT NULL REFERENCES screens(screen_id),
     tier            TEXT NOT NULL CHECK (tier IN ('tier1','tier2','tier3')),
     cycle_id        TEXT NOT NULL,
-    dispatched_at   INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec')*1000 AS INTEGER)),
+    dispatched_at   INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec')*1000 AS INTEGER)) CHECK (dispatched_at > 1000000000000),
     PRIMARY KEY (screen_id, tier, cycle_id)
 ) STRICT, WITHOUT ROWID;
 CREATE TRIGGER IF NOT EXISTS tier_dispatches_no_clobber
@@ -340,7 +385,7 @@ BEGIN SELECT RAISE(ABORT,'dispatch dedup is durable: no delete (R8.12)'); END;
 CREATE TABLE IF NOT EXISTS notify_cycles (
     screen_id       TEXT NOT NULL REFERENCES screens(screen_id),
     cycle_id        TEXT NOT NULL,
-    notified_at     INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec')*1000 AS INTEGER)),
+    notified_at     INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec')*1000 AS INTEGER)) CHECK (notified_at > 1000000000000),
     PRIMARY KEY (screen_id, cycle_id)
 ) STRICT, WITHOUT ROWID;
 CREATE TRIGGER IF NOT EXISTS notify_cycles_no_clobber
@@ -364,8 +409,8 @@ CREATE TABLE IF NOT EXISTS consults (
     abandon_reason  TEXT,
     payload_dir     TEXT NOT NULL,
     failure_reason  TEXT,
-    created_at      INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec')*1000 AS INTEGER)),
-    resolved_at     INTEGER
+    created_at      INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec')*1000 AS INTEGER)) CHECK (created_at > 1000000000000),
+    resolved_at     INTEGER CHECK (resolved_at IS NULL OR resolved_at > 1000000000000)
 ) STRICT, WITHOUT ROWID;
 CREATE UNIQUE INDEX IF NOT EXISTS ux_one_pending_consult ON consults(status) WHERE status = 'pending';
 CREATE TRIGGER IF NOT EXISTS consults_no_clobber
@@ -399,7 +444,7 @@ CREATE TABLE IF NOT EXISTS events (
     consult_id      TEXT,
     actor           TEXT NOT NULL CHECK (actor IN ('api','worker','mac','operator','supervisor','system')),
     payload_json    TEXT NOT NULL DEFAULT '{}',
-    created_at      INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec')*1000 AS INTEGER))
+    created_at      INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec')*1000 AS INTEGER)) CHECK (created_at > 1000000000000)
 ) STRICT;
 CREATE INDEX IF NOT EXISTS idx_events_screen ON events(screen_id, kind, event_id DESC);
 CREATE INDEX IF NOT EXISTS idx_events_platform ON events(platform, kind, event_id DESC);
@@ -412,8 +457,8 @@ CREATE TABLE IF NOT EXISTS events_archive (
     consult_id      TEXT,
     actor           TEXT NOT NULL,
     payload_json    TEXT NOT NULL,
-    created_at      INTEGER NOT NULL,
-    archived_at     INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec')*1000 AS INTEGER))
+    created_at      INTEGER NOT NULL CHECK (created_at > 1000000000000),
+    archived_at     INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec')*1000 AS INTEGER)) CHECK (archived_at > 1000000000000)
 ) STRICT, WITHOUT ROWID;
 
 CREATE TRIGGER IF NOT EXISTS events_append_only
