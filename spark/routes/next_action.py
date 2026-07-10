@@ -178,7 +178,7 @@ def _escalate_to_claude_diagnosing(
             from spark.tasks.paths import PLATFORMS_DIR as _PLATFORMS_DIR
             _yaml = _PLATFORMS_DIR / platform / "screen_types" / f"{_st}.yaml"
             _es_state = escalation_state.get(platform, _screen_hash)
-            _last = float(_es_state.get("updated_at", 0) or 0)
+            _last = float(_es_state.get("last_attempt_at") or _es_state.get("updated_at") or 0)
             if _yaml.exists() and _es_state.get("attempt", 0) and _yaml.stat().st_mtime > _last:
                 escalation_state.clear(platform, _screen_hash, f"yaml_fold_resets_ladder:{_st}")
                 logger.info(
