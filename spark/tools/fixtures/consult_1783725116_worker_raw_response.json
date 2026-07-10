@@ -1,0 +1,21 @@
+{
+  "tree": {},
+  "screen_type": "EXERCISE_WRONG_ANSWER",
+  "expected_next": [
+    "EXERCISE_WRONG_ANSWER",
+    "EXERCISE_TEXT_INPUT"
+  ],
+  "extract": null,
+  "slots": {},
+  "evidence": {
+    "target_source": "Verdict callout 'You're almost there -- There are still more parts of this question to answer. Give it another try!' plus 'Try again' AXButton and no 'Check' button (3 of 4).",
+    "why_safe": "This is a POST-WRONG-ANSWER state (mastery already affected). Per the recipe the only sanctioned output is an empty behavior tree {} which the engine routes to the escalation ladder; no advancing BT is built, nothing is re-answered, resubmitted, or clicked ('Try again' is forbidden). Recovery is escalation-gated, not a recipe action.",
+    "never_clicks_avoided": [
+      "Try again",
+      "Skip",
+      "answer choice re-click / resubmit",
+      "Check"
+    ]
+  },
+  "confidence": 0.9
+}

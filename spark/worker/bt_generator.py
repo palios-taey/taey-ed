@@ -58,8 +58,10 @@ class BTGenerationError(RuntimeError):
 
 WORKER_RAW_STDOUT_NAME = "worker_raw_stdout.txt"
 WORKER_RAW_RESPONSE_NAME = "worker_raw_response.json"
+WORKER_ESCALATE_NAME = "worker_escalate.json"
+WORKER_ESCALATE_KIND = "worker_escalate"
 
-WORKER_OUTPUT_SCHEMA = {
+WORKER_BT_OUTPUT_SCHEMA = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
     "required": [
@@ -105,7 +107,48 @@ WORKER_OUTPUT_SCHEMA = {
         "confidence": {"type": "number", "minimum": 0, "maximum": 1},
         "_session": {"type": "object"},
     },
+    "not": {"required": ["escalate"]},
     "additionalProperties": True,
+}
+WORKER_ESCALATE_OUTPUT_SCHEMA = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": ["screen_type", "escalate", "confidence"],
+    "properties": {
+        "screen_type": {"type": "string", "minLength": 1},
+        "escalate": {
+            "type": "object",
+            "required": ["reason", "evidence", "never_clicks"],
+            "properties": {
+                "reason": {"type": "string", "minLength": 1},
+                "evidence": {
+                    "oneOf": [
+                        {"type": "string", "minLength": 1},
+                        {"type": "object", "minProperties": 1},
+                    ],
+                },
+                "never_clicks": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {"type": "string", "minLength": 1},
+                },
+            },
+            "additionalProperties": True,
+        },
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "_session": {"type": "object"},
+    },
+    "not": {
+        "anyOf": [
+            {"required": ["tree"]},
+            {"required": ["slots"]},
+        ]
+    },
+    "additionalProperties": True,
+}
+WORKER_OUTPUT_SCHEMA = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "oneOf": [WORKER_BT_OUTPUT_SCHEMA, WORKER_ESCALATE_OUTPUT_SCHEMA],
 }
 WORKER_OUTPUT_SCHEMA_VALIDATOR = Draft202012Validator(WORKER_OUTPUT_SCHEMA)
 
@@ -158,10 +201,26 @@ Shape:
   }}
 }}
 
+If the screen must not be automated safely, emit this escalation envelope instead
+of a BT. Do not emit "tree": {{}} as a refusal:
+{{
+  "screen_type": "<canonical screen_type>",
+  "escalate": {{
+    "reason": "<why automation must stop and the ladder must handle recovery>",
+    "evidence": {{
+      "target_source": "<exact tree/screenshot signal>",
+      "why_safe": "<why no click/submit/retry is safe here>"
+    }},
+    "never_clicks": ["Try again", "Skip", "answer widget", "Check"]
+  }},
+  "confidence": 0.0
+}}
+
 Only emit "_session" if you learned something the next cycle must retain for THIS screen.
 Use "slots": {{}} only when there is no typed slot value for this screen yet.
 The server validates screen_type, slots, evidence, and confidence with JSON Schema
-before storage or execution; missing fields or wrong types are rejected.
+before storage or execution; missing fields or wrong types are rejected. A valid
+escalation envelope is routed directly to the ladder without a schema retry.
 confidence is a number from 0.0 to 1.0.
 
 Never click "Skip" mid-exercise; "Up next" only on post-completion transitions.
@@ -291,7 +350,8 @@ Your previous response was rejected before storage or execution:
 
 Emit a complete corrected JSON object now. Do not explain the rejection.
 Keep the same task and include the required top-level worker contract fields:
-screen_type, slots, evidence, and confidence.
+screen_type, slots, evidence, and confidence. If automation must refuse safely,
+emit the explicit escalation envelope instead of a BT.
 =============================================================="""
 
 
@@ -304,6 +364,64 @@ def _persist_rejection_artifact(path: Path, error: BTGenerationError) -> str | N
         "worker_output": error.worker_output,
     }
     return _persist_json_artifact(path, payload)
+
+
+def _is_worker_escalate_output(parsed: dict) -> bool:
+    return isinstance(parsed, dict) and isinstance(parsed.get("escalate"), dict)
+
+
+def _canonical_worker_output(parsed):
+    if not isinstance(parsed, dict):
+        return parsed
+    if _is_worker_escalate_output(parsed):
+        return parsed
+    evidence = parsed.get("evidence")
+    if parsed.get("tree") == {} and isinstance(evidence, dict):
+        never_clicks = evidence.get("never_clicks_avoided")
+        if isinstance(never_clicks, str):
+            never_clicks = [never_clicks]
+        if not isinstance(never_clicks, list) or not never_clicks:
+            never_clicks = ["unsafe automation"]
+        reason = str(
+            evidence.get("why_safe")
+            or evidence.get("target_source")
+            or "worker refused to emit an executable behavior tree"
+        ).strip()
+        return {
+            "screen_type": str(parsed.get("screen_type") or "UNKNOWN").strip() or "UNKNOWN",
+            "escalate": {
+                "reason": reason,
+                "evidence": evidence,
+                "never_clicks": [str(item) for item in never_clicks if str(item).strip()],
+                "source": "legacy_empty_tree_refusal",
+            },
+            "confidence": parsed.get("confidence", 0.0),
+        }
+    return parsed
+
+
+def _worker_escalate_error(
+    parsed: dict,
+    consultation_id: str,
+    *,
+    worker_raw_response_path: str | None = None,
+    worker_raw_stdout_path: str | None = None,
+) -> BTGenerationError:
+    envelope = parsed.get("escalate") or {}
+    never_clicks = envelope.get("never_clicks") or []
+    if isinstance(never_clicks, list):
+        never_clicks_text = ", ".join(str(item) for item in never_clicks)
+    else:
+        never_clicks_text = str(never_clicks)
+    reason = str(envelope.get("reason") or "worker requested escalation").strip()
+    return BTGenerationError(
+        f"Worker escalation envelope for {consultation_id}: {reason}; "
+        f"never_clicks={never_clicks_text}",
+        failure_kind=WORKER_ESCALATE_KIND,
+        worker_raw_response_path=worker_raw_response_path,
+        worker_raw_stdout_path=worker_raw_stdout_path,
+        worker_output=parsed,
+    )
 
 
 def _root_shape_summary(value) -> str:
@@ -547,6 +665,8 @@ def _validate_bt(
             worker_raw_stdout_path=worker_raw_stdout_path,
             worker_output=parsed,
         )
+    if _is_worker_escalate_output(parsed):
+        return
     required = ("tree", "screen_type", "expected_next", "extract")
     for k in required:
         if k not in parsed:
@@ -766,12 +886,14 @@ def generate_bt(
                 )
 
                 if isinstance(bt, dict):
+                    bt = _canonical_worker_output(bt)
                     if isinstance(bt.get("tree"), list):
                         bt["tree"] = {"type": "sequence", "children": bt["tree"]}
 
                     # Correct historical dialect variance only; new dialect repairs
                     # must be schema-retried, not added to the normalizer.
-                    _normalize_bt_nodes(bt.get("tree", bt))
+                    if not _is_worker_escalate_output(bt):
+                        _normalize_bt_nodes(bt.get("tree", bt))
 
                 try:
                     _validate_bt(
@@ -780,6 +902,18 @@ def generate_bt(
                         worker_raw_response_path=worker_raw_response_path,
                         worker_raw_stdout_path=worker_raw_stdout_path,
                     )
+                    if _is_worker_escalate_output(bt):
+                        rejection = _worker_escalate_error(
+                            bt,
+                            consultation_id,
+                            worker_raw_response_path=worker_raw_response_path,
+                            worker_raw_stdout_path=worker_raw_stdout_path,
+                        )
+                        rejection.rejected_bt_path = _persist_json_artifact(
+                            consult_dir / WORKER_ESCALATE_NAME,
+                            bt,
+                        )
+                        raise rejection
                     validate_worker_bt_response(bt, platform=platform, screen_type=context["screen_type"])
                 except ScreenTypeAssemblerError as e:
                     rejection = BTGenerationError(
@@ -799,6 +933,8 @@ def generate_bt(
             consult_dir / f"worker_rejection_attempt{attempt}.json",
             rejection,
         )
+        if rejection.failure_kind == WORKER_ESCALATE_KIND:
+            raise rejection
         if attempt < WORKER_SCHEMA_MAX_ATTEMPTS:
             logger.warning(
                 "bt_generator: worker output rejected for %s attempt %d/%d: %s",

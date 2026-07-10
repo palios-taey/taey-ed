@@ -244,6 +244,8 @@ def _write_user_input_needed_fallback(
     }
     if rejected_bt_path:
         fallback["_rejected_bt_path"] = rejected_bt_path
+        if failure_kind == "worker_escalate":
+            fallback["_worker_escalate_path"] = rejected_bt_path
     if worker_raw_response_path:
         fallback["_worker_raw_response_path"] = worker_raw_response_path
     if worker_raw_stdout_path:
@@ -255,6 +257,8 @@ def _write_user_input_needed_fallback(
         meta["worker_failure_kind"] = failure_kind
         if rejected_bt_path:
             meta["rejected_bt_path"] = rejected_bt_path
+            if failure_kind == "worker_escalate":
+                meta["worker_escalate_path"] = rejected_bt_path
         if worker_raw_response_path:
             meta["worker_raw_response_path"] = worker_raw_response_path
         if worker_raw_stdout_path:

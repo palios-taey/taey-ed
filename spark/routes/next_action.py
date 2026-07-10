@@ -1722,9 +1722,11 @@ def _next_action_impl(request: NextActionRequest):
                     "conformance_rejection",
                     "validation_rejection",
                     "worker_output_schema_rejection",
+                    "worker_escalate",
                 }:
                     _rbp = Path(
-                        consult_status.get("_rejected_bt_path")
+                        consult_status.get("_worker_escalate_path")
+                        or consult_status.get("_rejected_bt_path")
                         or (_cp / "rejected_bt.json")
                     )
                     try:
@@ -1738,6 +1740,8 @@ def _next_action_impl(request: NextActionRequest):
                     _escalation_reason = f"worker_output_schema_rejection: {_wf_reason}"
                 elif _wf_kind == "validation_rejection":
                     _escalation_reason = f"validation_rejection: {_wf_reason}"
+                elif _wf_kind == "worker_escalate":
+                    _escalation_reason = f"worker_escalate: {_wf_reason}"
                 else:
                     _escalation_reason = f"worker_fallback: {_wf_reason}"
                 logger.error(

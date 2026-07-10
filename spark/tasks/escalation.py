@@ -140,6 +140,19 @@ def classify_infra_failure(reason) -> Optional[str]:
     return None
 
 
+def classify_policy_refusal(reason) -> Optional[str]:
+    """Worker policy refusals are not researchable definition gaps.
+
+    A first-class refusal means the worker judged the screen unsafe to automate
+    under the recipe contract. The operator tier owns that policy decision; the
+    ladder remains bounded, but Tier-2/3 autonomous research dispatch is skipped.
+    """
+    r = str(reason or "")
+    if r.startswith("worker_escalate:") or "Worker escalation envelope" in r:
+        return f"policy/refusal — {r[:160]}"
+    return None
+
+
 def dispatch_body_for_tier(
     *,
     tier: str,
@@ -156,12 +169,16 @@ def dispatch_body_for_tier(
     Content mirrors what the tier templates previously told claude-primary
     to relay verbatim — the server now sends it itself.
     """
-    env_class = classify_failure_environment(bt_debug_tail) or classify_infra_failure(reason)
-    if env_class:
+    skip_class = (
+        classify_failure_environment(bt_debug_tail)
+        or classify_infra_failure(reason)
+        or classify_policy_refusal(reason)
+    )
+    if skip_class:
         logger.warning(
             f"escalation: SKIPPING tier-{tier[-1]} fleet dispatch for "
-            f"{platform}/{screen_hash[:12]} — {env_class}. Research cannot "
-            f"fix an environment problem; retry after the environment clears."
+            f"{platform}/{screen_hash[:12]} — {skip_class}. Research cannot "
+            f"fix this failure class; keep it on the operator ladder."
         )
         return None
 
@@ -373,6 +390,7 @@ def build_packet(
     tree_dst = esc_dir / "tree.json"
     shot_dst = esc_dir / "screenshot.png"
     rejected_bt_dst = esc_dir / "rejected_bt.json"
+    worker_escalate_dst = esc_dir / "worker_escalate.json"
     worker_raw_response_dst = esc_dir / "worker_raw_response.json"
     worker_raw_stdout_dst = esc_dir / "worker_raw_stdout.txt"
 
@@ -383,6 +401,8 @@ def build_packet(
             shutil.copy2(src_dir / "screenshot.png", shot_dst)
         if (src_dir / "rejected_bt.json").exists() and not rejected_bt_dst.exists():
             shutil.copy2(src_dir / "rejected_bt.json", rejected_bt_dst)
+        if (src_dir / "worker_escalate.json").exists() and not worker_escalate_dst.exists():
+            shutil.copy2(src_dir / "worker_escalate.json", worker_escalate_dst)
         if (src_dir / "worker_raw_response.json").exists() and not worker_raw_response_dst.exists():
             shutil.copy2(src_dir / "worker_raw_response.json", worker_raw_response_dst)
         if (src_dir / "worker_raw_stdout.txt").exists() and not worker_raw_stdout_dst.exists():
@@ -400,6 +420,11 @@ def build_packet(
     worker_raw_response_line = (
         f"- worker_raw_response: `{worker_raw_response_dst}`  (parsed worker JSON before normalization)\n"
         if worker_raw_response_dst.exists()
+        else ""
+    )
+    worker_escalate_line = (
+        f"- worker_escalate: `{worker_escalate_dst}`  (validated worker refusal envelope)\n"
+        if worker_escalate_dst.exists()
         else ""
     )
     worker_raw_stdout_line = (
@@ -450,6 +475,7 @@ def build_packet(
 - screenshot: `{shot_dst}`  (attach to LLM prompt)
 - tree.json: `{tree_dst}`  (full AX tree, large file — excerpt below)
 {rejected_bt_line}
+{worker_escalate_line}
 {worker_raw_response_line}{worker_raw_stdout_line}
 
 ### AX summary

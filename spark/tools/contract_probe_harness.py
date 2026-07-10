@@ -27,8 +27,8 @@ PINNED_EXECUTOR_MANIFEST_HASH = (
 PINNED_EXECUTOR_MANIFEST_V2_SHA256 = (
     "3ffc6274ab27fa41ce51d036944a5e02ce07f36ab071265429e30c1675410d34"
 )
-PINNED_PROBE_MIN_COUNT = 23
-PINNED_PROBE_REGISTRY_HASH = "sha256:cd5f07d473cc8655574b93682afbdb20c1ca2666145d044b02aba51636d78c53"
+PINNED_PROBE_MIN_COUNT = 25
+PINNED_PROBE_REGISTRY_HASH = "sha256:4cf736a8f16796ce16720cf3c6240faea7204e9281cddc0bc42dd054acae5464"
 DEFAULT_CONTRACT_RED_RUN_REGISTER = Path(__file__).with_name("contract_probe_red_runs.jsonl")
 
 # V2 names the select_dropdown_option surface as an 11-slot minimum; the live
@@ -132,6 +132,24 @@ PROBE_SPECS: tuple[ProbeSpec, ...] = (
         incident_ref="cl1-worker-schema jsonschema + bounded retry contract",
         red_fixture="worker output missing slots/evidence/confidence",
         description="Worker output is server-side JSON-schema validated, retried once with violation feedback, then escalated with rejected output.",
+    ),
+    ProbeSpec(
+        id="thesis.worker_escalate_envelope",
+        group="structural-gap-thesis",
+        check_name="worker_escalate_envelope",
+        current_mode="enforced",
+        incident_ref="consult_1783724666 correct wrong-answer refusal",
+        red_fixture="spark/tools/fixtures/consult_1783724666_worker_raw_response.json",
+        description="Correct worker refusal validates as an explicit escalation envelope and skips schema retry plus BT lint/conformance.",
+    ),
+    ProbeSpec(
+        id="thesis.worker_policy_refusal_operator_route",
+        group="structural-gap-thesis",
+        check_name="worker_policy_refusal_operator_route",
+        current_mode="enforced",
+        incident_ref="consult_1783725116 refusal must not auto-dispatch research",
+        red_fixture="spark/tools/fixtures/consult_1783725116_worker_raw_response.json",
+        description="Worker policy refusals stay on the operator ladder and skip Tier-2/3 autonomous research dispatch.",
     ),
     ProbeSpec(
         id="thesis.engine_primitives",
@@ -629,6 +647,127 @@ def _check_worker_output_schema_retry(ctx: ProbeContext) -> list[str]:
     return residues
 
 
+def _check_worker_escalate_envelope(ctx: ProbeContext) -> list[str]:
+    residues = _require_source(
+        ctx,
+        "spark/worker/bt_generator.py",
+        (
+            "WORKER_ESCALATE_KIND = \"worker_escalate\"",
+            "WORKER_ESCALATE_OUTPUT_SCHEMA",
+            "WORKER_ESCALATE_NAME = \"worker_escalate.json\"",
+            "def _canonical_worker_output(",
+            "legacy_empty_tree_refusal",
+            "if rejection.failure_kind == WORKER_ESCALATE_KIND:",
+            "escalation envelope is routed directly to the ladder without a schema retry.",
+        ),
+    )
+    residues.extend(
+        _require_source(
+            ctx,
+            "spark/worker/consultation_worker.py",
+            (
+                "\"_worker_escalate_path\"",
+                "failure_kind == \"worker_escalate\"",
+            ),
+        )
+    )
+    residues.extend(
+        _require_source(
+            ctx,
+            "spark/routes/next_action.py",
+            (
+                "\"worker_escalate\"",
+                "_worker_escalate_path",
+                "worker_escalate: {_wf_reason}",
+            ),
+        )
+    )
+    residues.extend(
+        _require_source(
+            ctx,
+            "spark/tasks/escalation.py",
+            (
+                "worker_escalate.json",
+                "validated worker refusal envelope",
+            ),
+        )
+    )
+
+    fixture_path = ctx.repo_root / "spark/tools/fixtures/consult_1783724666_worker_raw_response.json"
+    try:
+        raw = json.loads(fixture_path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        return residues + [f"{fixture_path} load failed: {exc!r}"]
+
+    from spark.worker.bt_generator import (
+        WORKER_OUTPUT_SCHEMA_VALIDATOR,
+        _canonical_worker_output,
+        _is_worker_escalate_output,
+    )
+
+    canonical = _canonical_worker_output(raw)
+    errors = list(WORKER_OUTPUT_SCHEMA_VALIDATOR.iter_errors(canonical))
+    if errors:
+        residues.append(
+            "consult_1783724666 refusal did not validate as worker escalate: "
+            + "; ".join(str(error.message) for error in errors[:3])
+        )
+    if not _is_worker_escalate_output(canonical):
+        residues.append("consult_1783724666 refusal did not canonicalize to escalate envelope")
+    if "tree" in canonical or "slots" in canonical:
+        residues.append("worker escalate envelope retained tree/slots")
+    if canonical.get("escalate", {}).get("source") != "legacy_empty_tree_refusal":
+        residues.append("legacy empty-tree refusal provenance not preserved")
+    if "Try again" not in canonical.get("escalate", {}).get("never_clicks", []):
+        residues.append("worker escalate never_clicks did not preserve Try again")
+    return residues
+
+
+def _check_worker_policy_refusal_operator_route(ctx: ProbeContext) -> list[str]:
+    residues = _require_source(
+        ctx,
+        "spark/tasks/escalation.py",
+        (
+            "def classify_policy_refusal(",
+            "policy/refusal",
+            "classify_policy_refusal(reason)",
+            "keep it on the operator ladder",
+        ),
+    )
+    fixture_path = ctx.repo_root / "spark/tools/fixtures/consult_1783725116_worker_raw_response.json"
+    try:
+        raw = json.loads(fixture_path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        return residues + [f"{fixture_path} load failed: {exc!r}"]
+
+    from spark.tasks.escalation import dispatch_body_for_tier
+    from spark.worker.bt_generator import (
+        WORKER_OUTPUT_SCHEMA_VALIDATOR,
+        _canonical_worker_output,
+        _worker_escalate_error,
+    )
+
+    canonical = _canonical_worker_output(raw)
+    errors = list(WORKER_OUTPUT_SCHEMA_VALIDATOR.iter_errors(canonical))
+    if errors:
+        residues.append(
+            "consult_1783725116 refusal did not validate as worker escalate: "
+            + "; ".join(str(error.message) for error in errors[:3])
+        )
+    err = _worker_escalate_error(canonical, "consult_1783725116_85dfc0d1")
+    body = dispatch_body_for_tier(
+        tier="tier2",
+        packet_path=Path("/tmp/taey-ed-probe-packet.md"),
+        platform="khan_academy",
+        screen_hash="probe_policy_refusal_hash",
+        retry_count=2,
+        reason=f"worker_escalate: {err}",
+    )
+    if body is not None:
+        residues.append("worker policy refusal produced a tier2 research dispatch body")
+    return residues
+
+
 def _check_engine_primitives(ctx: ProbeContext) -> list[str]:
     residues = _require_source(
         ctx,
@@ -1060,6 +1199,8 @@ CHECKS: dict[str, Callable[[ProbeContext], list[str]]] = {
     "validated_store_source": _check_validated_store_source,
     "worker_handoff_receipt": _check_worker_handoff_receipt,
     "worker_output_schema_retry": _check_worker_output_schema_retry,
+    "worker_escalate_envelope": _check_worker_escalate_envelope,
+    "worker_policy_refusal_operator_route": _check_worker_policy_refusal_operator_route,
     "engine_primitives": _check_engine_primitives,
     "state_ladder_liveness": _check_state_ladder_liveness,
     "yaml_fold_reset": _check_yaml_fold_reset,

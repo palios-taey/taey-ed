@@ -1,0 +1,21 @@
+{
+  "tree": {},
+  "screen_type": "EXERCISE_WRONG_ANSWER",
+  "expected_next": [
+    "EXERCISE_WRONG_ANSWER",
+    "EXERCISE_TEXT_INPUT"
+  ],
+  "extract": null,
+  "slots": {},
+  "evidence": {
+    "target_source": "Verdict 'You're almost there' + 'Try again' AXButton present, no 'Check' button; progress '3 of 4' with a red/incorrect mark -- item already answered WRONG (mastery affected).",
+    "why_safe": "Emits an empty BT so the engine routes {} -> BTGenerationError -> escalation ladder. No advancing action is built: does not solve, resubmit, click 'Try again', 'Skip', or the answer widget. Recovery from a wrong-answer state is escalation-gated per recipe/contracts.",
+    "never_clicks_avoided": [
+      "Try again",
+      "Skip",
+      "answer choice re-click",
+      "Check"
+    ]
+  },
+  "confidence": 0.9
+}
