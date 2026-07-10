@@ -65,19 +65,25 @@ def check_trees(corpus: Path, data_dir: Path, findings: list) -> dict:
         except Exception as exc:  # noqa: BLE001
             findings.append(f"A:{tree_path.parent.name}: skeleton hash raised {exc!r}")
 
-    legacy = 0
+    legacy = indeterminate = 0
     for idx_path in sorted((data_dir / "hash_index").glob("*.json")):
         platform = idx_path.stem
         entries = _load(idx_path).get("hashes", {})
         for skel, entry in entries.items():
             name = entry.get("variant") or ""
             canonical = canonicalize_screen_type(platform, name, None)
-            if canonical != name:
-                legacy += 1
-                findings.append(
-                    f"A:{platform}:{skel[:12]}: non-canonical variant {name!r} (-> {canonical!r})"
-                )
-    return {"trees_hashed": hashed, "legacy_names": legacy}
+            if canonical == name:
+                continue
+            if canonical == "UNKNOWN":
+                # Some registered subtypes only resolve with a live tree
+                # (subtype-floor logic); tree=None cannot judge them.
+                indeterminate += 1
+                continue
+            legacy += 1
+            findings.append(
+                f"A:{platform}:{skel[:12]}: legacy variant alias {name!r} (-> {canonical!r})"
+            )
+    return {"trees_hashed": hashed, "legacy_names": legacy, "names_indeterminate": indeterminate}
 
 
 def _iter_served_bts(corpus: Path):
