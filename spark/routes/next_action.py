@@ -539,11 +539,67 @@ def _log_fingerprint(platform: str, variant: str, skel_hash: str, fingerprint: d
 
 def _with_chat(response: dict, platform: str, messages: list[dict]) -> dict:
     """Attach chat_messages to a response and persist them to Redis."""
+    response, messages = _gate_execute_tree_response(response, platform, messages)
     _remember_issued_directive(response)
     for msg in messages:
         store_message(platform, msg)
     response["chat_messages"] = messages
     return response
+
+
+def _gate_execute_tree_response(
+    response: dict,
+    platform: str,
+    messages: list[dict] | None = None,
+) -> tuple[dict, list[dict]]:
+    messages = list(messages or [])
+    if not isinstance(response, dict) or response.get("directive") != "execute_tree":
+        return response, messages
+    tree = response.get("tree")
+    from spark.tasks.bt_lint import lint_bt, summarize_violations, write_lint_audit
+
+    result = lint_bt(tree)
+    if result.ok:
+        return response, messages
+
+    context = {
+        "platform": platform,
+        "directive_id": response.get("directive_id"),
+        "screen": response.get("screen"),
+        "skeleton_hash": response.get("skeleton_hash"),
+        "course_id": response.get("course_id"),
+    }
+    artifact_path = write_lint_audit(
+        result=result,
+        tree=tree,
+        source="next_action_serve",
+        context=context,
+    )
+    summary = summarize_violations(result)
+    logger.error(
+        "BT manifest serve rejection: directive=%s screen=%s violations=%s artifact=%s",
+        response.get("directive_id"),
+        response.get("screen"),
+        len(result.violations),
+        artifact_path,
+    )
+    reason = (
+        f"BT manifest rejected server-side before Mac execution: {summary}. "
+        f"Audit artifact: {artifact_path}"
+    )
+    rejected = {
+        "directive": "user_input_needed",
+        "directive_id": _make_directive_id(),
+        "reason": reason,
+        "screen_type": response.get("screen") or "UNKNOWN",
+        "bt_lint_artifact": str(artifact_path),
+        "bt_lint_manifest_hash": result.manifest_hash,
+        "bt_lint_violations": [v.__dict__ for v in result.violations],
+    }
+    return rejected, [
+        build_status(f"BT manifest rejected {len(result.violations)} violation(s)"),
+        build_question(reason),
+    ]
 
 
 def _canonical_screen_type(platform: str, screen_type: str, tree: dict | None = None) -> str:
@@ -1504,6 +1560,7 @@ def next_action(request: NextActionRequest):
         logger.exception("PRE-PIPELINE central-feedback check failed (non-fatal)")
 
     response = _next_action_impl(request)
+    response, _ = _gate_execute_tree_response(response, request.platform)
     if isinstance(response, dict) and response.get("directive") == "user_input_needed":
         platform = request.platform
         tree = request.tree

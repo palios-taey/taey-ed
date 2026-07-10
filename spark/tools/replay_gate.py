@@ -13,8 +13,10 @@ Checks:
                  hash_index variant name is canonical (no legacy names).
   B. SERVED    — every recorded served BT (raw-dump failed_bt = BTs that
                  passed validation and were executed; consult response.json
-                 accepted BTs) STILL passes validate_worker_bt_response for
-                 its EXERCISE screen type. Catches the blanket-floor class.
+                 accepted BTs) is executor-native per the pinned ccm manifest
+                 BEFORE any normalizer runs, then STILL passes
+                 validate_worker_bt_response for its EXERCISE screen type.
+                 Catches the blanket-floor and type=conditional classes.
   C. STORE     — every stored variant behavior_tree has a validated-path
                  source, and no TRANSITION-master entry carries a BT.
                  Catches the frozen-wrong-button class.
@@ -135,18 +137,39 @@ def _executor_shape_violations(node, path: str = "tree") -> list[str]:
     return violations
 
 
-def check_served(corpus: Path, findings: list) -> dict:
+def check_served(corpus: Path, findings: list, audit_dir: Path | None = None) -> dict:
     from spark.tasks.screen_type_assembler import (
         ScreenTypeAssemblerError,
         validate_worker_bt_response,
     )
     from spark.tasks.screen_type_util import get_master_category
+    from spark.tasks.bt_lint import lint_bt, summarize_violations, write_lint_audit
     from spark.worker.bt_generator import _normalize_bt_nodes
 
-    checked = skipped = executor_shape_violations = 0
+    checked = skipped = executor_shape_violations = bt_lint_rejections = 0
     for name, platform, screen, bt in _iter_served_bts(corpus):
         if get_master_category(screen) != "EXERCISE":
             skipped += 1
+            continue
+        lint_result = lint_bt(bt)
+        if not lint_result.ok:
+            bt_lint_rejections += 1
+            executor_shape_violations += len(lint_result.violations)
+            artifact = write_lint_audit(
+                result=lint_result,
+                tree=bt,
+                source="replay_gate",
+                context={
+                    "corpus_item": name,
+                    "platform": platform,
+                    "screen": screen,
+                },
+                audit_dir=audit_dir,
+            )
+            findings.append(
+                f"B:{name}: bt_lint rejected production-served {screen} BT: "
+                f"{summarize_violations(lint_result)}; audit={artifact}"
+            )
             continue
         parsed = {"screen_type": screen, "tree": copy.deepcopy(bt)}
         _normalize_bt_nodes(parsed["tree"])
@@ -171,6 +194,7 @@ def check_served(corpus: Path, findings: list) -> dict:
         "served_checked": checked,
         "served_skipped": skipped,
         "executor_shape_violations": executor_shape_violations,
+        "bt_lint_rejections": bt_lint_rejections,
     }
 
 
@@ -201,13 +225,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--corpus", type=Path, required=True)
     parser.add_argument("--data-dir", type=Path, required=True)
+    parser.add_argument("--audit-dir", type=Path)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
     findings: list[str] = []
     stats = {}
     stats.update(check_trees(args.corpus, args.data_dir, findings))
-    stats.update(check_served(args.corpus, findings))
+    stats.update(check_served(args.corpus, findings, args.audit_dir))
     stats.update(check_store(args.data_dir, findings))
 
     green = not findings
