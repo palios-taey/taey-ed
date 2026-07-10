@@ -986,6 +986,7 @@ def _build_screen_directive(request, platform: str, tree: dict, screen_type: str
             "screen_type_hint": screen_type,
             "user_guidance": user_guidance or "",
             "course_id": course_id,
+            "relevant_kb_chunks": request.relevant_kb_chunks,
         },
     )
     return _consultation_or_wait(consult_result)
@@ -2114,6 +2115,7 @@ def _next_action_impl(request: NextActionRequest):
                     "user_guidance": lr.user_response,
                     "failed_screen": lr.screen,
                     "course_id": cs.course_id,
+                    "relevant_kb_chunks": request.relevant_kb_chunks,
                 },
                 bt_debug_log=lr.bt_debug_tail or "",
             )
@@ -2136,6 +2138,7 @@ def _next_action_impl(request: NextActionRequest):
                     "previous_screen": lr.screen or "",
                     "failed_bt": lr.failed_bt,
                     "course_id": cs.course_id,
+                    "relevant_kb_chunks": request.relevant_kb_chunks,
                 },
                 bt_debug_log=lr.bt_debug_tail or "",
             )
@@ -2624,6 +2627,7 @@ def _next_action_impl(request: NextActionRequest):
                 "screen_type": "UNKNOWN",
                 "screen_type_hint": "UNKNOWN",
                 "course_id": cs.course_id,
+                "relevant_kb_chunks": request.relevant_kb_chunks,
             },
         )
         logger.info("  Step 5D: UNKNOWN classification escalated into consultation flow")
