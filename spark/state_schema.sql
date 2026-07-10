@@ -28,7 +28,7 @@
 -- ============================================================================
 
 CREATE TABLE IF NOT EXISTS platforms (
-    platform        TEXT NOT NULL PRIMARY KEY,
+    platform        TEXT NOT NULL PRIMARY KEY CHECK (length(trim(platform))>0),
     display_name    TEXT,
     onboarded_at    INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec')*1000 AS INTEGER)) CHECK (onboarded_at > 1000000000000),
     knowledge_path  TEXT,
@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS platforms (
 -- Receipts declared EARLY so screens/behavior_trees FKs resolve. A receipt is
 -- an immutable record of what an LLM call was served (F7/F13, R7.5/R9.7).
 CREATE TABLE IF NOT EXISTS bundle_receipts (
-    bundle_id       TEXT NOT NULL PRIMARY KEY,
+    bundle_id       TEXT NOT NULL PRIMARY KEY CHECK (length(trim(bundle_id))>0),
     call_kind       TEXT NOT NULL CHECK (call_kind IN ('classify','bt_build','retry_build','diagnose','extract')),
     screen_id       TEXT,
     slices_json     TEXT NOT NULL,
@@ -59,7 +59,7 @@ BEGIN SELECT RAISE(ABORT,'bundle receipts are never deleted (audit floor)'); END
 -- Content-addressed slice bodies (F13): receipts stay verifiable after in-place
 -- YAML edits. Immutable by content address.
 CREATE TABLE IF NOT EXISTS slice_blobs (
-    sha             TEXT NOT NULL PRIMARY KEY,
+    sha             TEXT NOT NULL PRIMARY KEY CHECK (length(trim(sha))>0),
     body            TEXT NOT NULL,
     bytes           INTEGER NOT NULL CHECK (bytes >= 0)
 ) STRICT, WITHOUT ROWID;
@@ -111,7 +111,7 @@ CREATE TABLE IF NOT EXISTS type_signatures (
 -- a real type AND a classify receipt for THIS screen (F7).
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS screens (
-    screen_id       TEXT NOT NULL PRIMARY KEY,
+    screen_id       TEXT NOT NULL PRIMARY KEY CHECK (length(trim(screen_id))>0),
     platform        TEXT NOT NULL REFERENCES platforms(platform),
     screen_type     TEXT,
     classification  TEXT NOT NULL DEFAULT 'pending'
@@ -126,6 +126,15 @@ CREATE TABLE IF NOT EXISTS screens (
            OR (screen_type IS NOT NULL AND classified_by_bundle_id IS NOT NULL))
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS idx_screens_platform_type ON screens(platform, screen_type);
+-- Horizon r5 #4: screens is instance IDENTITY — retire via `retired` flag,
+-- never delete/REPLACE (which would reset provenance + orphan child rows).
+CREATE TRIGGER IF NOT EXISTS screens_no_delete
+BEFORE DELETE ON screens
+BEGIN SELECT RAISE(ABORT,'screen identity is durable: retire via flag, never delete/REPLACE'); END;
+CREATE TRIGGER IF NOT EXISTS screens_no_clobber
+BEFORE INSERT ON screens
+WHEN EXISTS (SELECT 1 FROM screens WHERE screen_id = NEW.screen_id)
+BEGIN SELECT RAISE(ABORT,'no REPLACE over a screen identity'); END;
 -- F7 close: the linked receipt must actually be a classify receipt (an
 -- unrelated synthetic receipt no longer launders a classification).
 CREATE TRIGGER IF NOT EXISTS screens_classify_receipt_valid_ins
@@ -169,7 +178,7 @@ CREATE TABLE IF NOT EXISTS screen_features (
 -- REPLACE that would destroy history is blocked by the no-clobber INSERT guard.
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS behavior_trees (
-    bt_id           TEXT NOT NULL PRIMARY KEY,
+    bt_id           TEXT NOT NULL PRIMARY KEY CHECK (length(trim(bt_id))>0),
     screen_id       TEXT NOT NULL REFERENCES screens(screen_id),
     revision        INTEGER NOT NULL,
     bt_json         TEXT NOT NULL,
@@ -213,7 +222,7 @@ BEFORE UPDATE OF bt_id, screen_id, revision, bt_json, built_by, source_kind, bun
 BEGIN SELECT RAISE(ABORT,'behavior tree identity/content/provenance is immutable (only status + counters mutate)'); END;
 
 CREATE TABLE IF NOT EXISTS qa_captures (
-    qa_id           TEXT NOT NULL PRIMARY KEY,
+    qa_id           TEXT NOT NULL PRIMARY KEY CHECK (length(trim(qa_id))>0),
     screen_id       TEXT NOT NULL REFERENCES screens(screen_id),
     question        TEXT NOT NULL,
     options_json    TEXT,
@@ -228,7 +237,7 @@ CREATE INDEX IF NOT EXISTS idx_qa_screen ON qa_captures(screen_id);
 -- CONTEXT SLICES — L0-L3 JIT index; SCD currency as a constraint.
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS context_slices (
-    slice_id        TEXT NOT NULL PRIMARY KEY,
+    slice_id        TEXT NOT NULL PRIMARY KEY CHECK (length(trim(slice_id))>0),
     platform        TEXT,
     level           INTEGER NOT NULL CHECK (level IN (0,1,2,3)),
     selector        TEXT NOT NULL,
@@ -262,7 +271,7 @@ BEGIN SELECT RAISE(ABORT,'context slice identity/source is immutable; supersede 
 -- screen_id reassignment, and the INSERT path (v2 guarded only UPDATE).
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS coordination (
-    screen_id       TEXT NOT NULL PRIMARY KEY REFERENCES screens(screen_id),
+    screen_id       TEXT NOT NULL PRIMARY KEY REFERENCES screens(screen_id) CHECK (length(trim(screen_id))>0),
     platform        TEXT REFERENCES platforms(platform),
     state           TEXT NOT NULL DEFAULT 'normal'
                     CHECK (state IN ('normal','consulting','diagnosing','awaiting_resume','terminal','cleared')),
@@ -340,6 +349,26 @@ WHEN OLD.state = 'cleared'
       AND NEW.resume_at IS OLD.resume_at AND NEW.response_pending_until IS OLD.response_pending_until
       AND NEW.yaml_sha_at_attempt IS OLD.yaml_sha_at_attempt AND NEW.user_instructions IS OLD.user_instructions)
 BEGIN SELECT RAISE(ABORT,'a cleared ladder is frozen: only an authorized full re-arm to a fresh normal ladder is legal (R8.3/R8.5)'); END;
+-- Horizon r5 #1: v3.2 guarded updates FROM cleared but not the transition INTO
+-- cleared — so a clear could smuggle forged operational fields in the same
+-- UPDATE. Entering cleared may change only ladder fields (state, cleared_reason,
+-- terminal, attempt_count, tier); operational non-core fields must be UNCHANGED
+-- or cleared to NULL, never forged to a new value. platform is immutable always.
+CREATE TRIGGER IF NOT EXISTS coordination_enter_cleared_no_smuggle
+BEFORE UPDATE ON coordination
+WHEN NEW.state = 'cleared' AND OLD.state <> 'cleared'
+ AND NOT (NEW.platform IS OLD.platform
+      AND (NEW.resume_at IS OLD.resume_at OR NEW.resume_at IS NULL)
+      AND (NEW.response_pending_until IS OLD.response_pending_until OR NEW.response_pending_until IS NULL)
+      AND (NEW.yaml_sha_at_attempt IS OLD.yaml_sha_at_attempt OR NEW.yaml_sha_at_attempt IS NULL)
+      AND (NEW.user_instructions IS OLD.user_instructions OR NEW.user_instructions IS NULL)
+      AND (NEW.last_attempt_key IS OLD.last_attempt_key OR NEW.last_attempt_key IS NULL))
+BEGIN SELECT RAISE(ABORT,'entering cleared cannot smuggle forged operational fields (R8.3/R8.5)'); END;
+-- platform is immutable for a ladder (belongs to one screen).
+CREATE TRIGGER IF NOT EXISTS coordination_platform_immutable
+BEFORE UPDATE OF platform ON coordination
+WHEN NEW.platform IS NOT OLD.platform
+BEGIN SELECT RAISE(ABORT,'coordination.platform is immutable'); END;
 CREATE TRIGGER IF NOT EXISTS coordination_clear_requires_reason
 BEFORE UPDATE ON coordination
 WHEN NEW.state = 'cleared' AND OLD.state <> 'cleared' AND NEW.cleared_reason IS NULL
@@ -381,6 +410,10 @@ BEGIN SELECT RAISE(ABORT,'dispatch dedup is durable: no re-insert (R8.12)'); END
 CREATE TRIGGER IF NOT EXISTS tier_dispatches_no_delete
 BEFORE DELETE ON tier_dispatches
 BEGIN SELECT RAISE(ABORT,'dispatch dedup is durable: no delete (R8.12)'); END;
+-- Horizon r5 #2: a consumed dedup key is immutable — UPDATE could free it for reinsert.
+CREATE TRIGGER IF NOT EXISTS tier_dispatches_no_update
+BEFORE UPDATE ON tier_dispatches
+BEGIN SELECT RAISE(ABORT,'a consumed dispatch key is immutable (R8.12)'); END;
 
 CREATE TABLE IF NOT EXISTS notify_cycles (
     screen_id       TEXT NOT NULL REFERENCES screens(screen_id),
@@ -395,13 +428,16 @@ BEGIN SELECT RAISE(ABORT,'notify dedup is durable: no re-insert'); END;
 CREATE TRIGGER IF NOT EXISTS notify_cycles_no_delete
 BEFORE DELETE ON notify_cycles
 BEGIN SELECT RAISE(ABORT,'notify dedup is durable: no delete'); END;
+CREATE TRIGGER IF NOT EXISTS notify_cycles_no_update
+BEFORE UPDATE ON notify_cycles
+BEGIN SELECT RAISE(ABORT,'a consumed notify key is immutable'); END;
 
 -- ---------------------------------------------------------------------------
 -- CONSULTS — ONE pending globally, durable against REPLACE (Horizon: REPLACE
 -- silently swapped the pending consult).
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS consults (
-    consult_id      TEXT NOT NULL PRIMARY KEY,
+    consult_id      TEXT NOT NULL PRIMARY KEY CHECK (length(trim(consult_id))>0),
     screen_id       TEXT REFERENCES screens(screen_id),
     platform        TEXT NOT NULL,
     status          TEXT NOT NULL DEFAULT 'pending'

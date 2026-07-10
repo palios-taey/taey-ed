@@ -152,6 +152,24 @@ P('r4F.event-second-scale-ts', None,
   ("INSERT INTO events(kind,actor,created_at) VALUES('k','system',1720000000)",()),
   lambda c: no_row(c,"SELECT 1 FROM events WHERE created_at=1720000000"))
 
+# --- Horizon r5: enter-cleared smuggle, dedup UPDATE, empty-string PK, screens REPLACE ---
+P('r5_1.enter-cleared-smuggle', None,
+  ("UPDATE coordination SET state='cleared',cleared_reason='advanced',response_pending_until=1720000009999,yaml_sha_at_attempt='FORGED',user_instructions='FORGED' WHERE screen_id='s1'",()),
+  lambda c: no_row(c,"SELECT 1 FROM coordination WHERE screen_id='s1' AND yaml_sha_at_attempt='FORGED'"))
+def r5_2_setup(c):
+    c.execute("INSERT INTO tier_dispatches(screen_id,tier,cycle_id) VALUES('s1','tier1','cyc')"); c.commit()
+P('r5_2.dedup-update-frees-key', r5_2_setup,
+  ("UPDATE tier_dispatches SET tier='tier2' WHERE screen_id='s1' AND tier='tier1' AND cycle_id='cyc'",()),
+  lambda c: val(c,"SELECT tier FROM tier_dispatches WHERE screen_id='s1'")=='tier1')
+P('r5_3.empty-string-pk', None, ("INSERT INTO screens(screen_id,platform) VALUES('','p1')",()),
+  lambda c: no_row(c,"SELECT 1 FROM screens WHERE screen_id=''"))
+P('r5_3.whitespace-pk', None, ("INSERT INTO screens(screen_id,platform) VALUES('   ','p1')",()),
+  lambda c: no_row(c,"SELECT 1 FROM screens WHERE trim(screen_id)=''"))
+P('r5_4.screens-replace', None, ("INSERT OR REPLACE INTO screens(screen_id,platform) VALUES('s2','p2')",()),
+  lambda c: val(c,"SELECT platform FROM screens WHERE screen_id='s2'")=='p1')
+P('r5_4.screens-delete', None, ("DELETE FROM screens WHERE screen_id='s2'",()),
+  lambda c: not no_row(c,"SELECT 1 FROM screens WHERE screen_id='s2'"))
+
 def run():
     closed, holes, false_closures = [], [], []
     for name, setup, violation, residue in PROBES:
