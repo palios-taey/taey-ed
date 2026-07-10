@@ -194,6 +194,17 @@ def _normalize_bt_nodes(node) -> None:
     the worker wrote the key.
     """
     if isinstance(node, dict):
+        # COMPOSITE-AS-KEY form: workers can emit a structural node as the sole
+        # dict key (live 2026-07-10 dropdown: else: {sequence: [...]}); without a
+        # type/children rewrite the Mac sees an untyped dict and never recurses.
+        if "type" not in node and "action" not in node:
+            _ckeys = [k for k in node.keys() if k in {"sequence", "fallback"}]
+            if len(_ckeys) == 1 and len(node) == 1:
+                _ck = _ckeys[0]
+                _val = node.pop(_ck)
+                if isinstance(_val, list):
+                    node["type"] = _ck
+                    node["children"] = _val
         # ACTION-AS-KEY form FIRST: the worker sometimes emits {<action>: {<params>}}
         # — the action name as the dict KEY — instead of {type:action,
         # action:<action>, params:{...}}. Neither _collect_tree_actions nor the Mac

@@ -28,6 +28,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import sys
 from pathlib import Path
@@ -105,21 +106,53 @@ def _iter_served_bts(corpus: Path):
             yield f"{resp.parent.name}/response.json", platform, screen, bt
 
 
+def _remaining_composite_key_paths(node, path: str = "tree") -> list[str]:
+    paths: list[str] = []
+    if isinstance(node, dict):
+        keys = list(node.keys())
+        if (
+            "type" not in node
+            and "action" not in node
+            and len(keys) == 1
+            and keys[0] in {"sequence", "fallback"}
+            and isinstance(node[keys[0]], list)
+        ):
+            paths.append(f"{path}.{keys[0]}")
+        for index, child in enumerate(node.get("children") or []):
+            paths.extend(_remaining_composite_key_paths(child, f"{path}.children[{index}]"))
+        for key in ("do", "then", "else"):
+            if key in node:
+                paths.extend(_remaining_composite_key_paths(node.get(key), f"{path}.{key}"))
+    elif isinstance(node, list):
+        for index, item in enumerate(node):
+            paths.extend(_remaining_composite_key_paths(item, f"{path}[{index}]"))
+    return paths
+
+
 def check_served(corpus: Path, findings: list) -> dict:
     from spark.tasks.screen_type_assembler import (
         ScreenTypeAssemblerError,
         validate_worker_bt_response,
     )
     from spark.tasks.screen_type_util import get_master_category
+    from spark.worker.bt_generator import _normalize_bt_nodes
 
     checked = skipped = 0
     for name, platform, screen, bt in _iter_served_bts(corpus):
         if get_master_category(screen) != "EXERCISE":
             skipped += 1
             continue
+        parsed = {"screen_type": screen, "tree": copy.deepcopy(bt)}
+        _normalize_bt_nodes(parsed["tree"])
+        unnormalized = _remaining_composite_key_paths(parsed["tree"])
+        if unnormalized:
+            findings.append(
+                f"B:{name}: composite-as-key nodes survived normalizer: "
+                f"{', '.join(unnormalized[:5])}"
+            )
         try:
             validate_worker_bt_response(
-                {"screen_type": screen, "tree": bt}, platform, screen
+                parsed, platform, screen
             )
             checked += 1
         except ScreenTypeAssemblerError as exc:
