@@ -147,33 +147,20 @@ def tree_stability_digest(tree: dict) -> str:
     return _digest(_stable_node(tree))
 
 
-def find_all_stability_digest(find_all_results: Any) -> str:
-    return _digest(find_all_results or {})
-
-
-def _last_result_get(last_result: Any, key: str) -> Any:
-    if last_result is None:
-        return None
-    if isinstance(last_result, dict):
-        return last_result.get(key)
-    return getattr(last_result, key, None)
-
-
-def last_result_signal_digest(last_result: Any) -> str:
-    return find_all_stability_digest(_last_result_get(last_result, "bt_find_all_results"))
-
-
 def observe_wait_until_stable(
     *,
     key: str,
     tree: dict,
-    last_result: Any = None,
     required_matches: int = STABILITY_REQUIRED_MATCHES,
     max_polls: int = STABILITY_MAX_POLLS,
 ) -> StabilityObservation:
-    tree_sig = tree_stability_digest(tree)
-    find_all_sig = last_result_signal_digest(last_result)
-    signature = _digest({"tree": tree_sig, "find_all": find_all_sig})
+    """Compare successive posted AX-tree snapshots only.
+
+    The frozen Mac bundle does not round-trip BT blackboard or find_all
+    telemetry, so this engine primitive can only depend on the tree already
+    posted to /next_action each poll.
+    """
+    signature = tree_stability_digest(tree)
     prior = _STABILITY_STATE.get(key) or {}
     same = prior.get("signature") == signature
     stable_count = int(prior.get("stable_count", 0)) + 1 if same else 1

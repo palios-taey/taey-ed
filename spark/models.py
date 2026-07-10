@@ -183,8 +183,6 @@ class LastResult(BaseModel):
     directive_expected_next: Optional[list] = None
     bt_debug_tail: Optional[str] = None  # Last N lines of /tmp/behavior_tree_debug.log
     failed_bt: Optional[dict] = None  # BT that failed on Mac, sent for Gemini context
-    bt_blackboard: Optional[dict] = None  # Bounded serializable Mac blackboard snapshot
-    bt_find_all_results: Optional[dict] = None  # Stored find_all outputs with raw AX refs stripped
 
 
 class KBChunk(BaseModel):

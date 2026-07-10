@@ -1654,12 +1654,6 @@ def _next_action_impl(request: NextActionRequest):
         )
         if lr.bt_debug_tail:
             logger.info(f"    bt_debug_tail:\n{lr.bt_debug_tail}")
-        if lr.bt_blackboard or lr.bt_find_all_results:
-            logger.info(
-                "    bt telemetry: blackboard_keys=%s find_all_keys=%s",
-                sorted((lr.bt_blackboard or {}).keys()),
-                sorted((lr.bt_find_all_results or {}).keys()),
-            )
 
     # ── Step 0.5: Wrong-window guard ──
     # If the platform's knowledge declares web_area_markers and the captured

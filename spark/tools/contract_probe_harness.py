@@ -28,7 +28,7 @@ PINNED_EXECUTOR_MANIFEST_V2_SHA256 = (
     "3ffc6274ab27fa41ce51d036944a5e02ce07f36ab071265429e30c1675410d34"
 )
 PINNED_PROBE_MIN_COUNT = 23
-PINNED_PROBE_REGISTRY_HASH = "sha256:e8f988b62c495e30ad05414351a39998bad6851c9f0b3b1ab2e39986923ff7bb"
+PINNED_PROBE_REGISTRY_HASH = "sha256:cd5f07d473cc8655574b93682afbdb20c1ca2666145d044b02aba51636d78c53"
 DEFAULT_CONTRACT_RED_RUN_REGISTER = Path(__file__).with_name("contract_probe_red_runs.jsonl")
 
 # V2 names the select_dropdown_option surface as an 11-slot minimum; the live
@@ -139,8 +139,8 @@ PROBE_SPECS: tuple[ProbeSpec, ...] = (
         check_name="engine_primitives",
         current_mode="enforced",
         incident_ref="cl2-primitives wait-until-stable + scoped addressing",
-        red_fixture="last_result without bt_find_all_results/bt_blackboard",
-        description="Engine owns bounded wait-until-stable and scoped exact addressing over posted tree/find_all telemetry.",
+        red_fixture="successive posted AX-tree snapshots only",
+        description="Engine owns bounded posted-tree wait-until-stable and scoped exact addressing without app telemetry dependency.",
     ),
     ProbeSpec(
         id="thesis.ladder_timer_monotone_bound",
@@ -393,6 +393,15 @@ def _require_source(ctx: ProbeContext, rel_path: str, snippets: tuple[str, ...])
     ]
 
 
+def _forbid_source(ctx: ProbeContext, rel_path: str, snippets: tuple[str, ...]) -> list[str]:
+    text = _source(ctx, rel_path)
+    return [
+        f"{rel_path} contains forbidden snippet {snippet!r}"
+        for snippet in snippets
+        if snippet in text
+    ]
+
+
 def _fixture_tree(ctx: ProbeContext, rel_path: str):
     body = _load_json(ctx.corpus / rel_path)
     if isinstance(body.get("tree"), dict):
@@ -628,7 +637,6 @@ def _check_engine_primitives(ctx: ProbeContext) -> list[str]:
             "STABILITY_REQUIRED_MATCHES = 2",
             "STABILITY_MAX_POLLS = 6",
             "tree_stability_digest",
-            "last_result_signal_digest",
             "observe_wait_until_stable",
             "build_wait_until_stable_directive",
             "\"engine_wait_until_stable\"",
@@ -638,7 +646,7 @@ def _check_engine_primitives(ctx: ProbeContext) -> list[str]:
         ),
     )
     residues.extend(
-        _require_source(
+        _forbid_source(
             ctx,
             "app/tasks/bt_core.py",
             (
@@ -652,7 +660,7 @@ def _check_engine_primitives(ctx: ProbeContext) -> list[str]:
         )
     )
     residues.extend(
-        _require_source(
+        _forbid_source(
             ctx,
             "app/pipeline.py",
             (
@@ -662,12 +670,34 @@ def _check_engine_primitives(ctx: ProbeContext) -> list[str]:
         )
     )
     residues.extend(
-        _require_source(
+        _forbid_source(
             ctx,
             "spark/models.py",
             (
                 "bt_blackboard: Optional[dict] = None",
                 "bt_find_all_results: Optional[dict] = None",
+            ),
+        )
+    )
+    residues.extend(
+        _forbid_source(
+            ctx,
+            "spark/routes/next_action.py",
+            (
+                "bt telemetry: blackboard_keys=%s find_all_keys=%s",
+                "lr.bt_blackboard",
+                "lr.bt_find_all_results",
+            ),
+        )
+    )
+    residues.extend(
+        _forbid_source(
+            ctx,
+            "spark/tasks/deterministic_resolvers.py",
+            (
+                "find_all_stability_digest",
+                "last_result_signal_digest",
+                "bt_find_all_results",
             ),
         )
     )
