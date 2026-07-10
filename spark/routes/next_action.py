@@ -555,7 +555,10 @@ def _canonical_expected_next(platform: str, expected_next: list, tree: dict | No
 def _r910_validated(vr: dict) -> bool:
     return (
         bool(vr.get("screen_transitioned"))
-        and vr.get("expected_next_match") is True
+        and (
+            vr.get("expected_next_match") is True
+            or bool(vr.get("observed_advance"))
+        )
         and not bool(vr.get("wrong_answer"))
         and not bool(vr.get("not_advanced"))
     )
@@ -585,6 +588,11 @@ def _persist_validated_directive(platform: str, lr, vr: dict) -> bool:
     skel_hash = getattr(lr, "directive_skeleton_hash", None) or issued.get("skeleton_hash") or ""
     screen = _canonical_screen_type(platform, getattr(lr, "screen", None) or issued.get("screen") or "UNKNOWN")
     expected_next = issued.get("expected_next") or getattr(lr, "directive_expected_next", None) or []
+    # Learning bootstrap: an observed advance (no prior expected-next data)
+    # seeds the stored entry with the transition that actually happened, so
+    # the entry validates strictly from its next encounter onward.
+    if not expected_next and vr.get("observed_advance") and vr.get("new_screen"):
+        expected_next = [vr["new_screen"]]
     behavior_tree = issued.get("tree")
     if not skel_hash or screen == "UNKNOWN":
         logger.warning(
@@ -1193,11 +1201,28 @@ def _validate_last_action(platform: str, lr, current_tree: dict) -> dict:
         expected_match = new_screen in expected_next
 
     validated = tree_changed and not wrong_answer and not not_advanced
-    r910_validated = validated and expected_match is True
+    # R9.10 learning bootstrap (2026-07-10, persist-starvation fix): NO source
+    # authors expected_next today — no screen-type YAML carries it and fresh
+    # worker directives issue with [] — so a strict-only match can NEVER pass
+    # and the store never fills (every encounter stays a frontier one-off).
+    # When no expected-next data exists, a fully-validated advance to a
+    # RECOGNIZED canonical screen is the strongest available real-screen proof:
+    # accept it as an observed advance, and the persist site records the
+    # observed transition so entries accumulate expected_next from production
+    # and tighten to strict matching on their own. Strict match still governs
+    # whenever the data exists; wrong-answer/not-advanced always veto.
+    observed_advance = (
+        validated
+        and not expected_next
+        and bool(new_screen)
+        and new_screen != "UNKNOWN"
+    )
+    r910_validated = validated and (expected_match is True or observed_advance)
 
     return {
         "validated": validated,
         "r910_validated": r910_validated,
+        "observed_advance": observed_advance,
         "screen_transitioned": tree_changed,
         "new_screen": new_screen,
         "wrong_answer": wrong_answer,
