@@ -197,11 +197,20 @@ CREATE TABLE IF NOT EXISTS coordination (
     dispatched_tiers TEXT NOT NULL DEFAULT '[]',  -- per-{screen,tier} chat-dispatch dedup (R8.12)
     yaml_sha_at_attempt TEXT,                     -- fold detection: sha change after attempt = clean ladder (R8.5)
     user_instructions TEXT,                       -- terminal user-assist (R8.19)
+    cleared_reason  TEXT CHECK (cleared_reason IN (NULL,'user_stop_abandon','user_stop_reset','advanced','yaml_fold')),
     updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 -- Monotonicity + stickiness enforced AT THE STORE (R8.3): no caller — not the
 -- operator, not a bug — can decrement the ladder or un-terminate by UPDATE.
+-- The ONLY escape is an AUTHORIZED CLEAR (R8.5), and the clear itself is
+-- guarded (grok round-2 finding #5: the bare cleared-state was a bypass — any
+-- writer could set state='cleared' then decrement):
+--  * transitioning to 'cleared' ABORTS without a valid cleared_reason
+--  * a YAML fold may clear the LADDER but can NEVER un-terminate (R8.5)
+--  * every clear is also an events row (app chokepoint) — a forged reason is an
+--    auditable lie in the log, not a silent bypass. True who-verification is
+--    app-layer: ONE clear function, called only from the three legit sites.
 CREATE TRIGGER IF NOT EXISTS coordination_monotonic
 BEFORE UPDATE ON coordination
 WHEN NEW.attempt_count < OLD.attempt_count AND NEW.state <> 'cleared'
@@ -211,6 +220,16 @@ CREATE TRIGGER IF NOT EXISTS coordination_sticky_terminal
 BEFORE UPDATE ON coordination
 WHEN OLD.terminal = 1 AND NEW.terminal = 0 AND NEW.state <> 'cleared'
 BEGIN SELECT RAISE(ABORT, 'terminal is sticky (R8.3); only user-stop/advance clears (R8.5)'); END;
+
+CREATE TRIGGER IF NOT EXISTS coordination_clear_requires_reason
+BEFORE UPDATE ON coordination
+WHEN NEW.state = 'cleared' AND OLD.state <> 'cleared' AND NEW.cleared_reason IS NULL
+BEGIN SELECT RAISE(ABORT, 'clearing requires an authorized cleared_reason (R8.5)'); END;
+
+CREATE TRIGGER IF NOT EXISTS coordination_fold_cannot_unterminate
+BEFORE UPDATE ON coordination
+WHEN NEW.state = 'cleared' AND OLD.terminal = 1 AND NEW.cleared_reason = 'yaml_fold'
+BEGIN SELECT RAISE(ABORT, 'a YAML fold never un-terminates (R8.5); user-stop/advance only'); END;
 
 -- ---------------------------------------------------------------------------
 -- CONSULTS — the consultation lifecycle (replaces /tmp/taey-ed-consult state).
