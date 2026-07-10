@@ -587,7 +587,7 @@ class StateRepo:
                     actor=actor,
                     platform=platform,
                     screen_id=screen_id,
-                    payload={"reason": "missing_consult_id", "evidence": evidence},
+                    payload={"reason": "missing_attempt_key", "evidence": evidence},
                 )
                 return int(row["attempt_count"])
             if row["last_attempt_key"] == attempt_key:

@@ -298,15 +298,24 @@ def app_liveness():
             )
             if same != 1:
                 bad.append(f"same consult id climbed attempt count to {same}")
-            second = repo.record_escalation_attempt(
+            directive = repo.record_escalation_attempt(
                 platform="p1",
                 screen_hash="screen-a",
-                consult_id="consult_b",
+                consult_id="directive:d-real",
                 actor="api",
                 evidence=evidence,
             )
-            if second != 2:
-                bad.append(f"second distinct consult did not climb to 2 (got {second})")
+            if directive != 2:
+                bad.append(f"directive attempt key did not climb to 2 (got {directive})")
+            same_directive = repo.record_escalation_attempt(
+                platform="p1",
+                screen_hash="screen-a",
+                consult_id="directive:d-real",
+                actor="api",
+                evidence=evidence,
+            )
+            if same_directive != 2:
+                bad.append(f"same directive attempt key climbed to {same_directive}")
 
             repo.clear_ladder(
                 platform="p1",

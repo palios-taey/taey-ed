@@ -83,6 +83,7 @@ def _escalate_to_claude_diagnosing(
     bt_debug_tail: str = "",
     failed_bt: dict | None = None,
     screenshot_b64: str | None = None,
+    attempt_key: str | None = None,
 ) -> dict:
     """Route any failure through the Mira-side claude diagnosis loop.
 
@@ -194,7 +195,7 @@ def _escalate_to_claude_diagnosing(
     # tier1->terminal while the operator holds for research (operator defect
     # 2026-06-14). note_attempt dedupes repeated polls of the same failed consult.
     # retry_count is 0-based for tier_for_attempt (0,1 -> tier1 = the 2 shots).
-    retries = max(0, escalation_state.note_attempt(platform, _screen_hash, consultation_id or "") - 1)
+    retries = max(0, escalation_state.note_attempt(platform, _screen_hash, consultation_id or attempt_key or "") - 1)
 
     # Resume is code-automatic (timed per-tier window) in the pre-pipeline gate.
     # The timer never climbs the ladder; distinct failed consults do.
@@ -428,6 +429,18 @@ def _clear_variant_failures(platform: str):
 
 def _make_directive_id() -> str:
     return f"d-{uuid.uuid4().hex[:8]}"
+
+
+def _attempt_key_for_last_result(lr, failure_kind: str) -> str:
+    if not lr:
+        return ""
+    directive_id = getattr(lr, "directive_id", None) or ""
+    if directive_id:
+        return f"directive:{directive_id}"
+    directive_hash = getattr(lr, "directive_skeleton_hash", None) or ""
+    if directive_hash:
+        return f"directive_hash:{directive_hash}:{failure_kind}"
+    return ""
 
 
 def _remember_issued_directive(response: dict) -> None:
@@ -1500,6 +1513,7 @@ def next_action(request: NextActionRequest):
             screen_type_hint=screen_type_hint,
             bt_debug_tail=bt_debug_tail,
             failed_bt=failed_bt,
+            attempt_key=_attempt_key_for_last_result(lr, "wrapped_user_input"),
         )
     return response
 
@@ -1900,6 +1914,7 @@ def _next_action_impl(request: NextActionRequest):
                 bt_debug_tail=lr.bt_debug_tail or "",
                 failed_bt=lr.failed_bt,
                 screenshot_b64=request.screenshot_b64,
+                attempt_key=_attempt_key_for_last_result(lr, "not_advanced"),
             )
 
         elif vr.get("reason") == "scroll_staging":
@@ -1933,6 +1948,7 @@ def _next_action_impl(request: NextActionRequest):
                     bt_debug_tail=lr.bt_debug_tail or "",
                     failed_bt=lr.failed_bt,
                     screenshot_b64=request.screenshot_b64,
+                    attempt_key=_attempt_key_for_last_result(lr, "staging_stuck"),
                 )
             logger.info(
                 f"Step 2: PHASE-1 scroll-staging complete for {lr.screen} "

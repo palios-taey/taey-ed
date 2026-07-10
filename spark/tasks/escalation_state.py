@@ -40,7 +40,7 @@ def is_terminal(platform: str, screen_hash: str) -> bool:
 
 # attempt() and bump() removed 2026-07-09 (cleanup-dead-apis): both dead —
 # superseded by note_attempt(), which is the ONLY legitimate ladder-climb
-# (once per distinct failed consult id, never on a timer).
+# (once per distinct failed attempt key, never on a timer).
 
 
 def note_attempt(platform: str, screen_hash: str, consult_id: str) -> int:
@@ -50,9 +50,10 @@ def note_attempt(platform: str, screen_hash: str, consult_id: str) -> int:
     blind timer. The auto-resume timer was bumping the tier every few minutes —
     so a screen being actively fixed got steamrolled tier1->2->3->terminal while
     the operator was correctly holding for an in-flight DR. The attempt counter
-    now advances here, once per DISTINCT failed consult id (a real worker
-    attempt that failed). Re-reading the same failed consult does NOT climb; the
-    timer does NOT climb. Returns the current attempt count.
+    now advances here, once per DISTINCT failed attempt key: consult id for a
+    worker attempt, directive id for a Mac-executed BT failure. Re-reading the
+    same failed key does NOT climb; missing keys and timers do NOT climb.
+    Returns the current attempt count.
     """
     return _state_repo().record_escalation_attempt(
         platform=platform,
