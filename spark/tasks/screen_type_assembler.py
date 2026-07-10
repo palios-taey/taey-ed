@@ -820,23 +820,30 @@ def validate_worker_bt_response(parsed: dict, platform: str, screen_type: str) -
                 f"worker omitted required recipe phases/actions: {', '.join(missing)}"
             )
 
-    # 2026-07-10 (Jesse directive #2, p2-recipe-shape-floor): EXERCISE answers
-    # must flow through the runtime solve path (send_to_llm -> /generate, where
-    # the Mac attaches KB grounding) — never baked into the BT as literals. A
-    # direct-solve bypasses grounding AND poisons validated replay (the stored
-    # BT would replay a stale answer). Engine-owned floor per R8.23; the same
-    # predicates gate persist-time in variant_cache (_cache_safe_behavior_tree).
-    if not is_staging_cycle and get_master_category(artifact["screen_type"]) == "EXERCISE":
+    # 2026-07-10 (p2-recipe-shape-floor): when a recipe prescribes the runtime
+    # solve path (send_to_llm -> /generate, where KB grounding attaches), the
+    # worker must actually use it — no literal answers baked into the BT, which
+    # would bypass grounding and poison validated replay. SCOPED TO THE RECIPE
+    # (live terminal incident 2026-07-10, hs-bio EXERCISE_MULTIPLE_SELECT):
+    # MULTIPLE_SELECT/CHOICE are canonically DIRECT-SOLVE per the standing
+    # Supervisor decision 2026-06-15 (find_all->options 422s; no grounding
+    # benefit) and prescribe verbatim literal click targets. The floor judges a
+    # BT by ITS OWN recipe's prescription, never a blanket EXERCISE mandate.
+    if (
+        not is_staging_cycle
+        and get_master_category(artifact["screen_type"]) == "EXERCISE"
+        and "send_to_llm" in allowed_actions
+    ):
         from spark.tasks.variant_cache import _contains_generic_solver, _has_frozen_answer
-        if "send_to_llm" in allowed_actions and not _contains_generic_solver(parsed["tree"]):
+        if not _contains_generic_solver(parsed["tree"]):
             raise ScreenTypeAssemblerError(
-                "EXERCISE BT missing send_to_llm — answers must be solved through "
-                "the runtime path, never emitted directly by the worker"
+                "EXERCISE BT missing send_to_llm — this recipe prescribes the "
+                "runtime solve path; answers must not be emitted directly"
             )
         if _has_frozen_answer(parsed["tree"]):
             raise ScreenTypeAssemblerError(
                 "EXERCISE BT carries a literal answer value (frozen direct-solve); "
-                "answer params must come from send_to_llm output via $variables"
+                "this recipe prescribes answer params from send_to_llm via $variables"
             )
 
     for node in _iter_nodes(parsed["tree"]):
