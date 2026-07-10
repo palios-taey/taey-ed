@@ -30,25 +30,31 @@ recipe:                                # ENUMERATE-OPTIONS positional wiring (en
   - find_all: {role: AXComboBox, store: popups}   # tree order = top-to-bottom = blank order
   - per visible popup i (UNROLLED from the CURRENT find_all count — a stored BT
     whose popup count mismatches the live capture is REBUILT, never replayed):
-      # a. OPEN box i by ELEMENT (handle_click accepts element=, bt_handlers:96;
-      #    NOT find_and_click, which is target+role-based; NOT click_at). Proven
-      #    TABLE_INPUT open: click -> discover_menu -> escape.
+      # a. OPEN box i by ELEMENT (handle_click accepts element=, bt_handlers:96; NOT
+      #    find_and_click / click_at), THEN a post-click MOUNT SETTLE before checking: the
+      #    Perseus menu mounts ASYNC, so wait_for_element can match a not-yet-populated menu
+      #    ~1s post-click and discover then finds 0 (first-box mount race, 2026-07-10 RCA).
       click: {element: $popups.<i>.element, strategy: mouse_click}
+      wait 1.5                             # post-click MOUNT settle so the menu POPULATES before the check
       wait_for_element: {role: AXMenuItem, max_wait: 3.0}
       # b. enumerate THIS box's options into a PLAIN named var, then close
       discover_menu: {role: AXMenuItem, store: opts_<i>}   # PLAIN store like find_all
                                                            # (NOT store_to_current — _current is
                                                            #  for_each-only and unset here)
       press_escape
-      # b2. NON-EMPTY GATE: an empty discover (race / stale-menu) -> literal $opts_<i> -> HTTP 422. Gate it:
+      # b2. NON-EMPTY GATE: an empty discover -> send_to_llm gets NO options (dropdown options live
+      #     INSIDE the box, not on the screenshot) -> wrong answer. (NOT a 422 — /generate accepts dict
+      #     options 200 OK.) empty $opts_<i> (falsy) -> else re-opens WITH the mount settle + re-discovers.
       conditional:                           # NODE-LEVEL condition/then/else (Rule 6), NOT under params
         condition: $opts_<i>                 # non-empty list = truthy -> no `then`, fall through to send_to_llm
-        else:                                # empty/unset = falsy -> ONE bounded re-open+re-discover; still-empty ->
-          sequence:                          #   the wait_for_element fails -> else fails -> box fails -> escalate (never send empty)
-            - click: {element: $popups.<i>.element, strategy: mouse_click}
-            - wait_for_element: {role: AXMenuItem, max_wait: 3.0}
-            - discover_menu: {role: AXMenuItem, store: opts_<i>}
-            - press_escape
+        else:                                # MUST be a TYPED sequence node (type: sequence + `children`) — a bare
+          type: sequence                     #   {sequence:[...]} is NOT normalized/executed by the Mac (2026-07-10 RCA:
+          children:                          #   the else silently no-op'd -> conditional failed closed -> escalate).
+            - {action: click, params: {element: $popups.<i>.element, strategy: mouse_click}}
+            - {action: wait, params: {seconds: 1.5}}
+            - {action: wait_for_element, params: {role: AXMenuItem, max_wait: 3.0}}
+            - {action: discover_menu, params: {role: AXMenuItem}, store: opts_<i>}
+            - {action: press_escape, params: {}}
       # c. answer THIS blank, choosing FROM the enumerated options
       send_to_llm:
         question_type: solve_complex         # screenshot auto-attached -> vision
@@ -63,15 +69,14 @@ recipe:                                # ENUMERATE-OPTIONS positional wiring (en
           exact chosen option, nothing else.
         options: $opts_<i>                   # discovered options (dicts OK; engine extracts text)
         store: ans_<i>                       # $ans_<i>.answer = the exact chosen option string
-      # d. enter THIS box. RE-FIND fresh IMMEDIATELY before select — the top $popups ref goes
-      #    stale as earlier boxes re-render (-25202); same order, take i-th (WRAPPER-DUP: first half).
-      find_all: {role: AXComboBox, store: popups_sel_<i>}   # fresh refs, same order
-      select_dropdown_option:
-        trigger_element: $popups_sel_<i>.<i>.element # FRESH element ref for THIS box (not stale $popups)
-        option: $ans_<i>.answer              # the exact option string for THIS box
-        open_strategy: mouse_click
-        open_wait: 0.7
-        verify_wait: 0.4
+      # d. enter THIS box. RE-FIND fresh (web-area-scoped), then select. The select node MUST be
+      #    SINGLE-LINE and MUST carry the `element` param: the worker copies single-line dicts
+      #    VERBATIM but DROPS params from a multi-line block (it emitted select with ONLY `option`).
+      #    WITHOUT `element`, the handler falls back to its OWN UNSCOPED name-lookup and opens Khan's
+      #    phone country-code combobox ([US +1]) instead of the exercise box (2026-07-10 RCA).
+      #    $popups_sel_<i>.<i> = box i (WRAPPER-DUP: first half). Fresh ref also dodges -25202 staleness.
+      find_all: {role: AXComboBox, store: popups_sel_<i>}   # fresh, web-area-scoped refs
+      select_dropdown_option: {element: $popups_sel_<i>.<i>.element, option: $ans_<i>.answer, open_strategy: mouse_click, open_wait: 0.7, verify_wait: 0.4}
       then wait 1.5   # inter-box settle (was 1.0): prev box's menu-close must clear before the next box's wait_for_element AXMenuItem (else it matches early -> empty discover)
   - wait_for_element: {target: Check, role: AXButton, max_wait: 3.0}
   - find_and_click: {target: Check, role: AXButton, strategy: mouse_click, match_mode: exact, post_delay: 2.5}
@@ -99,9 +104,12 @@ contracts:
   - NON-EMPTY GATE: a `conditional` on $opts_<i> guards send_to_llm — non-empty falls
     through; empty/unset -> else re-opens+re-discovers ONCE, still-empty fails -> escalate.
     Never pass an empty/literal $opts_<i> (that is the 422). condition/else NODE-LEVEL (Rule 6).
-  - FRESH REF FOR SELECT: re-find (find_all -> $popups_sel_<i>) immediately before each
-    select_dropdown_option, target $popups_sel_<i>.<i>.element (top $popups goes stale -> -25202).
-    Discovery-open (step a) still uses $popups.<i>.element; only SELECT needs the fresh ref.
+  - FRESH REF FOR SELECT (+ element param is MANDATORY): re-find (find_all -> $popups_sel_<i>)
+    immediately before each select_dropdown_option, and the select node MUST carry
+    `element: $popups_sel_<i>.<i>.element` written as a SINGLE-LINE dict. The worker DROPS params
+    from a multi-line select block (it emitted select with ONLY `option`); with no element the
+    handler does its OWN UNSCOPED name-lookup and hits Khan's phone country-code combobox. Top
+    $popups stales -> -25202, so SELECT uses the fresh ref; discovery-open (step a) uses $popups.<i>.element.
   - POSITIONAL BY CONSTRUCTION: one open+discover+answer+select PER BOX, all keyed to
     box i (the i-th AXComboBox, top-to-bottom): discovery-open uses $popups.<i>.element,
     SELECT uses the fresh $popups_sel_<i>.<i>.element, option is $ans_<i>.answer. NO
@@ -122,8 +130,9 @@ actuation:
   settle: wait_for_element AXComboBox (max 6s) gates INITIAL presence — never a naked
     find_all after a blind sleep (hydration flicker returns []); then the proven 2.0s
     settle before the first box; 1.5s between boxes (prev menu-close must clear before the
-    next wait_for_element); wait_for_element gates the open menu AND Check. A still-empty
-    discover is caught by the NON-EMPTY conditional gate (re-discover once, else escalate).
+    next wait_for_element); a 1.5s post-click MOUNT settle precedes each wait_for_element
+    AXMenuItem (the async menu must POPULATE before the check); wait_for_element gates the
+    open menu AND Check. A still-empty discover -> the NON-EMPTY conditional else re-opens+re-discovers ONCE.
   no_scroll: dropdowns are element-based — solve in ONE pass regardless of fold.
 verification:
   - per box: after select, its AXComboBox value flips from "Select an answer" to the
@@ -136,12 +145,17 @@ failure_modes:
     escalate (R3). Never re-pick, never resubmit.
   - LLM answers a non-option ("cm") or rambles -> options were not enumerated for
     that box; ensure the open->discover_menu->store ran and $opts_<i> reached send_to_llm.
-  - menu_items_seen=[] / discover_menu empty -> fired too early (race, or a stale prev-box
-    menu satisfied wait_for_element); settle >=2s before first box, >=1.5s between. The
-    NON-EMPTY gate re-discovers ONCE, still-empty -> escalate; never let empty $opts_<i>
-    reach send_to_llm (literal -> 422).
-  - select_dropdown_option AXUIElementRef -25202 (stale element) -> re-find (find_all ->
-    $popups_sel_<i>) immediately before select, target $popups_sel_<i>.<i>.element.
+  - menu_items_seen=[] / discover_menu empty -> the menu had not MOUNTED when checked (async
+    Perseus mount; wait_for_element can match ~1s pre-populate) OR a stale prev-box menu
+    satisfied it. Fix = 1.5s post-click MOUNT settle before every wait_for_element AXMenuItem;
+    the NON-EMPTY conditional else then re-opens+re-discovers ONCE. Settle >=2s first box, >=1.5s between.
+  - select opens the WRONG combobox (menu_items_seen=[US +1] / Khan phone country-code) ->
+    the select node was emitted WITHOUT an `element` param, so the handler ran its OWN UNSCOPED
+    name-lookup ("Select an answer") and matched a non-exercise combobox. FORBIDDEN:
+    select_dropdown_option with no element param. Write select SINGLE-LINE with
+    `element: $popups_sel_<i>.<i>.element` so the worker copies it verbatim.
+  - select_dropdown_option AXUIElementRef -25202 (stale element) -> use the FRESH re-find
+    ($popups_sel_<i>) ref, not the top $popups ref.
   - targeting by name/label (not element ref + position) -> both selects hit box 0.
   - click_at to open / find_and_click an AXMenuItem to SELECT -> HARD BAN; selection
     is select_dropdown_option only.
