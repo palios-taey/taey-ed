@@ -1,10 +1,9 @@
-"""Code-owned escalation attempt counter — NOT clearable by touching /tmp flags.
+"""Code-owned escalation coordination — not clearable by touching files.
 
 Jesse 2026-06-14: the escalation ladder (2x Spark-Claude -> Perplexity -> Family
--> terminal) is NOT mine to interfere with. I was clearing diagnosis_done.flag /
-retries.txt / gave_up.flag in /tmp to re-arm Tier-1 indefinitely (62 worker
-builds on one screen, ~$1.2k/day). That ability is removed here: the AUTHORITATIVE
-attempt count + terminal status live in this store and are:
+-> terminal) is NOT mine to interfere with. The authoritative attempt count,
+diagnosis wait/resume state, dispatch dedup, and terminal status live in the
+SQLite state store and are:
 
   - MONOTONIC: bump() only ever increments. There is no decrement / reset-to-zero.
   - CLEARED ONLY by clear(), which is called from exactly two code paths:
@@ -13,18 +12,12 @@ attempt count + terminal status live in this store and are:
     ...plus terminal is sticky once set.
 
 Nothing in the normal escalation path resets it, and no /tmp flag manipulation
-affects it. The diagnosing/done flags remain only as the diagnosing-wait gate;
-the count that decides the tier comes from here.
+affects it.
 """
 
-import json
 import logging
 import time
-from pathlib import Path
 
-from spark.tasks.paths import DATA_DIR
-
-_DIR = DATA_DIR / "escalation_state"
 logger = logging.getLogger(__name__)
 
 
@@ -37,18 +30,8 @@ def _state_repo():
     return get_state_repo()
 
 
-def _path(platform: str, screen_hash: str) -> Path:
-    return _DIR / f"{platform}_{screen_hash[:16]}.json"
-
-
 def get(platform: str, screen_hash: str) -> dict:
-    p = _path(platform, screen_hash)
-    if p.exists():
-        try:
-            return json.loads(p.read_text())
-        except Exception:
-            pass
-    return {"attempt": 0, "terminal": False}
+    return _state_repo().get_ladder_state(platform=platform, screen_hash=screen_hash)
 
 
 def is_terminal(platform: str, screen_hash: str) -> bool:
@@ -71,60 +54,35 @@ def note_attempt(platform: str, screen_hash: str, consult_id: str) -> int:
     attempt that failed). Re-reading the same failed consult does NOT climb; the
     timer does NOT climb. Returns the current attempt count.
     """
-    _DIR.mkdir(parents=True, exist_ok=True)
-    s = get(platform, screen_hash)
-    if consult_id and s.get("last_failed_consult") == consult_id:
-        return int(s.get("attempt", 0))   # already counted this attempt
-    s["attempt"] = int(s.get("attempt", 0)) + 1
-    s["last_failed_consult"] = consult_id or ""
-    s["updated_at"] = time.time()
-    _path(platform, screen_hash).write_text(json.dumps(s))
-    try:
-        _state_repo().record_escalation_attempt(
-            platform=platform,
-            screen_hash=screen_hash,
-            consult_id=consult_id or "",
-            actor="api",
-            evidence=_state_evidence("note_attempt", consult_id=consult_id or ""),
-        )
-    except Exception:
-        logger.exception("state-store dual-write failed: escalation_state.note_attempt")
-    return s["attempt"]
+    return _state_repo().record_escalation_attempt(
+        platform=platform,
+        screen_hash=screen_hash,
+        consult_id=consult_id or "",
+        actor="api",
+        evidence=_state_evidence("note_attempt", consult_id=consult_id or ""),
+    )
 
 
 def set_terminal(platform: str, screen_hash: str) -> None:
     """Mark terminal — sticky until clear()."""
-    _DIR.mkdir(parents=True, exist_ok=True)
-    s = get(platform, screen_hash)
-    s["terminal"] = True
-    s["updated_at"] = time.time()
-    _path(platform, screen_hash).write_text(json.dumps(s))
-    try:
-        _state_repo().mark_terminal(
-            platform=platform,
-            screen_hash=screen_hash,
-            actor="api",
-            evidence=_state_evidence("set_terminal"),
-        )
-    except Exception:
-        logger.exception("state-store dual-write failed: escalation_state.set_terminal")
+    _state_repo().mark_terminal(
+        platform=platform,
+        screen_hash=screen_hash,
+        actor="api",
+        evidence=_state_evidence("set_terminal"),
+    )
 
 
 def clear(platform: str, screen_hash: str, reason: str) -> None:
     """Reset escalation state for a screen. ONLY legitimate callers:
     user-Stop (abandon) or genuine screen-advance. `reason` is logged."""
-    import logging
-    _path(platform, screen_hash).unlink(missing_ok=True)
-    try:
-        _state_repo().clear_ladder(
-            platform=platform,
-            screen_hash=screen_hash,
-            reason=reason,
-            actor="api",
-            evidence=_state_evidence("clear", reason=reason),
-        )
-    except Exception:
-        logger.exception("state-store dual-write failed: escalation_state.clear")
+    _state_repo().clear_ladder(
+        platform=platform,
+        screen_hash=screen_hash,
+        reason=reason,
+        actor="api",
+        evidence=_state_evidence("clear", reason=reason),
+    )
     logging.getLogger("taey-ed").info(
         f"escalation_state: cleared {platform}_{screen_hash[:16]} (reason={reason})"
     )
@@ -135,22 +93,88 @@ def clear_platform(platform: str, reason: str) -> int:
     user-Stop full session reset (/session/reset). Added 2026-07-09
     (cleanup-dead-apis) so the reset route stops raw-unlinking this store's
     files around the module API. Returns the number of entries cleared."""
-    import logging
-    cleared = 0
-    if _DIR.exists():
-        for f in _DIR.glob(f"{platform}_*.json"):
-            f.unlink(missing_ok=True)
-            cleared += 1
-    try:
-        _state_repo().clear_platform_ladders(
-            platform=platform,
-            reason=reason,
-            actor="api",
-            evidence=_state_evidence("clear_platform", reason=reason),
-        )
-    except Exception:
-        logger.exception("state-store dual-write failed: escalation_state.clear_platform")
+    cleared = _state_repo().clear_platform_ladders(
+        platform=platform,
+        reason=reason,
+        actor="api",
+        evidence=_state_evidence("clear_platform", reason=reason),
+    )
     logging.getLogger("taey-ed").info(
         f"escalation_state: cleared ALL {cleared} entries for {platform} (reason={reason})"
     )
     return cleared
+
+
+def start_diagnosis_cycle(platform: str, screen_hash: str, tier: str, window_seconds: int) -> bool:
+    resume_at_ms = int((time.time() + window_seconds) * 1000)
+    return _state_repo().start_diagnosis_cycle(
+        platform=platform,
+        screen_hash=screen_hash,
+        tier=tier,
+        resume_at_ms=resume_at_ms,
+        response_pending_until_ms=resume_at_ms,
+        actor="api",
+        evidence=_state_evidence("start_diagnosis_cycle", tier=tier, window_seconds=window_seconds),
+    )
+
+
+def list_active_diagnoses(limit: int = 16) -> list[dict]:
+    return _state_repo().list_active_diagnoses(limit=limit)
+
+
+def resume_diagnosis_cycle(platform: str, screen_hash: str, reason: str) -> bool:
+    return _state_repo().resume_diagnosis_cycle(
+        platform=platform,
+        screen_hash=screen_hash,
+        actor="api",
+        evidence=_state_evidence("resume_diagnosis_cycle", reason=reason),
+    )
+
+
+def dispatch_tier_once(platform: str, screen_hash: str, tier: str) -> bool:
+    return _state_repo().dispatch_once_for_ladder(
+        platform=platform,
+        screen_hash=screen_hash,
+        tier=tier,
+        actor="api",
+        evidence=_state_evidence("dispatch_tier_once", tier=tier),
+    )
+
+
+def knowledge_gate_notify_once(platform: str) -> bool:
+    return _state_repo().knowledge_gate_notify_once(
+        platform=platform,
+        actor="api",
+        evidence=_state_evidence("knowledge_gate_notify_once"),
+    )
+
+
+def clear_knowledge_gate(platform: str) -> bool:
+    return _state_repo().clear_knowledge_gate(
+        platform=platform,
+        actor="api",
+        evidence=_state_evidence("clear_knowledge_gate"),
+    )
+
+
+def list_pending_consults(limit: int = 16) -> list[dict]:
+    return _state_repo().list_pending_consults(limit=limit)
+
+
+def abandon_pending_consults_for_screen(platform: str, screen_hash: str, reason: str) -> int:
+    return _state_repo().abandon_pending_consults_for_screen(
+        platform=platform,
+        screen_hash=screen_hash,
+        reason=reason,
+        actor="api",
+        evidence=_state_evidence("abandon_pending_consults_for_screen", reason=reason),
+    )
+
+
+def abandon_pending_consults_for_platform(platform: str, reason: str) -> int:
+    return _state_repo().abandon_pending_consults_for_platform(
+        platform=platform,
+        reason=reason,
+        actor="api",
+        evidence=_state_evidence("abandon_pending_consults_for_platform", reason=reason),
+    )

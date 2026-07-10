@@ -153,7 +153,7 @@ def abandon_consultation(consultation_id: str):
     # terminal so a restart begins fresh. (The other reset is genuine advance.)
     try:
         from spark.tasks import escalation_state
-        _h = meta.get("screen_hash") or ""
+        _h = meta.get("coordination_screen_hash") or meta.get("screen_hash") or ""
         if _h:
             escalation_state.clear(meta.get("platform", "khan_academy"), _h, "user_stop_abandon")
     except Exception:

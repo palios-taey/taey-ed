@@ -581,6 +581,35 @@ class StateRepo:
                 return int(row["attempt_count"])
             if consult_id and row["last_attempt_key"] == consult_id:
                 return int(row["attempt_count"])
+            if int(row["attempt_count"]) >= 4:
+                conn.execute(
+                    """
+                    UPDATE coordination
+                       SET last_attempt_key=?,
+                           tier='terminal',
+                           state='terminal',
+                           terminal=1,
+                           updated_at=?
+                     WHERE screen_id=?
+                    """,
+                    (consult_id or "", now_ms(), screen_id),
+                )
+                self._record_event(
+                    conn,
+                    kind="escalation_attempt",
+                    actor=actor,
+                    platform=platform,
+                    screen_id=screen_id,
+                    consult_id=consult_id or None,
+                    payload={
+                        "attempt_count": 5,
+                        "stored_attempt_count": 4,
+                        "tier": "terminal",
+                        "terminal": 1,
+                        "evidence": evidence,
+                    },
+                )
+                return 5
             next_attempt = min(int(row["attempt_count"]) + 1, 4)
             tier, state, terminal = self._tier_for_attempt(next_attempt)
             conn.execute(
@@ -731,6 +760,389 @@ class StateRepo:
                     platform=platform,
                     screen_id=row["screen_id"],
                     payload={"cleared_reason": cleared_reason, "original_reason": reason, "evidence": evidence},
+                )
+            return len(rows)
+
+    def get_ladder_state(self, *, platform: str, screen_hash: str) -> dict[str, Any]:
+        with state_connection(self.db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT c.screen_id,
+                       c.platform,
+                       c.state,
+                       c.tier,
+                       c.attempt_count,
+                       c.last_attempt_key,
+                       c.terminal,
+                       c.resume_at,
+                       c.response_pending_until,
+                       c.yaml_sha_at_attempt,
+                       c.user_instructions,
+                       c.cleared_reason,
+                       c.updated_at
+                  FROM screen_keys sk
+                  JOIN coordination c ON c.screen_id=sk.screen_id
+                 WHERE sk.platform=? AND sk.key_kind='skeleton' AND sk.key_hash=?
+                 LIMIT 1
+                """,
+                (platform, screen_hash),
+            ).fetchone()
+        if row is None:
+            return {"attempt": 0, "terminal": False}
+        return self._coordination_state(row)
+
+    def start_diagnosis_cycle(
+        self,
+        *,
+        platform: str,
+        screen_hash: str,
+        tier: str,
+        resume_at_ms: int,
+        actor: str,
+        evidence: dict[str, Any],
+        response_pending_until_ms: int | None = None,
+        yaml_sha_at_attempt: str | None = None,
+        user_instructions: str | None = None,
+    ) -> bool:
+        self._require_actor(actor, {"api", "operator", "system"}, "start_diagnosis_cycle")
+        self._require_evidence(evidence, "source")
+        if tier not in {"tier1", "tier2", "tier3"}:
+            raise StateRepoError(f"invalid diagnosis tier {tier!r}")
+        with immediate_transaction(self.db_path) as conn:
+            screen_id, _ = self._resolve_or_mint(conn, platform, "skeleton", screen_hash, None)
+            self._ensure_coordination(conn, screen_id, platform)
+            row = conn.execute(
+                "SELECT state,terminal FROM coordination WHERE screen_id=?",
+                (screen_id,),
+            ).fetchone()
+            if int(row["terminal"]) == 1:
+                self._record_event(
+                    conn,
+                    kind="diagnosis_start_ignored",
+                    actor=actor,
+                    platform=platform,
+                    screen_id=screen_id,
+                    payload={"reason": "terminal", "tier": tier, "evidence": evidence},
+                )
+                return False
+            if row["state"] == "diagnosing":
+                return False
+            deadline = int(response_pending_until_ms or resume_at_ms)
+            conn.execute(
+                """
+                UPDATE coordination
+                   SET state='diagnosing',
+                       tier=?,
+                       resume_at=?,
+                       response_pending_until=?,
+                       yaml_sha_at_attempt=?,
+                       user_instructions=?,
+                       cleared_reason=NULL,
+                       updated_at=?
+                 WHERE screen_id=?
+                """,
+                (
+                    tier,
+                    int(resume_at_ms),
+                    deadline,
+                    yaml_sha_at_attempt,
+                    user_instructions,
+                    now_ms(),
+                    screen_id,
+                ),
+            )
+            self._record_event(
+                conn,
+                kind="diagnosis_started",
+                actor=actor,
+                platform=platform,
+                screen_id=screen_id,
+                payload={
+                    "tier": tier,
+                    "resume_at_ms": int(resume_at_ms),
+                    "response_pending_until_ms": deadline,
+                    "evidence": evidence,
+                },
+            )
+            return True
+
+    def list_active_diagnoses(self, *, limit: int = 16) -> list[dict[str, Any]]:
+        with state_connection(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT c.screen_id,
+                       c.platform,
+                       c.state,
+                       c.tier,
+                       c.attempt_count,
+                       c.last_attempt_key,
+                       c.terminal,
+                       c.resume_at,
+                       c.response_pending_until,
+                       c.yaml_sha_at_attempt,
+                       c.user_instructions,
+                       c.cleared_reason,
+                       c.updated_at,
+                       sk.key_hash AS screen_hash
+                  FROM coordination c
+                  JOIN screen_keys sk ON sk.screen_id=c.screen_id AND sk.key_kind='skeleton'
+                 WHERE c.state='diagnosing' AND c.terminal=0
+                 ORDER BY c.updated_at
+                 LIMIT ?
+                """,
+                (int(limit),),
+            ).fetchall()
+        result = []
+        for row in rows:
+            item = self._coordination_state(row)
+            item["screen_hash"] = row["screen_hash"]
+            result.append(item)
+        return result
+
+    def resume_diagnosis_cycle(
+        self,
+        *,
+        platform: str,
+        screen_hash: str,
+        actor: str,
+        evidence: dict[str, Any],
+    ) -> bool:
+        self._require_actor(actor, {"api", "operator", "system"}, "resume_diagnosis_cycle")
+        self._require_evidence(evidence, "source")
+        with immediate_transaction(self.db_path) as conn:
+            screen_id, _ = self._resolve_or_mint(conn, platform, "skeleton", screen_hash, None)
+            self._ensure_coordination(conn, screen_id, platform)
+            row = conn.execute(
+                "SELECT state,terminal FROM coordination WHERE screen_id=?",
+                (screen_id,),
+            ).fetchone()
+            if row["state"] != "diagnosing" or int(row["terminal"]) == 1:
+                return False
+            conn.execute(
+                """
+                UPDATE coordination
+                   SET state='normal',
+                       resume_at=NULL,
+                       response_pending_until=NULL,
+                       yaml_sha_at_attempt=NULL,
+                       user_instructions=NULL,
+                       updated_at=?
+                 WHERE screen_id=?
+                """,
+                (now_ms(), screen_id),
+            )
+            self._record_event(
+                conn,
+                kind="diagnosis_resumed",
+                actor=actor,
+                platform=platform,
+                screen_id=screen_id,
+                payload={"evidence": evidence},
+            )
+            return True
+
+    def dispatch_once_for_ladder(
+        self,
+        *,
+        platform: str,
+        screen_hash: str,
+        tier: str,
+        actor: str,
+        evidence: dict[str, Any],
+    ) -> bool:
+        self._require_actor(actor, {"api", "operator", "system"}, "dispatch_once_for_ladder")
+        self._require_evidence(evidence, "source")
+        if tier not in {"tier1", "tier2", "tier3"}:
+            raise StateRepoError(f"invalid dispatch tier {tier!r}")
+        with immediate_transaction(self.db_path) as conn:
+            screen_id, _ = self._resolve_or_mint(conn, platform, "skeleton", screen_hash, None)
+            cycle_id = self._current_ladder_cycle_id(conn, screen_id)
+            exists = conn.execute(
+                "SELECT 1 FROM tier_dispatches WHERE screen_id=? AND tier=? AND cycle_id=?",
+                (screen_id, tier, cycle_id),
+            ).fetchone()
+            if exists:
+                return False
+            conn.execute(
+                "INSERT INTO tier_dispatches(screen_id,tier,cycle_id) VALUES(?,?,?)",
+                (screen_id, tier, cycle_id),
+            )
+            self._record_event(
+                conn,
+                kind="tier_dispatched",
+                actor=actor,
+                platform=platform,
+                screen_id=screen_id,
+                payload={"tier": tier, "cycle_id": cycle_id, "evidence": evidence},
+            )
+            return True
+
+    def knowledge_gate_notify_once(
+        self,
+        *,
+        platform: str,
+        actor: str,
+        evidence: dict[str, Any],
+    ) -> bool:
+        self._require_actor(actor, {"api", "operator", "system"}, "knowledge_gate_notify_once")
+        self._require_evidence(evidence, "source")
+        with immediate_transaction(self.db_path) as conn:
+            gate_key = f"knowledge_gate:{platform}"
+            screen_id, _ = self._resolve_or_mint(conn, platform, "widget_set", gate_key, None)
+            self._ensure_coordination(conn, screen_id, platform)
+            cycle_id = self._current_knowledge_gate_cycle_id(conn, screen_id)
+            exists = conn.execute(
+                "SELECT 1 FROM notify_cycles WHERE screen_id=? AND cycle_id=?",
+                (screen_id, cycle_id),
+            ).fetchone()
+            if exists:
+                return False
+            conn.execute("INSERT INTO notify_cycles(screen_id,cycle_id) VALUES(?,?)", (screen_id, cycle_id))
+            conn.execute(
+                """
+                UPDATE coordination
+                   SET state='awaiting_resume',
+                       resume_at=NULL,
+                       response_pending_until=NULL,
+                       cleared_reason=NULL,
+                       updated_at=?
+                 WHERE screen_id=?
+                """,
+                (now_ms(), screen_id),
+            )
+            self._record_event(
+                conn,
+                kind="knowledge_gate_notified",
+                actor=actor,
+                platform=platform,
+                screen_id=screen_id,
+                payload={"cycle_id": cycle_id, "evidence": evidence},
+            )
+            return True
+
+    def clear_knowledge_gate(
+        self,
+        *,
+        platform: str,
+        actor: str,
+        evidence: dict[str, Any],
+    ) -> bool:
+        self._require_actor(actor, {"api", "operator", "system"}, "clear_knowledge_gate")
+        self._require_evidence(evidence, "source")
+        with immediate_transaction(self.db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT c.screen_id,c.state
+                  FROM screen_keys sk
+                  JOIN coordination c ON c.screen_id=sk.screen_id
+                 WHERE sk.platform=? AND sk.key_kind='widget_set' AND sk.key_hash=?
+                 LIMIT 1
+                """,
+                (platform, f"knowledge_gate:{platform}"),
+            ).fetchone()
+            if row is None or row["state"] == "normal":
+                return False
+            conn.execute(
+                """
+                UPDATE coordination
+                   SET state='normal',
+                       resume_at=NULL,
+                       response_pending_until=NULL,
+                       updated_at=?
+                 WHERE screen_id=?
+                """,
+                (now_ms(), row["screen_id"]),
+            )
+            self._record_event(
+                conn,
+                kind="knowledge_gate_cleared",
+                actor=actor,
+                platform=platform,
+                screen_id=row["screen_id"],
+                payload={"evidence": evidence},
+            )
+            return True
+
+    def list_pending_consults(self, *, limit: int = 16) -> list[dict[str, Any]]:
+        with state_connection(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT consult_id, platform, screen_id, status, payload_dir, created_at
+                  FROM consults
+                 WHERE status='pending'
+                 ORDER BY created_at
+                 LIMIT ?
+                """,
+                (int(limit),),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def abandon_pending_consults_for_screen(
+        self,
+        *,
+        platform: str,
+        screen_hash: str,
+        reason: str,
+        actor: str,
+        evidence: dict[str, Any],
+    ) -> int:
+        self._require_actor(actor, {"api", "operator", "system"}, "abandon_pending_consults_for_screen")
+        self._require_evidence(evidence, "source")
+        with immediate_transaction(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT c.consult_id,c.screen_id
+                  FROM consults c
+                  JOIN screen_keys sk ON sk.screen_id=c.screen_id
+                 WHERE c.platform=?
+                   AND c.status='pending'
+                   AND sk.key_kind='skeleton'
+                   AND sk.key_hash=?
+                """,
+                (platform, screen_hash),
+            ).fetchall()
+            for row in rows:
+                self._resolve_consult_row(
+                    conn,
+                    row["consult_id"],
+                    row["screen_id"],
+                    platform,
+                    "abandoned",
+                    actor,
+                    evidence,
+                    abandon_reason=reason,
+                )
+            return len(rows)
+
+    def abandon_pending_consults_for_platform(
+        self,
+        *,
+        platform: str,
+        reason: str,
+        actor: str,
+        evidence: dict[str, Any],
+    ) -> int:
+        self._require_actor(actor, {"api", "operator", "system"}, "abandon_pending_consults_for_platform")
+        self._require_evidence(evidence, "source")
+        with immediate_transaction(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT consult_id,screen_id
+                  FROM consults
+                 WHERE platform=? AND status='pending'
+                """,
+                (platform,),
+            ).fetchall()
+            for row in rows:
+                self._resolve_consult_row(
+                    conn,
+                    row["consult_id"],
+                    row["screen_id"],
+                    platform,
+                    "abandoned",
+                    actor,
+                    evidence,
+                    abandon_reason=reason,
                 )
             return len(rows)
 
@@ -1188,6 +1600,93 @@ class StateRepo:
                 (now_ms(), screen_id),
             )
 
+    def _coordination_state(self, row) -> dict[str, Any]:
+        resume_at_ms = row["resume_at"]
+        response_pending_until_ms = row["response_pending_until"]
+        updated_at_ms = row["updated_at"]
+        state = {
+            "screen_id": row["screen_id"],
+            "platform": row["platform"],
+            "state": row["state"],
+            "tier": row["tier"],
+            "attempt": int(row["attempt_count"] or 0),
+            "last_failed_consult": row["last_attempt_key"] or "",
+            "terminal": bool(row["terminal"]),
+            "resume_at_ms": resume_at_ms,
+            "response_pending_until_ms": response_pending_until_ms,
+            "yaml_sha_at_attempt": row["yaml_sha_at_attempt"],
+            "user_instructions": row["user_instructions"],
+            "cleared_reason": row["cleared_reason"],
+            "updated_at_ms": updated_at_ms,
+            "updated_at": (int(updated_at_ms) / 1000.0) if updated_at_ms else 0.0,
+        }
+        if resume_at_ms:
+            state["resume_at"] = int(resume_at_ms) / 1000.0
+        if response_pending_until_ms:
+            state["response_pending_until"] = int(response_pending_until_ms) / 1000.0
+        return state
+
+    def _current_ladder_cycle_id(self, conn, screen_id: str) -> str:
+        row = conn.execute(
+            """
+            SELECT max(event_id) AS last_clear
+              FROM events
+             WHERE screen_id=? AND kind='ladder_cleared'
+            """,
+            (screen_id,),
+        ).fetchone()
+        return f"ladder:{int(row['last_clear'] or 0)}"
+
+    def _current_knowledge_gate_cycle_id(self, conn, screen_id: str) -> str:
+        row = conn.execute(
+            """
+            SELECT max(event_id) AS last_clear
+              FROM events
+             WHERE screen_id=? AND kind='knowledge_gate_cleared'
+            """,
+            (screen_id,),
+        ).fetchone()
+        return f"knowledge_gate:{int(row['last_clear'] or 0)}"
+
+    def _resolve_consult_row(
+        self,
+        conn,
+        consult_id: str,
+        screen_id: str | None,
+        platform: str,
+        status: str,
+        actor: str,
+        evidence: dict[str, Any],
+        *,
+        failure_reason: str | None = None,
+        abandon_reason: str | None = None,
+    ) -> None:
+        conn.execute(
+            """
+            UPDATE consults
+               SET status=?,
+                   failure_reason=?,
+                   abandon_reason=?,
+                   resolved_at=?
+             WHERE consult_id=?
+            """,
+            (status, failure_reason, abandon_reason, now_ms(), consult_id),
+        )
+        self._record_event(
+            conn,
+            kind="consult_resolved",
+            actor=actor,
+            platform=platform,
+            screen_id=screen_id,
+            consult_id=consult_id,
+            payload={
+                "status": status,
+                "failure_reason": failure_reason,
+                "abandon_reason": abandon_reason,
+                "evidence": evidence,
+            },
+        )
+
     def _ensure_platform(self, conn, platform: str) -> None:
         if not conn.execute("SELECT 1 FROM platforms WHERE platform=?", (platform,)).fetchone():
             conn.execute("INSERT INTO platforms(platform) VALUES(?)", (platform,))
@@ -1316,6 +1815,8 @@ class StateRepo:
 
     def _normalize_clear_reason(self, reason: str) -> str:
         value = str(reason or "").strip()
+        if value.startswith("yaml_fold_resets_ladder:"):
+            return "advanced"
         aliases = {
             "advance": "advanced",
             "advanced": "advanced",

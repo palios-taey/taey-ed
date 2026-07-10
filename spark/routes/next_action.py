@@ -91,8 +91,9 @@ def _escalate_to_claude_diagnosing(
     State is keyed by (platform, skeleton_hash) so reconsults across multiple
     consult_ids see the same diagnosis state. Pings claude once per stuck-screen
     cycle; returns a wait directive so Mac keeps polling without surfacing a
-    dialog. Only escalates to user_input_needed when claude EXPLICITLY touches
-    the gave_up.flag in the state dir — Mac/Spark never make that decision.
+    dialog. Only escalates to user_input_needed when the DB-backed escalation
+    ladder reaches terminal state — Mac/Spark never make that decision by
+    touching files.
 
     Persistence (2026-05-19 bug fix): tree and screenshot_b64 are written to
     the diag_dir as tree.json / screenshot.png so the escalation packet
@@ -112,11 +113,6 @@ def _escalate_to_claude_diagnosing(
 
     diag_dir = Path("/tmp/taey-ed-claude-diagnosing") / f"{platform}_{_screen_hash[:16]}"
     diag_dir.mkdir(parents=True, exist_ok=True)
-    diagnosing = diag_dir / "diagnosing.flag"
-    done = diag_dir / "diagnosis_done.flag"
-    gave_up = diag_dir / "gave_up.flag"
-    retry_p = diag_dir / "retries.txt"
-
     # Persist tree + screenshot to diag_dir — ALWAYS OVERWRITE with the
     # current capture. The old write-once "idempotency" served STALE state:
     # on collision pages the question changes under the same hash, and on
@@ -142,14 +138,14 @@ def _escalate_to_claude_diagnosing(
 
     # Terminal is STICKY and code-owned (escalation_state): once the ladder is
     # exhausted, the screen stays terminal until user-Stop or genuine advance.
-    # rm-ing gave_up.flag no longer un-terminates it.
-    if gave_up.exists() or escalation_state.is_terminal(platform, _screen_hash):
+    # File deletion cannot un-terminate it.
+    if escalation_state.is_terminal(platform, _screen_hash):
         from spark.tasks.classify_screen import _describe_screen
         # Terminal user-assist (INTENDED_FLOW §D terminal; Jesse 2026-06-11):
         # when the system gives up on a screen, the user is notified WITH the
         # correct answer / exact steps to do it themselves. claude-primary
-        # writes user_instructions.txt into the state dir alongside
-        # gave_up.flag; the dialog carries those instructions verbatim.
+        # may write user_instructions.txt into the artifact dir; the dialog
+        # carries those instructions verbatim.
         user_instr = ""
         instr_p = diag_dir / "user_instructions.txt"
         if instr_p.exists():
@@ -200,10 +196,8 @@ def _escalate_to_claude_diagnosing(
     # retry_count is 0-based for tier_for_attempt (0,1 -> tier1 = the 2 shots).
     retries = max(0, escalation_state.note_attempt(platform, _screen_hash, consultation_id or "") - 1)
 
-    # NOTE (Jesse 2026-06-14): the old diagnosis_done.flag RESUME path was removed.
-    # Resume is now CODE-AUTOMATIC (timed per-tier window) in the pre-pipeline
-    # gate — I am not allowed to touch the flag to re-arm/resume the cycle. The
-    # tier window + abandon-stale-consult on auto-resume live there.
+    # Resume is code-automatic (timed per-tier window) in the pre-pipeline gate.
+    # The timer never climbs the ladder; distinct failed consults do.
 
     # Tier-aware escalation per Jesse 2026-05-19 ladder
     # (2 me → 1 Perplexity → 1 Family → terminal). The notify body and packet
@@ -226,7 +220,6 @@ def _escalate_to_claude_diagnosing(
     if tier == "terminal":
         escalation_state.set_terminal(platform, _screen_hash)   # sticky, code-owned
         try:
-            gave_up.touch()
             UNSOLVED_LOG.parent.mkdir(parents=True, exist_ok=True)
             with UNSOLVED_LOG.open("a") as fh:
                 fh.write(
@@ -263,25 +256,13 @@ def _escalate_to_claude_diagnosing(
             build_question(f"Cannot proceed: {reason}"),
         ])
 
-    # Non-terminal: build rich-context packet + tier-aware notify (once per
-    # stuck-screen cycle until done/gave_up).
-    if not diagnosing.exists():
+    # Non-terminal: build rich-context packet + tier-aware notify once per
+    # DB-backed diagnosis cycle.
+    _window = {"tier1": 180, "tier2": 1200, "tier3": 1200}.get(tier, 300)
+    if escalation_state.start_diagnosis_cycle(platform, _screen_hash, tier, _window):
         # Code-automatic resume window for this tier (Jesse 2026-06-14): the
-        # pre-pipeline gate auto-resumes + re-attempts once this elapses — no
-        # flag-touch from me. tier1 = quick (definition edit is read fresh next
-        # build); tier2/tier3 = longer (Perplexity / Family run async for mins).
-        # Written BEFORE diagnosing.flag so a poll never sees diagnosing without
-        # a resume_at (which would auto-resume prematurely).
-        # Re-trigger window = a dead-man's-switch for a non-responsive operator,
-        # NOT a ladder-climber (the timer no longer advances the tier). Generous
-        # so the operator + async research (Perplexity DR / Family take minutes,
-        # plus synthesis + fold) finish before a fresh attempt is forced.
-        _window = {"tier1": 180, "tier2": 1200, "tier3": 1200}.get(tier, 300)
-        try:
-            (diag_dir / "resume_at").write_text(str(time.time() + _window))
-        except Exception:
-            logger.exception("failed to write resume_at")
-        diagnosing.touch()
+        # pre-pipeline gate auto-resumes + re-attempts once this elapses. The
+        # timer is a dead-man switch, not a ladder-climber.
         consult_path = Path("/tmp/taey-ed-consult") / consultation_id if consultation_id else diag_dir
         # Compose Mac BT execution log + failed BT into an attempts.jsonl-like
         # entry inside the state dir so build_packet's attempt-history section
@@ -352,27 +333,23 @@ def _escalate_to_claude_diagnosing(
                 bt_debug_tail=bt_debug_tail,
             )
             if dispatch_body:
-                # DEDUP (operator defect 2026-06-14): the auto-resume timer re-enters
-                # this block each cycle, re-firing the SAME {hash,tier} Chat dispatch
-                # even when the Family/Perplexity round already ran — flooding
-                # taeys-hands with no-op re-dispatches. Dispatch ONCE per {hash,tier}:
-                # skip if a REVIEW already landed OR a dispatch marker exists. The
-                # marker lives in diag_dir, which is cleared on advance/user-Stop —
-                # so a NEW screen_hash or an explicit re-open dispatches fresh.
+                # DEDUP (operator defect 2026-06-14): dispatch once per
+                # {screen,tier,ladder-cycle}; the DB cycle advances only after a
+                # legitimate ladder clear.
                 from spark.tasks.paths import REVIEWS_DIR as _REVIEWS_DIR
                 _review = _REVIEWS_DIR / f"{platform}_{_screen_hash[:12]}_{tier}.md"
-                _marker = diag_dir / f"chat_dispatched_{tier}.flag"
-                if _review.exists() or _marker.exists():
+                if _review.exists():
                     logger.info(
                         f"taeys-hands dispatch SKIPPED for {_screen_hash[:16]} {tier} "
-                        f"(already dispatched/reviewed — no-op re-fire dedup)"
+                        f"(review already landed — no-op re-fire dedup)"
+                    )
+                elif not escalation_state.dispatch_tier_once(platform, _screen_hash, tier):
+                    logger.info(
+                        f"taeys-hands dispatch SKIPPED for {_screen_hash[:16]} {tier} "
+                        f"(already dispatched this ladder cycle)"
                     )
                 else:
                     notify_fleet("taeys-hands", dispatch_body, notify_type="task")
-                    try:
-                        _marker.write_text(str(time.time()))
-                    except Exception:
-                        logger.exception("failed to write chat-dispatch marker")
         except Exception:
             logger.exception("taeys-hands auto-dispatch failed in escalate helper")
         logger.warning(
@@ -772,8 +749,8 @@ def _consultation_or_wait(consult_result: dict) -> dict:
         }
     if status == "claude_diagnosing":
         # Mira-side Claude is editing knowledge.json. Mac sleeps and re-sends
-        # /next_action; once claude_diagnosis_done.flag is set, the next call
-        # falls through to a fresh worker dispatch using the updated knowledge.
+        # /next_action; when the DB resume window elapses, the next call falls
+        # through to a fresh worker dispatch using the updated knowledge.
         return {
             "directive": "wait",
             "directive_id": _make_directive_id(),
@@ -1213,8 +1190,9 @@ def session_reset(platform: str = "khan_academy"):
     it has to clear everything for that user.'
 
     Cleared:
-      - /tmp/taey-ed-claude-diagnosing/<platform>_*  (diagnosing flags, retry counters)
-      - /tmp/taey-ed-consult/consult_*  (open consults — abandoned)
+      - coordination rows for this platform (diagnosis/ladder/knowledge gate)
+      - pending consult rows for this platform (abandoned)
+      - diagnosis/consult payload directories
       - pending_validations for this platform
 
     Preserved:
@@ -1225,25 +1203,36 @@ def session_reset(platform: str = "khan_academy"):
     """
     from pathlib import Path
     import shutil
-    cleared = {"diag_dirs": 0, "consults": 0, "pending_validations": 0}
+    cleared = {
+        "diag_payload_dirs": 0,
+        "consult_payload_dirs": 0,
+        "pending_consults": 0,
+        "pending_validations": 0,
+    }
 
-    # 1. Diagnosing state dirs for this platform
+    from spark.tasks import escalation_state as _es
+    cleared["pending_consults"] = _es.abandon_pending_consults_for_platform(
+        platform,
+        reason="user_stop_reset",
+    )
+
+    # 1. Diagnosis payload dirs for this platform
     diag_root = Path("/tmp/taey-ed-claude-diagnosing")
     if diag_root.exists():
         for d in diag_root.glob(f"{platform}_*"):
             try:
                 shutil.rmtree(d)
-                cleared["diag_dirs"] += 1
+                cleared["diag_payload_dirs"] += 1
             except Exception:
                 logger.exception(f"failed to clear diag dir {d}")
 
-    # 2. Open consults
+    # 2. Consult payload dirs
     consult_root = Path("/tmp/taey-ed-consult")
     if consult_root.exists():
         for d in consult_root.glob("consult_*"):
             try:
                 shutil.rmtree(d)
-                cleared["consults"] += 1
+                cleared["consult_payload_dirs"] += 1
             except Exception:
                 logger.exception(f"failed to clear consult {d}")
 
@@ -1264,13 +1253,13 @@ def session_reset(platform: str = "khan_academy"):
     # reset screen resumes at its stale tier (e.g. Tier 3 -> terminal) instead
     # of fresh. This is a LEGITIMATE clear (user-Stop is one of the two allowed
     # resets); the Operator correctly refused to clear it by hand and handed up.
-    from spark.tasks import escalation_state as _es
     cleared["escalation_state"] = _es.clear_platform(platform, reason="user-Stop session reset")
 
     logger.warning(
         f"SESSION RESET for {platform}: cleared "
-        f"{cleared['diag_dirs']} diag dirs, "
-        f"{cleared['consults']} consults, "
+        f"{cleared['diag_payload_dirs']} diag payload dirs, "
+        f"{cleared['consult_payload_dirs']} consult payload dirs, "
+        f"{cleared['pending_consults']} pending consult rows, "
         f"{cleared['pending_validations']} pending validations, "
         f"{cleared['escalation_state']} escalation_state. "
         f"hash_index + variant_cache + knowledge.json PRESERVED."
@@ -1355,9 +1344,8 @@ def next_action(request: NextActionRequest):
     Mac app + API do not escalate to user. Everything that isn't perfectly
     handled goes to the Mira-side Claude diagnosis loop.
 
-    The only path to a real user_input_needed directive is when a Mira-side
-    Claude has explicitly created a gave_up.flag in the diagnosis state dir
-    — that is handled inside _escalate_to_claude_diagnosing, not here.
+    The only path to a real user_input_needed directive is a terminal
+    coordination row, handled inside _escalate_to_claude_diagnosing.
     """
     # PRE-PIPELINE CHECK: GLOBAL "waiting on central guidance" lock.
     #
@@ -1368,91 +1356,45 @@ def next_action(request: NextActionRequest):
     # new hash escaped the lock, cascading into fresh consultations.
     #
     # "Waiting on central guidance" = either of:
-    #   1. An open consultation: /tmp/taey-ed-consult/consult_*/ with no
-    #      response.json yet (the worker is still computing or pending).
-    #   2. An active diagnosis: /tmp/taey-ed-claude-diagnosing/*/ with a
-    #      diagnosing.flag and no diagnosis_done.flag / gave_up.flag.
+    #   1. A pending consult row (the worker is still computing or pending).
+    #   2. An active diagnosis coordination row whose resume_at has not elapsed.
     #
     # While either condition holds anywhere, every /next_action returns wait.
     # Holds across platforms, screens, and tree mutations. Prevents cascade.
     try:
         _waiting_reasons = []
 
-        # Condition 1: open consultations (response.json missing)
-        _consult_root = Path("/tmp/taey-ed-consult")
-        if _consult_root.exists():
-            for _consult_dir in _consult_root.iterdir():
-                if not _consult_dir.is_dir() or not _consult_dir.name.startswith("consult_"):
-                    continue
-                if (_consult_dir / "response.json").exists():
-                    continue
-                # Check metadata — abandoned/stale consults shouldn't lock us
-                _meta = _consult_dir / "metadata.json"
-                if _meta.exists():
-                    try:
-                        _m = json.loads(_meta.read_text())
-                        if _m.get("status") == "abandoned":
-                            continue
-                    except Exception:
-                        pass
-                _waiting_reasons.append(f"open_consult:{_consult_dir.name}")
-                if len(_waiting_reasons) >= 4:
-                    break
+        from spark.tasks import escalation_state as _es
 
-        # Condition 2: active diagnosis cycles
-        _diag_root = Path("/tmp/taey-ed-claude-diagnosing")
-        if _diag_root.exists():
-            for _state_dir in _diag_root.iterdir():
-                if not _state_dir.is_dir():
-                    continue
-                if (_state_dir / "diagnosing.flag").exists() \
-                        and not (_state_dir / "gave_up.flag").exists():
-                    # CODE-AUTOMATIC RESUME (Jesse 2026-06-14): when the tier
-                    # window has elapsed, auto-advance the ladder and let the
-                    # screen re-attempt — NOT via any flag I touch. This is the
-                    # only resume path; clears happen only here (timer) /
-                    # advance / user-Stop.
-                    _resume_at = 0.0
-                    _rp = _state_dir / "resume_at"
-                    if _rp.exists():
-                        try:
-                            _resume_at = float(_rp.read_text().strip())
-                        except Exception:
-                            _resume_at = 0.0
-                    # No resume_at = a pre-change stuck dir → resume now.
-                    if (not _rp.exists()) or (_resume_at and time.time() >= _resume_at):
-                        try:
-                            _parts = _state_dir.name.rsplit("_", 1)
-                            # The timer only RE-TRIGGERS a fresh attempt — it does
-                            # NOT advance the ladder (operator defect 2026-06-14:
-                            # the timer-bump steamrolled actively-fixed screens to
-                            # terminal). The ladder climbs only on a genuinely
-                            # distinct failed attempt (note_attempt in route_failure).
-                            (_state_dir / "diagnosing.flag").unlink(missing_ok=True)
-                            _rp.unlink(missing_ok=True)
-                            # Abandon any open consult so the re-attempt builds fresh.
-                            _croot = Path("/tmp/taey-ed-consult")
-                            if _croot.exists():
-                                for _cd in _croot.iterdir():
-                                    _cm = _cd / "metadata.json"
-                                    if not _cm.exists():
-                                        continue
-                                    try:
-                                        _md = json.loads(_cm.read_text())
-                                        if _md.get("screen_hash", "")[:16] == _parts[1] and _md.get("status") not in ("abandoned", "complete"):
-                                            _md["status"] = "abandoned"
-                                            _md["abandoned_reason"] = "auto_resume_tier_window"
-                                            _cm.write_text(json.dumps(_md))
-                                            (_cd / "response.json").unlink(missing_ok=True)
-                                    except Exception:
-                                        pass
-                            logger.info(f"PRE-PIPELINE: auto-resumed {_state_dir.name} (tier window elapsed) — ladder advanced")
-                        except Exception:
-                            logger.exception("auto-resume failed (non-fatal)")
-                        continue   # do not count as waiting — let it re-attempt
-                    _waiting_reasons.append(f"diagnosing:{_state_dir.name}")
-                    if len(_waiting_reasons) >= 4:
-                        break
+        # Condition 1: open consultations tracked by the state store.
+        for _consult in _es.list_pending_consults(limit=4):
+            _waiting_reasons.append(f"open_consult:{_consult['consult_id']}")
+            if len(_waiting_reasons) >= 4:
+                break
+
+        # Condition 2: active diagnosis cycles tracked by coordination rows.
+        _now_ms = int(time.time() * 1000)
+        for _diag in _es.list_active_diagnoses(limit=16):
+            _resume_at = int(_diag.get("resume_at_ms") or 0)
+            if not _resume_at or _now_ms >= _resume_at:
+                try:
+                    _platform = _diag["platform"]
+                    _screen_hash = _diag["screen_hash"]
+                    _es.resume_diagnosis_cycle(_platform, _screen_hash, "auto_resume_tier_window")
+                    _abandoned = _es.abandon_pending_consults_for_platform(
+                        _platform,
+                        "auto_resume_tier_window",
+                    )
+                    logger.info(
+                        f"PRE-PIPELINE: auto-resumed {_platform}_{_screen_hash[:16]} "
+                        f"(tier window elapsed; abandoned_pending={_abandoned})"
+                    )
+                except Exception:
+                    logger.exception("auto-resume failed (non-fatal)")
+                continue   # do not count as waiting — let it re-attempt
+            _waiting_reasons.append(f"diagnosing:{_diag['platform']}_{_diag['screen_hash'][:16]}")
+            if len(_waiting_reasons) >= 4:
+                break
 
         if _waiting_reasons:
             logger.info(
@@ -1652,6 +1594,20 @@ def _next_action_impl(request: NextActionRequest):
                         _m["status"] = "abandoned"
                         _m["abandoned_reason"] = "worker_fallback_invalidate_for_fresh_yaml"
                         _mp.write_text(json.dumps(_m))
+                    try:
+                        from spark.state_repo import get_state_repo
+                        get_state_repo().resolve_consult(
+                            consult_id=consultation_id,
+                            status="abandoned",
+                            actor="api",
+                            evidence={
+                                "source": "next_action.worker_fallback_invalidate",
+                                "reason": "worker_fallback_invalidate_for_fresh_yaml",
+                            },
+                            abandon_reason="worker_fallback_invalidate_for_fresh_yaml",
+                        )
+                    except Exception:
+                        logger.exception("state-store resolve failed for worker_fallback invalidation")
                     (_cp / "response.json").unlink(missing_ok=True)
                     logger.info(
                         f"Step 1: invalidated failed consult {consultation_id} "
@@ -2429,8 +2385,8 @@ def _next_action_impl(request: NextActionRequest):
         knowledge_path = f"spark/platforms/{platform}/knowledge.json"
         logger.warning(f"  Step 5: KNOWLEDGE GATE — no knowledge.json for {platform}")
 
-        gate_flag = Path(f"/tmp/taey-ed-knowledge-gate-{platform}")
-        if not gate_flag.exists():
+        from spark.tasks import escalation_state as _es
+        if _es.knowledge_gate_notify_once(platform):
             from spark.tasks.notify_tmux import notify_spark_claude
             prompt_template = "spark/platforms/DEEP_RESEARCH_PROMPT.md"
             platform_url = {
@@ -2454,7 +2410,6 @@ def _next_action_impl(request: NextActionRequest):
                 f"6. Create dir: spark/platforms/{platform}/learned/\n"
                 f"7. Platform will proceed automatically on next screen cycle."
             )
-            gate_flag.write_text(str(time.time()))
             logger.info(f"  Step 5: Notified Spark Claude (first time for {platform})")
         else:
             logger.info(f"  Step 5: Already notified for {platform}, returning wait")
@@ -2467,9 +2422,8 @@ def _next_action_impl(request: NextActionRequest):
         }
 
     # Knowledge gate passed
-    gate_flag = Path(f"/tmp/taey-ed-knowledge-gate-{platform}")
-    if gate_flag.exists():
-        gate_flag.unlink()
+    from spark.tasks import escalation_state as _es
+    if _es.clear_knowledge_gate(platform):
         logger.info(f"  Step 5: Knowledge gate cleared for {platform}")
 
     # Hydration guard (claude-0 2026-06-13): Perseus/React widgets hydrate AFTER

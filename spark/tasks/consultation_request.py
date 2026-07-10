@@ -57,12 +57,20 @@ def _state_repo():
     return get_state_repo()
 
 
+def _coordination_screen_hash(tree: dict) -> str:
+    try:
+        from spark.tasks.skeleton import extract_skeleton, skeleton_hash
+        return skeleton_hash(extract_skeleton(tree))
+    except Exception:
+        return compute_tree_hash(tree)
+
+
 def _mirror_open_consult(metadata: dict, consult_path: Path, source: str) -> None:
     try:
         _state_repo().open_consult(
             consult_id=metadata["consultation_id"],
             platform=metadata["platform"],
-            screen_hash=metadata.get("screen_hash"),
+            screen_hash=metadata.get("coordination_screen_hash") or metadata.get("screen_hash"),
             payload_dir=str(consult_path),
             actor="api",
             evidence=_state_evidence(source),
@@ -90,7 +98,7 @@ def _mirror_consult_status(metadata: dict, status: str, source: str, payload: di
         _state_repo().record_consult_status_event(
             consult_id=metadata["consultation_id"],
             platform=metadata["platform"],
-            screen_hash=metadata.get("screen_hash"),
+            screen_hash=metadata.get("coordination_screen_hash") or metadata.get("screen_hash"),
             status=status,
             actor="api",
             evidence=_state_evidence(source),
@@ -261,6 +269,8 @@ def request_consultation(
         elif isinstance(ch, dict):
             kb_payload.append(ch)
 
+    coordination_screen_hash = _coordination_screen_hash(tree)
+
     metadata = {
         "consultation_id": consultation_id,
         "platform": platform,
@@ -268,6 +278,7 @@ def request_consultation(
         "failure_reason": context.get("failure_reason", ""),
         "previous_screen_type": context.get("previous_screen", ""),
         "screen_hash": compute_tree_hash(tree),
+        "coordination_screen_hash": coordination_screen_hash,
         "context": context,
         "timestamp": datetime.now().isoformat(),
         "status": "pending",
@@ -307,27 +318,16 @@ def request_consultation(
     # State is keyed by (platform, screen_hash) at a stable path so it persists
     # across consult_id changes during reconsult cycles.
     if escalation_level == "user":
-        # Use skeleton_hash to key the diagnosis state dir — must match the
-        # hash used by routes/next_action.py::_escalate_to_claude_diagnosing
-        # helper so both paths reference the SAME state dir and flag files.
-        try:
-            from spark.tasks.skeleton import (
-                extract_skeleton as _ext_sk_cr, skeleton_hash as _skel_hash_cr,
-            )
-            screen_hash = _skel_hash_cr(_ext_sk_cr(tree))
-        except Exception:
-            screen_hash = compute_tree_hash(tree)
+        screen_hash = metadata.get("coordination_screen_hash") or _coordination_screen_hash(tree)
+        from spark.tasks import escalation_state
+
         diag_state_dir = Path("/tmp/taey-ed-claude-diagnosing") / f"{platform}_{screen_hash[:16]}"
         diag_state_dir.mkdir(parents=True, exist_ok=True)
-        diagnosing_flag = diag_state_dir / "diagnosing.flag"
-        done_flag = diag_state_dir / "diagnosis_done.flag"
-        gave_up_flag = diag_state_dir / "gave_up.flag"
-        retry_count_path = diag_state_dir / "retries.txt"
 
-        # Real user escalation: claude explicitly gave up
-        if gave_up_flag.exists():
+        # Real user escalation: the DB-backed ladder is terminal.
+        if escalation_state.is_terminal(platform, screen_hash):
             logger.warning(
-                f"Claude explicitly gave up on screen_hash={screen_hash[:16]}. "
+                f"Escalation ladder is terminal for screen_hash={screen_hash[:16]}. "
                 f"Escalating to user."
             )
             metadata["escalation_level"] = "user"
@@ -336,12 +336,12 @@ def request_consultation(
             _mirror_consult_status(
                 metadata,
                 "user_required",
-                "gave_up_user_required",
-                {"reason": "gave_up_flag"},
+                "terminal_user_required",
+                {"reason": "terminal_ladder"},
             )
             notify_spark_claude(
                 f"ESCALATION TO USER: Consultation {consultation_id} for {platform} "
-                f"— claude gave up after diagnosis attempts. User input required."
+                f"— escalation ladder is terminal. User input required."
             )
             return {
                 "consultation_id": consultation_id,
@@ -350,14 +350,7 @@ def request_consultation(
                 "path": str(consult_path),
             }
 
-        # Diagnosis retry count: number of COMPLETED diagnosis cycles for this
-        # (platform, screen_hash). 0 = first ever, 1 = one cycle finished, etc.
-        retry_count = 0
-        if retry_count_path.exists():
-            try:
-                retry_count = int(retry_count_path.read_text().strip())
-            except (ValueError, OSError):
-                retry_count = 0
+        retry_count = max(0, escalation_state.note_attempt(platform, screen_hash, consultation_id) - 1)
 
         # Resolve which tier this attempt belongs to (see escalation.py for ladder).
         tier = tier_for_attempt(retry_count)
@@ -370,7 +363,7 @@ def request_consultation(
                 f"Escalation ladder exhausted ({retry_count} cycles) for "
                 f"screen_hash={screen_hash[:16]}. Auto-marking unsolvable."
             )
-            gave_up_flag.touch()
+            escalation_state.set_terminal(platform, screen_hash)
             try:
                 UNSOLVED_LOG.parent.mkdir(parents=True, exist_ok=True)
                 with UNSOLVED_LOG.open("a") as fh:
@@ -405,108 +398,94 @@ def request_consultation(
                 "path": str(consult_path),
             }
 
-        # Diagnosis just completed: increment retry_count, reset escalation,
-        # fall through to a fresh worker consult that picks up updated
-        # knowledge.json via hot-reload.
-        if done_flag.exists():
-            logger.info(
-                f"Diagnosis cycle complete for screen_hash={screen_hash[:16]}. "
-                f"retry_count {retry_count} -> {retry_count + 1}. "
-                f"Next tier: {tier_for_attempt(retry_count + 1)}."
-            )
-            retry_count_path.write_text(str(retry_count + 1))
-            done_flag.unlink()
-            diagnosing_flag.unlink(missing_ok=True)
-            spark_attempts = 0
-            escalation_level = "spark_claude"
-            metadata["spark_attempts"] = 0
-            metadata["escalation_level"] = "spark_claude"
-            metadata["claude_diagnosis_cycles"] = retry_count + 1
-            atomic_write_json(consult_path / "metadata.json", metadata)
-            _mirror_consult_status(
-                metadata,
-                "pending",
-                "diagnosis_cycle_complete",
-                {"retry_count": retry_count + 1},
-            )
-            # Fall through to normal worker dispatch below
+        # First entry to diagnosing for this cycle, or already-pending.
+        # Notify once per DB-backed cycle; build the rich-context escalation packet
+        # so the recipient (claude-primary) and any Tier 2/3 dispatch has
+        # everything it needs in one document.
+        window = {"tier1": 180, "tier2": 1200, "tier3": 1200}.get(tier, 300)
+        if escalation_state.start_diagnosis_cycle(platform, screen_hash, tier, window):
+            screen_type_hint = metadata.get("screen_type_hint", "UNKNOWN")
 
-        else:
-            # First entry to diagnosing for this cycle, or already-pending.
-            # Notify once per cycle; build the rich-context escalation packet
-            # so the recipient (claude-primary) and any Tier 2/3 dispatch has
-            # everything it needs in one document.
-            if not diagnosing_flag.exists():
-                diagnosing_flag.touch()
-                screen_type_hint = metadata.get("screen_type_hint", "UNKNOWN")
+            # Build the packet. Operational notes rendering deferred to
+            # caller knowledge if available; here we pass empty string and
+            # let the worker prompt include them at BT-gen time.
+            knowledge = {}
+            notes_md = ""
 
-                # Build the packet. Operational notes rendering deferred to
-                # caller knowledge if available; here we pass empty string and
-                # let the worker prompt include them at BT-gen time.
-                knowledge = {}
-                notes_md = ""
-
-                try:
-                    packet_path = build_packet(
-                        platform=platform,
-                        screen_hash=screen_hash,
-                        consult_path=consult_path,
-                        diag_state_dir=diag_state_dir,
-                        retry_count=retry_count,
-                        knowledge=knowledge,
-                        operational_notes_rendered=notes_md,
-                        screen_type_hint=screen_type_hint,
-                    )
-                except Exception as e:
-                    logger.error(f"escalation packet build failed: {e}")
-                    packet_path = diag_state_dir / "(packet_build_failed)"
-
-                body = notify_body_for_tier(
-                    tier=tier,
-                    packet_path=packet_path,
+            try:
+                packet_path = build_packet(
                     platform=platform,
                     screen_hash=screen_hash,
-                    retry_count=retry_count,
                     consult_path=consult_path,
                     diag_state_dir=diag_state_dir,
-                )
-                notify_spark_claude(body, notify_type="escalation")
-
-                # Auto-climb (INTENDED_FLOW §D): Tier 2/3 dispatch goes to
-                # taeys-hands DIRECTLY from the server. claude-primary's
-                # notification above is the synthesis/fold assignment, not a
-                # relay instruction.
-                dispatch_body = dispatch_body_for_tier(
-                    tier=tier,
-                    packet_path=packet_path,
-                    platform=platform,
-                    screen_hash=screen_hash,
                     retry_count=retry_count,
-                    bt_debug_tail=bt_debug_log,
+                    knowledge=knowledge,
+                    operational_notes_rendered=notes_md,
+                    screen_type_hint=screen_type_hint,
                 )
-                if dispatch_body:
-                    notify_fleet("taeys-hands", dispatch_body, notify_type="task")
-                logger.warning(
-                    f"Escalation triggered for {consultation_id} "
-                    f"({platform}, {screen_type_hint}, hash={screen_hash[:16]}, "
-                    f"tier={tier}, retry_count={retry_count}, "
-                    f"auto_dispatched={'yes' if dispatch_body else 'n/a'})"
-                )
-            metadata["status"] = "claude_diagnosing"
-            metadata["escalation_level"] = f"diagnosing_{tier}"
-            atomic_write_json(consult_path / "metadata.json", metadata)
-            _mirror_consult_status(
-                metadata,
-                "claude_diagnosing",
-                "diagnosing",
-                {"tier": tier, "retry_count": retry_count},
+            except Exception as e:
+                logger.error(f"escalation packet build failed: {e}")
+                packet_path = diag_state_dir / "(packet_build_failed)"
+
+            body = notify_body_for_tier(
+                tier=tier,
+                packet_path=packet_path,
+                platform=platform,
+                screen_hash=screen_hash,
+                retry_count=retry_count,
+                consult_path=consult_path,
+                diag_state_dir=diag_state_dir,
             )
-            return {
-                "consultation_id": consultation_id,
-                "status": "claude_diagnosing",
-                "message": f"Escalation tier={tier} active — Mac will retry automatically.",
-                "path": str(consult_path),
-            }
+            notify_spark_claude(body, notify_type="escalation")
+
+            # Auto-climb (INTENDED_FLOW §D): Tier 2/3 dispatch goes to
+            # taeys-hands DIRECTLY from the server. claude-primary's
+            # notification above is the synthesis/fold assignment, not a
+            # relay instruction.
+            dispatch_body = dispatch_body_for_tier(
+                tier=tier,
+                packet_path=packet_path,
+                platform=platform,
+                screen_hash=screen_hash,
+                retry_count=retry_count,
+                bt_debug_tail=bt_debug_log,
+            )
+            if dispatch_body:
+                from spark.tasks.paths import REVIEWS_DIR as _REVIEWS_DIR
+                review_path = _REVIEWS_DIR / f"{platform}_{screen_hash[:12]}_{tier}.md"
+                if review_path.exists():
+                    logger.info(
+                        f"taeys-hands dispatch SKIPPED for {screen_hash[:16]} {tier} "
+                        f"(review already landed — no-op re-fire dedup)"
+                    )
+                elif escalation_state.dispatch_tier_once(platform, screen_hash, tier):
+                    notify_fleet("taeys-hands", dispatch_body, notify_type="task")
+                else:
+                    logger.info(
+                        f"taeys-hands dispatch SKIPPED for {screen_hash[:16]} {tier} "
+                        f"(already dispatched this ladder cycle)"
+                    )
+            logger.warning(
+                f"Escalation triggered for {consultation_id} "
+                f"({platform}, {screen_type_hint}, hash={screen_hash[:16]}, "
+                f"tier={tier}, retry_count={retry_count}, "
+                f"auto_dispatched={'yes' if dispatch_body else 'n/a'})"
+            )
+        metadata["status"] = "claude_diagnosing"
+        metadata["escalation_level"] = f"diagnosing_{tier}"
+        atomic_write_json(consult_path / "metadata.json", metadata)
+        _mirror_consult_status(
+            metadata,
+            "claude_diagnosing",
+            "diagnosing",
+            {"tier": tier, "retry_count": retry_count},
+        )
+        return {
+            "consultation_id": consultation_id,
+            "status": "claude_diagnosing",
+            "message": f"Escalation tier={tier} active — Mac will retry automatically.",
+            "path": str(consult_path),
+        }
 
     logger.info(
         f"Consultation created: {consultation_id} (worker mode — no tmux notify)"
@@ -587,11 +566,14 @@ def request_minimal_consultation(
         elif isinstance(ch, dict):
             kb_payload.append(ch)
 
+    coordination_screen_hash = _coordination_screen_hash(tree)
+
     metadata = {
         "consultation_id": consultation_id,
         "platform": platform,
         "screen_type_hint": screen_type,
         "screen_hash": compute_tree_hash(tree),
+        "coordination_screen_hash": coordination_screen_hash,
         "context": {
             "screen_type_hint": screen_type,
             "user_guidance": user_guidance or "",
