@@ -2741,27 +2741,31 @@ def _next_action_impl(request: NextActionRequest):
                 "course_id": cs.course_id,
             }, platform, [build_status(f"Executing {variant} automation")])
 
+    if screen_type == "UNKNOWN" or variant == "UNKNOWN":
+        logger.warning(
+            "  Step 5D: UNKNOWN classification -> OPERATOR escalation "
+            "(worker consultation forbidden by R8.8 / 557bfa8)"
+        )
+        store_message(platform, build_status("Unknown screen requires operator mapping"))
+        return _escalate_to_claude_diagnosing(
+            platform=platform,
+            tree=tree,
+            consultation_id="",
+            reason=(
+                "UNKNOWN classification - operator mapping required; "
+                "the worker must never receive UNKNOWN"
+            ),
+            screen_type_hint="UNKNOWN",
+            screenshot_b64=request.screenshot_b64,
+            attempt_key=f"unknown:{skel_hash[:16]}",
+        )
+
     from spark.tasks.screen_type_util import get_master_category as _gmc_step5d
     if _gmc_step5d(variant) == "TRANSITION":
         logger.info(f"  Step 5D: deterministic transition serve for {variant}")
     else:
         logger.info(f"  Step 5D: requesting worker consultation for {variant}")
     store_message(platform, build_status(f"Identified screen as {variant}"))
-
-    if screen_type == "UNKNOWN":
-        consult_result = request_consultation(
-            platform=platform,
-            tree=tree,
-            screenshot_b64=request.screenshot_b64,
-            context={
-                "screen_type": "UNKNOWN",
-                "screen_type_hint": "UNKNOWN",
-                "course_id": cs.course_id,
-                "relevant_kb_chunks": request.relevant_kb_chunks,
-            },
-        )
-        logger.info("  Step 5D: UNKNOWN classification escalated into consultation flow")
-        return _consultation_or_wait(consult_result)
 
     return _build_screen_directive(
         request, platform, tree, variant, skel_hash, course_id=cs.course_id

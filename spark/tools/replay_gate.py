@@ -20,6 +20,10 @@ Checks:
   C. STORE     — every stored variant behavior_tree has a validated-path
                  source, and no TRANSITION-master entry carries a BT.
                  Catches the frozen-wrong-button class.
+  D. PROBES    — named structural contract probes, one per thesis row,
+                 missed-contract row, and git-fence assertion. Each probe has
+                 a checked-in red-run register entry, count/hash pins, and
+                 residue findings instead of exit-code-only checks.
 
 Exit 0 = green (deployable). Exit 1 = red with per-item findings.
 
@@ -40,6 +44,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 VALIDATED_SOURCES = {"r9_10_validated_success"}
 DEFAULT_EXPECTED_RED_REGISTER = Path(__file__).with_name("replay_expected_red.jsonl")
+DEFAULT_CONTRACT_RED_RUN_REGISTER = Path(__file__).with_name("contract_probe_red_runs.jsonl")
 
 
 def _load(path: Path):
@@ -298,6 +303,7 @@ def main() -> int:
     parser.add_argument("--data-dir", type=Path, required=True)
     parser.add_argument("--audit-dir", type=Path)
     parser.add_argument("--expected-red-register", type=Path, default=DEFAULT_EXPECTED_RED_REGISTER)
+    parser.add_argument("--contract-red-run-register", type=Path, default=DEFAULT_CONTRACT_RED_RUN_REGISTER)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
@@ -307,6 +313,16 @@ def main() -> int:
     stats.update(check_trees(args.corpus, args.data_dir, findings))
     stats.update(check_served(args.corpus, findings, args.audit_dir, expected_red))
     stats.update(check_store(args.data_dir, findings))
+    from spark.tools.contract_probe_harness import run_contract_probes
+
+    probe_report = run_contract_probes(
+        repo_root=Path(__file__).resolve().parents[2],
+        corpus=args.corpus,
+        data_dir=args.data_dir,
+        red_run_register=args.contract_red_run_register,
+    )
+    stats.update(probe_report["stats"])
+    findings.extend(probe_report["findings"])
 
     green = not findings
     report = {"green": green, "stats": stats, "findings": findings}
