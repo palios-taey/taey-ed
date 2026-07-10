@@ -174,6 +174,8 @@ CREATE TABLE IF NOT EXISTS bundle_receipts (
     dropped_json    TEXT NOT NULL DEFAULT '[]',   -- [{what, why}] — explicit, or empty
     kb_chunks_json  TEXT,                         -- grounding chunks included (exercise family only)
     total_chars     INTEGER NOT NULL,
+    receipt_sha     TEXT,                         -- LOGOS req #5: sha256 of the served bundle — cannot-lie
+                                                  -- provenance for Sacred Trust audit of what the LLM saw
     created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -257,6 +259,7 @@ CREATE TABLE IF NOT EXISTS events (
     event_id        INTEGER PRIMARY KEY AUTOINCREMENT,
     kind            TEXT NOT NULL,                -- classify_attempt/classify_result/bt_build/bt_execution/
                                                   -- escalation/advance/wrong_answer/staging/ambiguity/...
+    platform        TEXT,                         -- LOGOS req #2: platform-scoped RCA queries at scale
     screen_id       TEXT,
     consult_id      TEXT,
     actor           TEXT NOT NULL CHECK (actor IN ('api','worker','mac','operator','supervisor','system')),
@@ -264,10 +267,30 @@ CREATE TABLE IF NOT EXISTS events (
     created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_events_screen ON events(screen_id, kind, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_events_platform ON events(platform, kind, created_at DESC);
+-- LOGOS req #2: escalation hot-climb path
+CREATE INDEX IF NOT EXISTS idx_coordination_state ON coordination(state, tier);
+
+-- LOGOS req #1: RETENTION — append-only is not delete-never-anywhere; it is
+-- ARCHIVE-BEFORE-DELETE, enforced mechanically. The archive job copies rows to
+-- events_archive then deletes; a DELETE without a matching archive row ABORTS.
+-- No silent loss is POSSIBLE at the store.
+CREATE TABLE IF NOT EXISTS events_archive (
+    event_id        INTEGER PRIMARY KEY,          -- same id, moved not re-minted
+    kind            TEXT NOT NULL,
+    platform        TEXT,
+    screen_id       TEXT,
+    consult_id      TEXT,
+    actor           TEXT NOT NULL,
+    payload_json    TEXT NOT NULL,
+    created_at      TEXT NOT NULL,
+    archived_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
 
 CREATE TRIGGER IF NOT EXISTS events_append_only
 BEFORE UPDATE ON events
 BEGIN SELECT RAISE(ABORT, 'events are append-only'); END;
-CREATE TRIGGER IF NOT EXISTS events_no_delete
+CREATE TRIGGER IF NOT EXISTS events_archive_before_delete
 BEFORE DELETE ON events
-BEGIN SELECT RAISE(ABORT, 'events are append-only; archive via the archive job, never DELETE'); END;
+WHEN NOT EXISTS (SELECT 1 FROM events_archive WHERE event_id = OLD.event_id)
+BEGIN SELECT RAISE(ABORT, 'archive-before-delete: copy to events_archive first (LOGOS req #1)'); END;
