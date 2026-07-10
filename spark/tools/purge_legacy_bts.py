@@ -23,12 +23,15 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
 VALIDATED_SOURCES = {"r9_10_validated_success"}
 
 
 def purge(data_dir: Path, dry_run: bool) -> dict:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     report: dict = {"dry_run": dry_run, "platforms": {}}
+    report["hash_index"] = _purge_bare_master_hashes(data_dir, stamp, dry_run)
     store_dir = data_dir / "variant_bts"
     for store_path in sorted(store_dir.glob("*.json")):
         platform = store_path.stem
@@ -63,6 +66,40 @@ def purge(data_dir: Path, dry_run: bool) -> dict:
             tmp.replace(store_path)
             _mirror_demotes(platform, superseded, stamp)
     return report
+
+
+def _purge_bare_master_hashes(data_dir: Path, stamp: str, dry_run: bool) -> dict:
+    """Delete hash_index entries whose variant is a bare master (subtype never
+    resolved — e.g. bare 'EXERCISE'). register_hash refuses to create new ones
+    (2026-06-15) but old entries linger, cause per-encounter delete/reclassify
+    churn, and fail the replay gate's canonical-name check. The full index file
+    is archived (dated) before any deletion."""
+    from spark.tasks.screen_type_util import get_master_category
+
+    result: dict = {}
+    idx_dir = data_dir / "hash_index"
+    for idx_path in sorted(idx_dir.glob("*.json")):
+        platform = idx_path.stem
+        data = json.loads(idx_path.read_text(encoding="utf-8"))
+        hashes = data.get("hashes", {})
+        bare = [
+            skel for skel, entry in hashes.items()
+            if (entry.get("variant") or "") and
+            get_master_category(entry.get("variant") or "") == (entry.get("variant") or "")
+        ]
+        result[platform] = {"entries": len(hashes), "bare_master_deleted": sorted(bare)}
+        if bare and not dry_run:
+            archive_dir = idx_dir / "archive"
+            archive_dir.mkdir(parents=True, exist_ok=True)
+            (archive_dir / f"{platform}.pre-purge.{stamp}.json").write_text(
+                json.dumps(data, indent=2), encoding="utf-8"
+            )
+            for skel in bare:
+                del hashes[skel]
+            tmp = idx_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            tmp.replace(idx_path)
+    return result
 
 
 def _mirror_demotes(platform: str, superseded: dict, stamp: str) -> None:
