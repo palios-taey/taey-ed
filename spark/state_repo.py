@@ -568,6 +568,7 @@ class StateRepo:
                 "SELECT attempt_count,last_attempt_key,terminal FROM coordination WHERE screen_id=?",
                 (screen_id,),
             ).fetchone()
+            attempt_key = str(consult_id or "").strip()
             if int(row["terminal"]) == 1:
                 self._record_event(
                     conn,
@@ -575,11 +576,21 @@ class StateRepo:
                     actor=actor,
                     platform=platform,
                     screen_id=screen_id,
-                    consult_id=consult_id or None,
+                    consult_id=attempt_key or None,
                     payload={"reason": "terminal", "evidence": evidence},
                 )
                 return int(row["attempt_count"])
-            if consult_id and row["last_attempt_key"] == consult_id:
+            if not attempt_key:
+                self._record_event(
+                    conn,
+                    kind="escalation_attempt_ignored",
+                    actor=actor,
+                    platform=platform,
+                    screen_id=screen_id,
+                    payload={"reason": "missing_consult_id", "evidence": evidence},
+                )
+                return int(row["attempt_count"])
+            if row["last_attempt_key"] == attempt_key:
                 return int(row["attempt_count"])
             if int(row["attempt_count"]) >= 4:
                 conn.execute(
@@ -592,7 +603,7 @@ class StateRepo:
                            updated_at=?
                      WHERE screen_id=?
                     """,
-                    (consult_id or "", now_ms(), screen_id),
+                    (attempt_key, now_ms(), screen_id),
                 )
                 self._record_event(
                     conn,
@@ -600,7 +611,7 @@ class StateRepo:
                     actor=actor,
                     platform=platform,
                     screen_id=screen_id,
-                    consult_id=consult_id or None,
+                    consult_id=attempt_key,
                     payload={
                         "attempt_count": 5,
                         "stored_attempt_count": 4,
@@ -623,7 +634,7 @@ class StateRepo:
                        updated_at=?
                  WHERE screen_id=?
                 """,
-                (next_attempt, consult_id or "", tier, state, terminal, now_ms(), screen_id),
+                (next_attempt, attempt_key, tier, state, terminal, now_ms(), screen_id),
             )
             self._record_event(
                 conn,
@@ -631,7 +642,7 @@ class StateRepo:
                 actor=actor,
                 platform=platform,
                 screen_id=screen_id,
-                consult_id=consult_id or None,
+                consult_id=attempt_key,
                 payload={"attempt_count": next_attempt, "tier": tier, "terminal": terminal, "evidence": evidence},
             )
             return next_attempt
@@ -686,16 +697,41 @@ class StateRepo:
             screen_id, _ = self._resolve_or_mint(conn, platform, "skeleton", screen_hash, None)
             self._ensure_coordination(conn, screen_id, platform)
             old = conn.execute(
-                "SELECT terminal FROM coordination WHERE screen_id=?",
+                "SELECT terminal,attempt_count FROM coordination WHERE screen_id=?",
                 (screen_id,),
             ).fetchone()
-            terminal = 1 if cleared_reason == "yaml_fold" and int(old["terminal"]) == 1 else 0
+            if cleared_reason == "yaml_fold" and int(old["terminal"]) == 1:
+                conn.execute(
+                    """
+                    UPDATE coordination
+                       SET state='terminal',
+                           terminal=1,
+                           attempt_count=CASE WHEN attempt_count < 4 THEN 4 ELSE attempt_count END,
+                           tier='terminal',
+                           resume_at=NULL,
+                           response_pending_until=NULL,
+                           yaml_sha_at_attempt=NULL,
+                           user_instructions=NULL,
+                           updated_at=?
+                     WHERE screen_id=?
+                    """,
+                    (now_ms(), screen_id),
+                )
+                self._record_event(
+                    conn,
+                    kind="ladder_cleared",
+                    actor=actor,
+                    platform=platform,
+                    screen_id=screen_id,
+                    payload={"cleared_reason": cleared_reason, "original_reason": reason, "evidence": evidence},
+                )
+                return
             conn.execute(
                 """
                 UPDATE coordination
                    SET state='cleared',
                        cleared_reason=?,
-                       terminal=?,
+                       terminal=0,
                        attempt_count=0,
                        tier=NULL,
                        last_attempt_key=NULL,
@@ -706,7 +742,7 @@ class StateRepo:
                        updated_at=?
                  WHERE screen_id=?
                 """,
-                (cleared_reason, terminal, now_ms(), screen_id),
+                (cleared_reason, now_ms(), screen_id),
             )
             self._record_event(
                 conn,
@@ -734,13 +770,38 @@ class StateRepo:
                 (platform,),
             ).fetchall()
             for row in rows:
-                terminal = 1 if cleared_reason == "yaml_fold" and int(row["terminal"]) == 1 else 0
+                if cleared_reason == "yaml_fold" and int(row["terminal"]) == 1:
+                    conn.execute(
+                        """
+                        UPDATE coordination
+                           SET state='terminal',
+                               terminal=1,
+                               attempt_count=CASE WHEN attempt_count < 4 THEN 4 ELSE attempt_count END,
+                               tier='terminal',
+                               resume_at=NULL,
+                               response_pending_until=NULL,
+                               yaml_sha_at_attempt=NULL,
+                               user_instructions=NULL,
+                               updated_at=?
+                         WHERE screen_id=?
+                        """,
+                        (now_ms(), row["screen_id"]),
+                    )
+                    self._record_event(
+                        conn,
+                        kind="ladder_cleared",
+                        actor=actor,
+                        platform=platform,
+                        screen_id=row["screen_id"],
+                        payload={"cleared_reason": cleared_reason, "original_reason": reason, "evidence": evidence},
+                    )
+                    continue
                 conn.execute(
                     """
                     UPDATE coordination
                        SET state='cleared',
                            cleared_reason=?,
-                           terminal=?,
+                           terminal=0,
                            attempt_count=0,
                            tier=NULL,
                            last_attempt_key=NULL,
@@ -751,7 +812,7 @@ class StateRepo:
                            updated_at=?
                      WHERE screen_id=?
                     """,
-                    (cleared_reason, terminal, now_ms(), row["screen_id"]),
+                    (cleared_reason, now_ms(), row["screen_id"]),
                 )
                 self._record_event(
                     conn,
@@ -779,7 +840,13 @@ class StateRepo:
                        c.yaml_sha_at_attempt,
                        c.user_instructions,
                        c.cleared_reason,
-                       c.updated_at
+                       c.updated_at,
+                       (
+                           SELECT max(e.created_at)
+                             FROM events e
+                            WHERE e.screen_id=c.screen_id
+                              AND e.kind='escalation_attempt'
+                       ) AS last_attempt_at
                   FROM screen_keys sk
                   JOIN coordination c ON c.screen_id=sk.screen_id
                  WHERE sk.platform=? AND sk.key_kind='skeleton' AND sk.key_hash=?
@@ -1076,6 +1143,22 @@ class StateRepo:
                 (int(limit),),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def get_consult_status(self, consult_id: str) -> dict[str, Any] | None:
+        consult_key = str(consult_id or "").strip()
+        if not consult_key:
+            return None
+        with state_connection(self.db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT consult_id, platform, screen_id, status, payload_dir, created_at, resolved_at
+                  FROM consults
+                 WHERE consult_id=?
+                 LIMIT 1
+                """,
+                (consult_key,),
+            ).fetchone()
+        return dict(row) if row else None
 
     def abandon_pending_consults_for_screen(
         self,
@@ -1577,7 +1660,7 @@ class StateRepo:
 
     def _ensure_coordination(self, conn, screen_id: str, platform: str) -> None:
         row = conn.execute(
-            "SELECT state FROM coordination WHERE screen_id=?",
+            "SELECT state,cleared_reason,terminal FROM coordination WHERE screen_id=?",
             (screen_id,),
         ).fetchone()
         if row is None:
@@ -1587,6 +1670,8 @@ class StateRepo:
             )
             return
         if row["state"] == "cleared":
+            if row["cleared_reason"] == "yaml_fold" and int(row["terminal"] or 0) == 1:
+                return
             conn.execute(
                 """
                 UPDATE coordination
@@ -1604,6 +1689,8 @@ class StateRepo:
         resume_at_ms = row["resume_at"]
         response_pending_until_ms = row["response_pending_until"]
         updated_at_ms = row["updated_at"]
+        row_keys = set(row.keys()) if hasattr(row, "keys") else set()
+        last_attempt_at_ms = row["last_attempt_at"] if "last_attempt_at" in row_keys else None
         state = {
             "screen_id": row["screen_id"],
             "platform": row["platform"],
@@ -1619,6 +1706,8 @@ class StateRepo:
             "cleared_reason": row["cleared_reason"],
             "updated_at_ms": updated_at_ms,
             "updated_at": (int(updated_at_ms) / 1000.0) if updated_at_ms else 0.0,
+            "last_attempt_at_ms": last_attempt_at_ms,
+            "last_attempt_at": (int(last_attempt_at_ms) / 1000.0) if last_attempt_at_ms else 0.0,
         }
         if resume_at_ms:
             state["resume_at"] = int(resume_at_ms) / 1000.0
@@ -1816,7 +1905,7 @@ class StateRepo:
     def _normalize_clear_reason(self, reason: str) -> str:
         value = str(reason or "").strip()
         if value.startswith("yaml_fold_resets_ladder:"):
-            return "advanced"
+            return "yaml_fold"
         aliases = {
             "advance": "advanced",
             "advanced": "advanced",

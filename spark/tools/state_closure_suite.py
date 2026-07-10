@@ -15,7 +15,13 @@ Model now:
 Attacks the equivalence FAMILY incl. ALTERNATE-UNIQUE REPLACE targets (not just
 PK), per Horizon r3. Asserts recursive_triggers=ON (load-bearing for REPLACE).
 """
-import sqlite3, os, sys
+import sqlite3, os, sys, tempfile, time
+from pathlib import Path
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
 SCHEMA = os.path.join(os.path.dirname(__file__), '..', 'state_schema.sql')
 
 def conn():
@@ -226,7 +232,132 @@ def liveness():
         except Exception as e: bad.append(f"{n}: {e}")
     print("LIVENESS:", "OK" if not bad else "OVER-BLOCKED")
     for b in bad: print("  ✗", b)
-    return 1 if bad else 0
+    app_bad = app_liveness()
+    return 1 if (bad or app_bad) else 0
+
+
+def app_liveness():
+    from spark.state_db import init_state_db
+    from spark.state_repo import StateRepo
+
+    bad = []
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = StateRepo(init_state_db(Path(tmp) / "state.db"))
+        evidence = {"source": "state_closure_suite.app_liveness"}
+        try:
+            first = repo.record_escalation_attempt(
+                platform="p1",
+                screen_hash="screen-a",
+                consult_id="consult_a",
+                actor="api",
+                evidence=evidence,
+            )
+            if first != 1:
+                bad.append(f"first distinct consult attempt: got {first}")
+            first_state = repo.get_ladder_state(platform="p1", screen_hash="screen-a")
+            first_attempt_at = first_state.get("last_attempt_at_ms")
+            if not first_attempt_at:
+                bad.append("first attempt timestamp missing")
+            time.sleep(0.01)
+            repo.start_diagnosis_cycle(
+                platform="p1",
+                screen_hash="screen-a",
+                tier="tier1",
+                resume_at_ms=int((time.time() + 0.01) * 1000),
+                actor="api",
+                evidence=evidence,
+            )
+            time.sleep(0.01)
+            if not repo.resume_diagnosis_cycle(
+                platform="p1",
+                screen_hash="screen-a",
+                actor="api",
+                evidence=evidence,
+            ):
+                bad.append("resume diagnosis cycle returned false")
+            resumed_state = repo.get_ladder_state(platform="p1", screen_hash="screen-a")
+            if resumed_state.get("attempt") != 1:
+                bad.append(f"resume climbed attempt count to {resumed_state.get('attempt')}")
+            if resumed_state.get("last_attempt_at_ms") != first_attempt_at:
+                bad.append("resume rewrote last real attempt timestamp")
+            empty = repo.record_escalation_attempt(
+                platform="p1",
+                screen_hash="screen-a",
+                consult_id="",
+                actor="api",
+                evidence=evidence,
+            )
+            if empty != 1:
+                bad.append(f"empty consult id climbed attempt count to {empty}")
+            same = repo.record_escalation_attempt(
+                platform="p1",
+                screen_hash="screen-a",
+                consult_id="consult_a",
+                actor="api",
+                evidence=evidence,
+            )
+            if same != 1:
+                bad.append(f"same consult id climbed attempt count to {same}")
+            second = repo.record_escalation_attempt(
+                platform="p1",
+                screen_hash="screen-a",
+                consult_id="consult_b",
+                actor="api",
+                evidence=evidence,
+            )
+            if second != 2:
+                bad.append(f"second distinct consult did not climb to 2 (got {second})")
+
+            repo.clear_ladder(
+                platform="p1",
+                screen_hash="screen-a",
+                reason="yaml_fold",
+                actor="api",
+                evidence=evidence,
+            )
+            folded = repo.get_ladder_state(platform="p1", screen_hash="screen-a")
+            if folded.get("state") != "cleared" or folded.get("attempt") != 0 or folded.get("terminal"):
+                bad.append(f"non-terminal yaml fold did not clear cleanly: {folded}")
+            rearmed = repo.record_escalation_attempt(
+                platform="p1",
+                screen_hash="screen-a",
+                consult_id="consult_c",
+                actor="api",
+                evidence=evidence,
+            )
+            if rearmed != 1:
+                bad.append(f"yaml-fold re-arm did not start clean ladder at 1 (got {rearmed})")
+
+            repo.mark_terminal(
+                platform="p1",
+                screen_hash="screen-b",
+                actor="api",
+                evidence=evidence,
+            )
+            repo.clear_ladder(
+                platform="p1",
+                screen_hash="screen-b",
+                reason="yaml_fold",
+                actor="api",
+                evidence=evidence,
+            )
+            terminal = repo.get_ladder_state(platform="p1", screen_hash="screen-b")
+            if terminal.get("state") != "terminal" or not terminal.get("terminal"):
+                bad.append(f"terminal yaml fold un-terminated screen: {terminal}")
+            ignored = repo.record_escalation_attempt(
+                platform="p1",
+                screen_hash="screen-b",
+                consult_id="consult_terminal",
+                actor="api",
+                evidence=evidence,
+            )
+            if ignored < 4:
+                bad.append(f"terminal attempt returned non-terminal count {ignored}")
+        except Exception as exc:
+            bad.append(f"app liveness exception: {exc}")
+    print("APP-LIVENESS:", "OK" if not bad else "OVER-BLOCKED")
+    for b in bad: print("  ✗", b)
+    return bad
 
 if __name__ == '__main__':
     sys.exit(liveness() if '--liveness' in sys.argv else run())

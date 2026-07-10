@@ -26,6 +26,7 @@ import os
 import time
 import base64
 from concurrent.futures import ThreadPoolExecutor, Future
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -40,6 +41,7 @@ CONSULT_DIR = Path("/tmp/taey-ed-consult")
 POLL_INTERVAL_S = 2.0
 MAX_CONCURRENT_JOBS = 3  # bounded so one hung Claude doesn't stall the queue
 JOB_TIMEOUT_S = 300.0  # Claude --print with full prompt_codex prompt can take 2-4 min
+PENDING_TTL_SECONDS = 600
 
 
 def _state_evidence(source: str, **extra) -> dict:
@@ -53,6 +55,35 @@ def _state_repo():
 
 def _read_metadata(path: Path) -> dict:
     return json.loads(path.read_text())
+
+
+def _pending_metadata_age_seconds(meta: dict) -> float | None:
+    ts = meta.get("timestamp")
+    if not ts:
+        return None
+    try:
+        return max(0.0, time.time() - datetime.fromisoformat(ts).timestamp())
+    except Exception:
+        return None
+
+
+def _state_consult_is_pending(consultation_id: str) -> bool:
+    try:
+        row = _state_repo().get_consult_status(consultation_id)
+    except Exception:
+        logger.exception("worker: state-store pending check failed for %s", consultation_id)
+        return False
+    if not row:
+        logger.warning("worker: ignoring file-only pending consult %s (no state row)", consultation_id)
+        return False
+    if row.get("status") != "pending":
+        logger.info(
+            "worker: ignoring consult %s because state row is %s",
+            consultation_id,
+            row.get("status"),
+        )
+        return False
+    return True
 
 
 def _mirror_worker_failed(consultation_id: str, reason: str, source: str) -> None:
@@ -136,6 +167,16 @@ def _list_pending_consultations() -> list[str]:
         except (json.JSONDecodeError, OSError):
             continue
         if meta.get("status") == "pending":
+            age = _pending_metadata_age_seconds(meta)
+            if age is not None and age > PENDING_TTL_SECONDS:
+                logger.warning(
+                    "worker: ignoring stale pending consult %s (age=%ss)",
+                    sub.name,
+                    int(age),
+                )
+                continue
+            if not _state_consult_is_pending(sub.name):
+                continue
             pending.append(sub.name)
     return pending
 
