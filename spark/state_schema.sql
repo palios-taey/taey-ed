@@ -303,18 +303,18 @@ BEFORE INSERT ON coordination
 WHEN EXISTS (SELECT 1 FROM coordination WHERE screen_id = NEW.screen_id)
 BEGIN SELECT RAISE(ABORT,'no REPLACE over a live ladder (R8.3)'); END;
 -- The authorized RE-ARM (cleared -> fresh normal ladder) is the ONE legal exit
--- from cleared. Define it once; monotonic + sticky exempt it so a cleared row
--- with attempt>0 / terminal=1 CAN re-arm (Horizon r3 B: the re-arm was
--- over-blocked). Reused via the identical predicate in each WHEN.
+-- from cleared. Non-terminal yaml_fold clears re-arm to a clean ladder; terminal
+-- yaml_fold rows cannot un-terminate (R8.5). Reused via the identical predicate
+-- in each WHEN.
 CREATE TRIGGER IF NOT EXISTS coordination_monotonic
 BEFORE UPDATE ON coordination
 WHEN NEW.attempt_count < OLD.attempt_count AND NEW.state <> 'cleared'
- AND NOT (OLD.state = 'cleared' AND OLD.cleared_reason <> 'yaml_fold' AND NEW.state = 'normal' AND NEW.attempt_count = 0 AND NEW.terminal = 0 AND NEW.tier IS NULL)
+ AND NOT (OLD.state = 'cleared' AND (OLD.cleared_reason <> 'yaml_fold' OR OLD.terminal = 0) AND NEW.state = 'normal' AND NEW.attempt_count = 0 AND NEW.terminal = 0 AND NEW.tier IS NULL)
 BEGIN SELECT RAISE(ABORT,'attempt_count is monotonic (R8.3)'); END;
 CREATE TRIGGER IF NOT EXISTS coordination_sticky_terminal
 BEFORE UPDATE ON coordination
 WHEN OLD.terminal = 1 AND NEW.terminal = 0 AND NEW.state <> 'cleared'
- AND NOT (OLD.state = 'cleared' AND OLD.cleared_reason <> 'yaml_fold' AND NEW.state = 'normal' AND NEW.attempt_count = 0 AND NEW.terminal = 0 AND NEW.tier IS NULL)
+ AND NOT (OLD.state = 'cleared' AND (OLD.cleared_reason <> 'yaml_fold' OR OLD.terminal = 0) AND NEW.state = 'normal' AND NEW.attempt_count = 0 AND NEW.terminal = 0 AND NEW.tier IS NULL)
 BEGIN SELECT RAISE(ABORT,'terminal is sticky (R8.3)'); END;
 -- 'cleared' is FROZEN: the ONLY legal UPDATE of a cleared row is the authorized
 -- re-arm to a fresh normal ladder. Any other change — leaving cleared to a
@@ -334,7 +334,7 @@ WHEN OLD.state = 'cleared'
  AND NOT (  -- the authorized re-arm: reset ONLY the core ladder; every non-core
             -- field must be UNCHANGED (so the re-arm shape cannot smuggle a
             -- forged deadline / instruction / provenance — Horizon r4 D)
-      OLD.cleared_reason <> 'yaml_fold'
+      (OLD.cleared_reason <> 'yaml_fold' OR OLD.terminal = 0)
       AND NEW.state = 'normal' AND NEW.attempt_count = 0 AND NEW.terminal = 0 AND NEW.tier IS NULL
       AND NEW.platform IS OLD.platform
       AND NEW.last_attempt_key IS OLD.last_attempt_key AND NEW.resume_at IS OLD.resume_at
@@ -385,7 +385,7 @@ BEGIN SELECT RAISE(ABORT,'a YAML fold clears the ladder but never un-terminates 
 CREATE TRIGGER IF NOT EXISTS coordination_tier_monotonic
 BEFORE UPDATE ON coordination
 WHEN OLD.tier IS NOT NULL AND NEW.state <> 'cleared'
- AND NOT (OLD.state = 'cleared' AND OLD.cleared_reason <> 'yaml_fold' AND NEW.state = 'normal' AND NEW.tier IS NULL AND NEW.attempt_count = 0 AND NEW.terminal = 0)  -- re-arm
+ AND NOT (OLD.state = 'cleared' AND (OLD.cleared_reason <> 'yaml_fold' OR OLD.terminal = 0) AND NEW.state = 'normal' AND NEW.tier IS NULL AND NEW.attempt_count = 0 AND NEW.terminal = 0)  -- re-arm
  AND (NEW.tier IS NULL
       OR (CASE NEW.tier WHEN 'tier1' THEN 1 WHEN 'tier2' THEN 2 WHEN 'tier3' THEN 3 WHEN 'terminal' THEN 4 END)
        < (CASE OLD.tier WHEN 'tier1' THEN 1 WHEN 'tier2' THEN 2 WHEN 'tier3' THEN 3 WHEN 'terminal' THEN 4 END))
