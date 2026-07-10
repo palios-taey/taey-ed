@@ -20,11 +20,14 @@ Spark provides COMPUTE only - Mac handles execution.
 """
 
 import asyncio
+import hashlib
 import httpx
 import json
 import logging
+import os
 import re
-from typing import List, Optional, Dict
+import time
+from typing import Any, List, Optional, Dict
 
 logger = logging.getLogger(__name__)
 
@@ -175,6 +178,192 @@ def _navigate_eligible(desc: str) -> bool:
 from spark.tasks.paths import DATA_DIR
 _MEASURE_GRID_SUBMIT_FLAG = str(DATA_DIR / "measure_grid_submit.flag")
 _MEASURE_GRID_LOG = str(DATA_DIR / "measure_grid_corpus.jsonl")
+_GENERATE_PAYLOAD_DIR = DATA_DIR / "generate_payloads"
+
+_CHROME_QUESTION_EXACT = {
+    "",
+    "skip to main content",
+    "skip to content",
+    "skip navigation",
+    "you might need",
+    "you might need:",
+    "problem",
+    "problems",
+    "lesson",
+    "exercise",
+    "practice",
+    "report a problem",
+    "make image bigger",
+}
+_CHROME_QUESTION_PREFIXES = (
+    "course:",
+    "unit ",
+    "lesson ",
+    "khan academy",
+)
+_PAGE_TITLE_RE = re.compile(
+    r"^(?:problem|problems|exercise|exercises|practice|lesson|unit|quiz|test|"
+    r"question)\s*(?:\d+|[a-z]|[ivxlcdm]+)?(?:\s*[:.-]\s*)?$",
+    re.I,
+)
+_QUESTION_VERB_RE = re.compile(
+    r"\b("
+    r"what|which|who|when|where|why|how|choose|select|solve|find|"
+    r"calculate|determine|complete|fill|match|drag|write|enter|type|"
+    r"graph|estimate|measure|evaluate|simplify|factor|compare|identify"
+    r")\b",
+    re.I,
+)
+_MATH_SIGNAL_RE = re.compile(r"[\d=+\-*/^√<>≤≥]|\b\d+(?:\.\d+)?\b")
+
+
+def _canonical_question_text(question: str | None) -> str:
+    return " ".join(str(question or "").split()).strip()
+
+
+def _has_question_signal(question: str) -> bool:
+    return bool(
+        "?" in question
+        or _QUESTION_VERB_RE.search(question)
+        or _MATH_SIGNAL_RE.search(question)
+    )
+
+
+def _question_floor_meta(question: str | None) -> dict[str, str]:
+    text = _canonical_question_text(question)
+    lowered = text.lower().strip()
+    lowered_unpunct = lowered.strip(" \t\r\n:.-")
+    if not text:
+        return {"question_source": "vision", "question_floor_reason": "empty"}
+    if lowered in _CHROME_QUESTION_EXACT or lowered_unpunct in _CHROME_QUESTION_EXACT:
+        return {"question_source": "vision", "question_floor_reason": "known_chrome"}
+    if _PAGE_TITLE_RE.fullmatch(text):
+        return {"question_source": "vision", "question_floor_reason": "page_title_or_chrome"}
+    if any(lowered.startswith(prefix) for prefix in _CHROME_QUESTION_PREFIXES) and not _has_question_signal(text):
+        return {"question_source": "vision", "question_floor_reason": "page_title_or_chrome"}
+
+    words = re.findall(r"[A-Za-z0-9]+", text)
+    if len(words) < 3 and not _has_question_signal(text):
+        return {"question_source": "vision", "question_floor_reason": "low_signal"}
+    if len(words) <= 6 and not _has_question_signal(text):
+        return {"question_source": "vision", "question_floor_reason": "page_title_or_low_signal"}
+    return {"question_source": "request", "question_floor_reason": ""}
+
+
+def _vision_question_instruction(reason: str, has_screenshot: bool) -> str:
+    visual_source = "the screenshot plus the listed items/options" if has_screenshot else "the listed items/options"
+    return (
+        "Captured question text was absent or page chrome "
+        f"(reason: {reason}). Ignore the captured question field. Derive the actual "
+        f"educational question from {visual_source}. Ignore navigation, skip links, "
+        "lesson/page titles, and helper chrome. Do not invent unrelated course "
+        "content if the screen and items do not support it."
+    )
+
+
+def _prepare_question(question: str | None, *, has_screenshot: bool) -> dict[str, str]:
+    meta = _question_floor_meta(question)
+    raw = _canonical_question_text(question)
+    if meta["question_source"] == "vision":
+        effective = _vision_question_instruction(meta["question_floor_reason"], has_screenshot)
+    else:
+        effective = raw
+    return {
+        "raw_question": raw,
+        "effective_question": effective,
+        **meta,
+    }
+
+
+def _json_safe(value: Any) -> Any:
+    try:
+        json.dumps(value)
+        return value
+    except TypeError:
+        if isinstance(value, dict):
+            return {str(k): _json_safe(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [_json_safe(v) for v in value]
+        return str(value)
+
+
+def _persist_generate_payload(
+    *,
+    question_meta: dict[str, str],
+    question_type: str,
+    options: Optional[List[Any]],
+    context: Optional[List[str]],
+    image_descriptions: Optional[List[str]],
+    has_text_field: bool,
+    screen_config: Optional[Dict],
+    items: Optional[List[Dict]],
+    screenshot_b64: Optional[str],
+    relevant_kb_chunks: Optional[List[Dict]],
+) -> str:
+    now_ns = time.time_ns()
+    now_ms = now_ns // 1_000_000
+    kb_chunk_texts = [
+        (ch.get("text") or "").strip()
+        for ch in (relevant_kb_chunks or [])
+        if isinstance(ch, dict) and (ch.get("text") or "").strip()
+    ]
+    screenshot_sha = hashlib.sha256((screenshot_b64 or "").encode("utf-8")).hexdigest() if screenshot_b64 else ""
+    payload = {
+        "schema_version": 1,
+        "created_at_ms": now_ms,
+        "question_type": question_type,
+        "question": question_meta["raw_question"],
+        "effective_question": question_meta["effective_question"],
+        "question_source": question_meta["question_source"],
+        "question_floor_reason": question_meta["question_floor_reason"],
+        "options": _json_safe(options or []),
+        "items": _json_safe(items or []),
+        "kb_chunk_texts": kb_chunk_texts,
+        "context": _json_safe(context or []),
+        "image_descriptions": _json_safe(image_descriptions or []),
+        "has_text_field": bool(has_text_field),
+        "screen_config": _json_safe(screen_config or {}),
+        "screenshot_sha256": screenshot_sha,
+        "screenshot_b64": screenshot_b64 or "",
+    }
+    hash_payload = {k: v for k, v in payload.items() if k != "created_at_ms"}
+    payload_sha = hashlib.sha256(
+        json.dumps(hash_payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    ).hexdigest()[:16]
+    payload["payload_sha256"] = payload_sha
+    _GENERATE_PAYLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    payload_path = _GENERATE_PAYLOAD_DIR / f"{now_ns}_{payload_sha}.json"
+    tmp_path = payload_path.with_suffix(".json.tmp")
+    tmp_path.write_text(json.dumps(payload, ensure_ascii=True, sort_keys=True, indent=2, default=str), encoding="utf-8")
+    tmp_path.replace(payload_path)
+    _rotate_generate_payloads()
+    return payload_path.name
+
+
+def _rotate_generate_payloads() -> None:
+    try:
+        max_files = int(os.environ.get("TAEY_ED_GENERATE_PAYLOAD_MAX_FILES", "512"))
+    except ValueError:
+        max_files = 512
+    if max_files <= 0 or not _GENERATE_PAYLOAD_DIR.exists():
+        return
+    files = sorted(_GENERATE_PAYLOAD_DIR.glob("*.json"), key=lambda p: p.name)
+    surplus = len(files) - max_files
+    if surplus <= 0:
+        return
+    for path in files[:surplus]:
+        try:
+            path.unlink()
+        except OSError:
+            logger.warning("generate payload rotation could not remove %s", path.name)
+
+
+def _with_question_audit(result: dict, question_meta: dict[str, str], payload_id: str) -> dict:
+    result["question_source"] = question_meta["question_source"]
+    if question_meta["question_floor_reason"]:
+        result["question_floor_reason"] = question_meta["question_floor_reason"]
+    result["generate_payload_id"] = payload_id
+    return result
 
 
 def _parse_measure(question: str):
@@ -790,6 +979,24 @@ async def generate_answer(
             "model": "llama3.1:8b"
         }
     """
+    question_meta = _prepare_question(question, has_screenshot=bool(screenshot_b64))
+    payload_id = _persist_generate_payload(
+        question_meta=question_meta,
+        question_type=question_type,
+        options=options,
+        context=context,
+        image_descriptions=image_descriptions,
+        has_text_field=has_text_field,
+        screen_config=screen_config,
+        items=items,
+        screenshot_b64=screenshot_b64,
+        relevant_kb_chunks=relevant_kb_chunks,
+    )
+    question = question_meta["effective_question"]
+
+    def done(result: dict) -> dict:
+        return _with_question_audit(result, question_meta, payload_id)
+
     # Build context block from KB + image descriptions
     context_parts = []
     if relevant_kb_chunks:
@@ -826,12 +1033,12 @@ async def generate_answer(
     # SOLVE_COMPLEX: Route to Gemini 2.5 Pro (vision) instead of Ollama
     # =========================================================================
     if question_type == "solve_complex":
-        return await _solve_complex_with_gemini(
+        return done(await _solve_complex_with_gemini(
             question=question,
             options=options,
             context_block=context_block,
             screenshot_b64=screenshot_b64,
-        )
+        ))
 
     # =========================================================================
     # MEASURE_GRID: deterministic CV measurement (NO LLM). LLM vision cannot
@@ -841,19 +1048,19 @@ async def generate_answer(
     # gated by a flag file so the flip is a config toggle, not a code change.
     # =========================================================================
     if question_type == "measure_grid":
-        return _measure_grid_answer(question, screenshot_b64)
+        return done(_measure_grid_answer(question, screenshot_b64))
 
     # =========================================================================
     # SOLVE_MATCHING + SCREENSHOT: Route to Gemini (vision needed for diagrams)
     # =========================================================================
     if question_type == "solve_matching" and items and screenshot_b64:
         logger.info("solve_matching: screenshot present, routing to Gemini")
-        return await _solve_matching_with_gemini(
+        return done(await _solve_matching_with_gemini(
             question=question,
             items=items,
             context_block=context_block,
             screenshot_b64=screenshot_b64,
-        )
+        ))
 
     # Build prompt based on question type
     if question_type == "navigate" and items:
@@ -883,12 +1090,12 @@ async def generate_answer(
         # link. The LLM still PICKS (LLM-driven per Jesse 2026-05-19) — it just
         # returns the NUMBER, and the navigate return branch maps number -> the
         # exact link name (numbered list built here is rebuilt identically there).
-        picking_rules = (
-            question.strip() if (question and question.strip())
-            else "Pick the FIRST INCOMPLETE curriculum item in page order. "
-                 "Items marked mastered/proficient/completed are DONE — skip them. "
-                 "Within a section, videos and articles come before exercises/quizzes."
+        default_picking_rules = (
+            "Pick the FIRST INCOMPLETE curriculum item in page order. "
+            "Items marked mastered/proficient/completed are DONE — skip them. "
+            "Within a section, videos and articles come before exercises/quizzes."
         )
+        picking_rules = question.strip() if question_meta["question_source"] == "request" else default_picking_rules
         prompt = (
             f"{picking_rules}\n\n"
             f"Numbered clickable items (in page order):\n{items_block}\n\n"
@@ -937,13 +1144,13 @@ async def generate_answer(
         )
     elif question_type == "solve_checkbox":
         if not options:
-            return {
+            return done({
                 "success": False,
                 "error": "solve_checkbox requires options list",
                 "answer": "",
                 "question_type": question_type,
                 "model": "none"
-            }
+            })
 
         letters = "ABCDEFGHIJ"
         options_block = "\n".join(
@@ -957,13 +1164,13 @@ async def generate_answer(
         )
     elif question_type == "solve_choice":
         if not options:
-            return {
+            return done({
                 "success": False,
                 "error": "solve_choice requires options list",
                 "answer": "",
                 "question_type": question_type,
                 "model": "none"
-            }
+            })
 
         letters = "ABCDEFGHIJ"
         options_block = "\n".join(
@@ -1005,13 +1212,13 @@ async def generate_answer(
 
     try:
         if not raw_answer:
-            return {
+            return done({
                 "success": False,
                 "error": "Empty response from all models",
                 "answer": "",
                 "question_type": question_type,
                 "model": model_used
-            }
+            })
 
         # Parse answer and text_response
         answer = ""
@@ -1046,35 +1253,35 @@ async def generate_answer(
                     f"{raw_answer[:60]!r} (had {len(numbered)} items)"
                 )
 
-            return {
+            return done({
                 "success": bool(answer),
                 "answer": answer,  # exact AXLink name; BT clicks target=$nav.answer
                 "matched_item": matched_item,
                 "question_type": question_type,
                 "model": model_used,
-            }
+            })
 
         elif question_type == "solve_assessment" and items:
             # Parse JSON response for full assessment
             answers = parse_assessment_response(raw_answer, items)
             logger.info(f"Assessment: {len(answers)} answers parsed")
             if not answers:
-                return {
+                return done({
                     "success": False,
                     "error": f"Failed to parse assessment response (got 0 answers from {len(items)} questions)",
                     "answer": "",
                     "raw_response": raw_answer,
                     "question_type": question_type,
                     "model": model_used,
-                }
-            return {
+                })
+            return done({
                 "success": True,
                 "answer": "assessment_complete",
                 "answers": answers,
                 "raw_response": raw_answer,
                 "question_type": question_type,
                 "model": model_used,
-            }
+            })
 
         elif question_type == "solve_checkbox" and options:
             # Parse comma-separated letters: "A, C, D" → list of option texts.
@@ -1114,7 +1321,7 @@ async def generate_answer(
                     screen_config=screen_config,
                     selected=selected,
                 )
-            return result
+            return done(result)
 
         elif question_type == "solve_matching" and items:
             # Parse matching response: "1: option text\n2: option text\n..."
@@ -1130,7 +1337,7 @@ async def generate_answer(
                 "question_type": question_type,
                 "model": model_used,
             }
-            return result
+            return done(result)
 
         elif question_type == "solve_choice" and options:
             if has_text_field:
@@ -1165,16 +1372,16 @@ async def generate_answer(
                 screen_config=screen_config,
             )
 
-        return result
+        return done(result)
 
     except Exception as e:
-        return {
+        return done({
             "success": False,
             "error": str(e),
             "answer": "",
             "question_type": question_type,
             "model": model_used
-        }
+        })
 
 
 def parse_assessment_response(raw: str, items: list) -> list:
