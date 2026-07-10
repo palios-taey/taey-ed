@@ -210,6 +210,8 @@ def _write_user_input_needed_fallback(
     *,
     failure_kind: str = "worker_pipeline",
     rejected_bt_path: str | None = None,
+    worker_raw_response_path: str | None = None,
+    worker_raw_stdout_path: str | None = None,
 ) -> None:
     """If generation fails, write a fallback response that surfaces back to
     the Mac as user_input_needed. Step 1 of /next_action checks the
@@ -242,6 +244,10 @@ def _write_user_input_needed_fallback(
     }
     if rejected_bt_path:
         fallback["_rejected_bt_path"] = rejected_bt_path
+    if worker_raw_response_path:
+        fallback["_worker_raw_response_path"] = worker_raw_response_path
+    if worker_raw_stdout_path:
+        fallback["_worker_raw_stdout_path"] = worker_raw_stdout_path
     atomic_write_json(consult_dir / "response.json", fallback)
     if meta:
         meta["status"] = "worker_failed"
@@ -249,6 +255,10 @@ def _write_user_input_needed_fallback(
         meta["worker_failure_kind"] = failure_kind
         if rejected_bt_path:
             meta["rejected_bt_path"] = rejected_bt_path
+        if worker_raw_response_path:
+            meta["worker_raw_response_path"] = worker_raw_response_path
+        if worker_raw_stdout_path:
+            meta["worker_raw_stdout_path"] = worker_raw_stdout_path
         try:
             atomic_write_json(meta_path, meta)
         except Exception:
@@ -294,6 +304,8 @@ def _process_one(consultation_id: str) -> None:
             str(e),
             failure_kind=getattr(e, "failure_kind", "worker_pipeline"),
             rejected_bt_path=getattr(e, "rejected_bt_path", None),
+            worker_raw_response_path=getattr(e, "worker_raw_response_path", None),
+            worker_raw_stdout_path=getattr(e, "worker_raw_stdout_path", None),
         )
         return
     except Exception as e:

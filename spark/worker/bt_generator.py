@@ -41,10 +41,18 @@ class BTGenerationError(RuntimeError):
         *,
         failure_kind: str = "worker_pipeline",
         rejected_bt_path: str | None = None,
+        worker_raw_response_path: str | None = None,
+        worker_raw_stdout_path: str | None = None,
     ):
         super().__init__(message)
         self.failure_kind = failure_kind
         self.rejected_bt_path = rejected_bt_path
+        self.worker_raw_response_path = worker_raw_response_path
+        self.worker_raw_stdout_path = worker_raw_stdout_path
+
+
+WORKER_RAW_STDOUT_NAME = "worker_raw_stdout.txt"
+WORKER_RAW_RESPONSE_NAME = "worker_raw_response.json"
 
 
 def _load_consult_context(consultation_id: str) -> tuple[dict, dict]:
@@ -163,6 +171,37 @@ def _extract_json_object(text: str) -> str:
 # Kept as a back-compat alias; new code should call _extract_json_object.
 def _strip_code_fences(text: str) -> str:
     return _extract_json_object(text)
+
+
+def _persist_text_artifact(path: Path, text: str) -> str | None:
+    try:
+        path.write_text(text, encoding="utf-8")
+        return str(path)
+    except Exception:
+        logger.exception("failed to persist %s", path.name)
+        return None
+
+
+def _persist_json_artifact(path: Path, payload) -> str | None:
+    try:
+        path.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        return str(path)
+    except Exception:
+        logger.exception("failed to persist %s", path.name)
+        return None
+
+
+def _root_shape_summary(value) -> str:
+    if isinstance(value, dict):
+        keys = sorted(str(k) for k in value.keys())
+        preview = json.dumps(value, ensure_ascii=False, default=str)[:500]
+        return f"dict keys={keys} preview={preview}"
+    if isinstance(value, list):
+        return f"list len={len(value)}"
+    return type(value).__name__
 
 
 # Composite/control node types that are NOT actions — never rewrite their type.
@@ -373,7 +412,13 @@ def _normalize_bt_nodes(node) -> None:
             _normalize_bt_nodes(item)
 
 
-def _validate_bt(parsed: dict, consultation_id: str) -> None:
+def _validate_bt(
+    parsed: dict,
+    consultation_id: str,
+    *,
+    worker_raw_response_path: str | None = None,
+    worker_raw_stdout_path: str | None = None,
+) -> None:
     """Validate the parsed BT response has the required shape.
 
     Minimal schema check — the BT engine on the Mac is robust to many shapes
@@ -383,16 +428,39 @@ def _validate_bt(parsed: dict, consultation_id: str) -> None:
     for k in required:
         if k not in parsed:
             raise BTGenerationError(
-                f"BT response for {consultation_id} missing required key: {k!r}"
+                f"BT response for {consultation_id} missing required key: {k!r}",
+                failure_kind="validation_rejection",
+                worker_raw_response_path=worker_raw_response_path,
+                worker_raw_stdout_path=worker_raw_stdout_path,
             )
     if not isinstance(parsed["tree"], dict):
         raise BTGenerationError(
             f"BT response for {consultation_id}: 'tree' must be a dict, "
-            f"got {type(parsed['tree']).__name__}"
+            f"got {type(parsed['tree']).__name__}",
+            failure_kind="validation_rejection",
+            worker_raw_response_path=worker_raw_response_path,
+            worker_raw_stdout_path=worker_raw_stdout_path,
         )
     if "type" not in parsed["tree"]:
+        root = parsed["tree"]
+        if not any(k in root for k in ("action", "children", "condition")):
+            capture = (
+                f"; captured raw worker response at {worker_raw_response_path}"
+                if worker_raw_response_path
+                else ""
+            )
+            raise BTGenerationError(
+                f"BT response for {consultation_id}: tree missing 'type' field; "
+                f"typeless root has {_root_shape_summary(root)}{capture}",
+                failure_kind="validation_rejection",
+                worker_raw_response_path=worker_raw_response_path,
+                worker_raw_stdout_path=worker_raw_stdout_path,
+            )
         raise BTGenerationError(
-            f"BT response for {consultation_id}: tree missing 'type' field"
+            f"BT response for {consultation_id}: tree missing 'type' field",
+            failure_kind="validation_rejection",
+            worker_raw_response_path=worker_raw_response_path,
+            worker_raw_stdout_path=worker_raw_stdout_path,
         )
     # GLOBAL REGISTERED-HANDLER FLOOR (2026-06-15). EVERY action must be a real
     # Mac handler — regardless of artifact kind (the recipe conformance check only
@@ -411,11 +479,17 @@ def _validate_bt(parsed: dict, consultation_id: str) -> None:
             f"BT response for {consultation_id} uses unregistered action(s): "
             f"{', '.join(unregistered)} — the Mac has no such handler. The worker "
             f"must never invent actions (e.g. 'halt'/'escalate_user_assist'); a "
-            f"genuine stop is the escalation ladder, not a BT action."
+            f"genuine stop is the escalation ladder, not a BT action.",
+            failure_kind="validation_rejection",
+            worker_raw_response_path=worker_raw_response_path,
+            worker_raw_stdout_path=worker_raw_stdout_path,
         )
     if "_session" in parsed and not isinstance(parsed["_session"], dict):
         raise BTGenerationError(
-            f"BT response for {consultation_id}: '_session' must be a dict when present"
+            f"BT response for {consultation_id}: '_session' must be a dict when present",
+            failure_kind="validation_rejection",
+            worker_raw_response_path=worker_raw_response_path,
+            worker_raw_stdout_path=worker_raw_stdout_path,
         )
 
 
@@ -514,24 +588,48 @@ def generate_bt(
             f"Claude call failed for {consultation_id}: {e}"
         ) from e
 
+    worker_raw_stdout_path = None
     try:
         inner_text = _extract_json_object(raw_text)
     except ValueError as e:
+        worker_raw_stdout_path = _persist_text_artifact(
+            consult_dir / WORKER_RAW_STDOUT_NAME,
+            raw_text,
+        )
         raise BTGenerationError(
             f"BT JSON for {consultation_id} extraction failed: {e}; "
-            f"head: {raw_text[:300]}"
+            f"head: {raw_text[:300]}",
+            worker_raw_stdout_path=worker_raw_stdout_path,
         ) from e
     try:
         bt = json.loads(inner_text)
     except json.JSONDecodeError as e:
+        worker_raw_stdout_path = _persist_text_artifact(
+            consult_dir / WORKER_RAW_STDOUT_NAME,
+            raw_text,
+        )
         raise BTGenerationError(
-            f"BT JSON for {consultation_id} parse failed: {e}; head: {inner_text[:300]}"
+            f"BT JSON for {consultation_id} parse failed: {e}; head: {inner_text[:300]}",
+            worker_raw_stdout_path=worker_raw_stdout_path,
         ) from e
+
+    worker_raw_response_path = _persist_json_artifact(
+        consult_dir / WORKER_RAW_RESPONSE_NAME,
+        bt,
+    )
+
+    if isinstance(bt, dict) and isinstance(bt.get("tree"), list):
+        bt["tree"] = {"type": "sequence", "children": bt["tree"]}
 
     # Correct the store-in-params defect before validation / send (live RCA).
     _normalize_bt_nodes(bt.get("tree", bt))
 
-    _validate_bt(bt, consultation_id)
+    _validate_bt(
+        bt,
+        consultation_id,
+        worker_raw_response_path=worker_raw_response_path,
+        worker_raw_stdout_path=worker_raw_stdout_path,
+    )
     try:
         validate_worker_bt_response(bt, platform=platform, screen_type=context["screen_type"])
     except ScreenTypeAssemblerError as e:
@@ -550,6 +648,8 @@ def generate_bt(
             f"BT recipe-conformance validation failed for {consultation_id}: {e}",
             failure_kind="conformance_rejection",
             rejected_bt_path=str(rejected_bt_path),
+            worker_raw_response_path=worker_raw_response_path,
+            worker_raw_stdout_path=worker_raw_stdout_path,
         ) from e
 
     # Screen session: absorb the worker's _session contribution (facts/plan/

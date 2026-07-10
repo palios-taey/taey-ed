@@ -373,6 +373,8 @@ def build_packet(
     tree_dst = esc_dir / "tree.json"
     shot_dst = esc_dir / "screenshot.png"
     rejected_bt_dst = esc_dir / "rejected_bt.json"
+    worker_raw_response_dst = esc_dir / "worker_raw_response.json"
+    worker_raw_stdout_dst = esc_dir / "worker_raw_stdout.txt"
 
     def _try_copy(src_dir: Path):
         if (src_dir / "tree.json").exists() and not tree_dst.exists():
@@ -381,6 +383,10 @@ def build_packet(
             shutil.copy2(src_dir / "screenshot.png", shot_dst)
         if (src_dir / "rejected_bt.json").exists() and not rejected_bt_dst.exists():
             shutil.copy2(src_dir / "rejected_bt.json", rejected_bt_dst)
+        if (src_dir / "worker_raw_response.json").exists() and not worker_raw_response_dst.exists():
+            shutil.copy2(src_dir / "worker_raw_response.json", worker_raw_response_dst)
+        if (src_dir / "worker_raw_stdout.txt").exists() and not worker_raw_stdout_dst.exists():
+            shutil.copy2(src_dir / "worker_raw_stdout.txt", worker_raw_stdout_dst)
 
     _try_copy(consult_path)
     if not tree_dst.exists() or not shot_dst.exists():
@@ -389,6 +395,16 @@ def build_packet(
     rejected_bt_line = (
         f"- rejected_bt: `{rejected_bt_dst}`  (worker BT rejected by conformance)\n"
         if rejected_bt_dst.exists()
+        else ""
+    )
+    worker_raw_response_line = (
+        f"- worker_raw_response: `{worker_raw_response_dst}`  (parsed worker JSON before normalization)\n"
+        if worker_raw_response_dst.exists()
+        else ""
+    )
+    worker_raw_stdout_line = (
+        f"- worker_raw_stdout: `{worker_raw_stdout_dst}`  (raw model text before JSON extraction/parsing)\n"
+        if worker_raw_stdout_dst.exists()
         else ""
     )
 
@@ -434,6 +450,7 @@ def build_packet(
 - screenshot: `{shot_dst}`  (attach to LLM prompt)
 - tree.json: `{tree_dst}`  (full AX tree, large file — excerpt below)
 {rejected_bt_line}
+{worker_raw_response_line}{worker_raw_stdout_line}
 
 ### AX summary
 

@@ -1671,11 +1671,12 @@ def _next_action_impl(request: NextActionRequest):
                             _failed_bt = json.loads(_rbp.read_text())
                     except Exception:
                         logger.exception("failed to load rejected_bt.json for conformance escalation")
-                _escalation_reason = (
-                    f"conformance_rejection: {_wf_reason}"
-                    if _wf_kind == "conformance_rejection"
-                    else f"worker_fallback: {_wf_reason}"
-                )
+                if _wf_kind == "conformance_rejection":
+                    _escalation_reason = f"conformance_rejection: {_wf_reason}"
+                elif _wf_kind == "validation_rejection":
+                    _escalation_reason = f"validation_rejection: {_wf_reason}"
+                else:
+                    _escalation_reason = f"worker_fallback: {_wf_reason}"
                 logger.error(
                     f"Step 1: worker_fallback for {consultation_id} — "
                     f"routing through claude_diagnosing helper. "
