@@ -15,7 +15,7 @@ This project's operators run production vector-database, graph-database, and loc
 - Should **semantic screen similarity** (novel screen → "nearest mapped type" candidate ranking) use the embedding stack rather than exact feature signatures alone? (Cross-platform type transfer: a dropdown on platform #47 resembles dropdowns on platforms #1-46.)
 - Should the **L0–L3 context slices / knowledge lifecycle** live in or sync to the graph/vector layer for retrieval-grade access (a sibling system already runs a Type-2 SCD property graph in production)?
 - Should **qa_captures / extracted course content** flow into the RAG layer (they are embeddings-bound anyway via the user's local KB)?
-- Or is the right shape SQLite-for-state + explicit sync jobs into Weaviate/Neo4j for the semantic/analytic layers? Hybrid answers are welcome; "SQLite alone forever" and "one giant JSON" both need justification against the record above.
+- Or is the right shape SQLite-for-state + explicit sync jobs into the vector/graph layers for semantic/analytic access? Hybrid answers are welcome; "SQLite alone forever" and "one giant JSON" both need justification against the record above.
 Constraint that stands regardless: the **user's KB (content+vectors) never leaves their Mac** (sqlite+faiss local; wire contract fixed).
 
 ## 4. The hard constraints (non-negotiable, from production)
