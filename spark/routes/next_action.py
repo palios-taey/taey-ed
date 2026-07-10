@@ -601,10 +601,12 @@ def _persist_validated_directive(platform: str, lr, vr: dict) -> bool:
     skel_hash = getattr(lr, "directive_skeleton_hash", None) or issued.get("skeleton_hash") or ""
     screen = _canonical_screen_type(platform, getattr(lr, "screen", None) or issued.get("screen") or "UNKNOWN")
     expected_next = issued.get("expected_next") or getattr(lr, "directive_expected_next", None) or []
-    # Learning bootstrap: an observed advance (no prior expected-next data)
-    # seeds the stored entry with the transition that actually happened, so
-    # the entry validates strictly from its next encounter onward.
-    if not expected_next and vr.get("observed_advance") and vr.get("new_screen"):
+    # Learning bootstrap: an observed advance seeds the stored entry with the
+    # transition that ACTUALLY happened, so the entry validates strictly from
+    # its next encounter onward. Observed truth overrides any worker guess —
+    # persisting a wrong speculative list would make the next strict gate
+    # permanently fail (live RCA 2026-07-10 21:04).
+    if vr.get("observed_advance") and vr.get("new_screen"):
         expected_next = [vr["new_screen"]]
     behavior_tree = issued.get("tree")
     if not skel_hash or screen == "UNKNOWN":
@@ -1204,14 +1206,32 @@ def _validate_last_action(platform: str, lr, current_tree: dict) -> dict:
             )
 
     issued = _issued_directive_for(lr) or {}
+    # GATING source is LEARNED knowledge only (live RCA 2026-07-10 21:04: the
+    # first-ever validated dropdown was DENIED persistence because the WORKER'S
+    # speculative expected_next guess didn't include the actual next screen —
+    # a guess must seed learning, never veto it). The stored entry's earned
+    # expected_next (seeded by prior observed advances) gates strictly; the
+    # worker/directive guess is only a fallback hint when nothing is learned,
+    # and a wrong hint downgrades to the observed-advance path rather than
+    # blocking the write that learning depends on.
+    from spark.tasks.variant_cache import lookup_variant_bt as _lvb
+    learned_entry = _lvb(platform, _canonical_screen_type(platform, lr.screen or "", None)) if lr.screen else None
+    learned_next = (learned_entry or {}).get("expected_next") or []
+    guess_next = lr.directive_expected_next or issued.get("expected_next") or []
     expected_next = _canonical_expected_next(
         platform,
-        lr.directive_expected_next or issued.get("expected_next") or [],
+        learned_next or guess_next,
         after_tree_to_match,
     )
+    gating_is_learned = bool(learned_next)
     expected_match = None
     if expected_next and new_screen:
         expected_match = new_screen in expected_next
+        if expected_match is False and not gating_is_learned:
+            # A wrong worker guess is not evidence against the advance —
+            # treat as no-data so observed_advance can carry the persist.
+            expected_match = None
+            expected_next = []
 
     validated = tree_changed and not wrong_answer and not not_advanced
     # R9.10 learning bootstrap (2026-07-10, persist-starvation fix): NO source
