@@ -1253,7 +1253,7 @@ def session_reset(platform: str = "khan_academy"):
     # reset screen resumes at its stale tier (e.g. Tier 3 -> terminal) instead
     # of fresh. This is a LEGITIMATE clear (user-Stop is one of the two allowed
     # resets); the Operator correctly refused to clear it by hand and handed up.
-    cleared["escalation_state"] = _es.clear_platform(platform, reason="user-Stop session reset")
+    cleared["escalation_state"] = _es.clear_platform(platform, reason="session_reset")
 
     logger.warning(
         f"SESSION RESET for {platform}: cleared "
