@@ -21,6 +21,38 @@ CLASSIFY_DIR = Path("/tmp/taey-ed-classify")
 PENDING_TTL_SECONDS = 600
 
 
+def _state_evidence(source: str, **extra) -> dict:
+    return {"source": f"classification_request.{source}", **extra}
+
+
+def _state_repo():
+    from spark.state_repo import get_state_repo
+    return get_state_repo()
+
+
+def _mirror_classification_job(
+    *,
+    platform: str,
+    skel_hash: str,
+    classification_id: str,
+    status: str,
+    source: str,
+    result: dict | None = None,
+) -> None:
+    try:
+        _state_repo().record_classification_job(
+            platform=platform,
+            skel_hash=skel_hash,
+            classification_id=classification_id,
+            status=status,
+            result=result,
+            actor="api",
+            evidence=_state_evidence(source),
+        )
+    except Exception:
+        logger.exception("state-store dual-write failed: classification_request.%s", source)
+
+
 def _job_dir(platform: str, skel_hash: str) -> Path:
     return CLASSIFY_DIR / platform / f"classify_{skel_hash}"
 
@@ -98,6 +130,14 @@ def request_classification(
             existing_meta["status"] = "stale_requeue"
             try:
                 atomic_write_json(meta_path, existing_meta)
+                _mirror_classification_job(
+                    platform=platform,
+                    skel_hash=skel_hash,
+                    classification_id=job_dir.name,
+                    status="stale_requeue",
+                    source="stale_requeue",
+                    result=response,
+                )
             except Exception:
                 logger.exception("classification_request: failed to bump retry meta")
             # fall through to re-queue a fresh pending job below
@@ -116,6 +156,13 @@ def request_classification(
             if _pending_job_is_fresh(existing_meta):
                 existing_meta["updated_at_epoch"] = time.time()
                 atomic_write_json(meta_path, existing_meta)
+                _mirror_classification_job(
+                    platform=platform,
+                    skel_hash=skel_hash,
+                    classification_id=job_dir.name,
+                    status="pending",
+                    source="pending_touch",
+                )
                 return {
                     "classification_id": job_dir.name,
                     "status": "pending",
@@ -157,6 +204,13 @@ def request_classification(
         "failed_classify_retries": existing_meta.get("failed_classify_retries", 0),
     }
     atomic_write_json(meta_path, metadata)
+    _mirror_classification_job(
+        platform=platform,
+        skel_hash=skel_hash,
+        classification_id=job_dir.name,
+        status="pending",
+        source="request_classification",
+    )
 
     logger.info(
         "classification_request: queued %s for %s/%s",

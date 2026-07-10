@@ -19,6 +19,27 @@ logger = logging.getLogger(__name__)
 CONSULT_DIR = Path("/tmp/taey-ed-consult")
 
 
+def _state_evidence(source: str, **extra) -> dict:
+    return {"source": f"consultation_respond.{source}", **extra}
+
+
+def _state_repo():
+    from spark.state_repo import get_state_repo
+    return get_state_repo()
+
+
+def _mirror_complete(consultation_id: str, source: str) -> None:
+    try:
+        _state_repo().resolve_consult(
+            consult_id=consultation_id,
+            status="complete",
+            actor="operator",
+            evidence=_state_evidence(source),
+        )
+    except Exception:
+        logger.exception("state-store dual-write failed: consultation_respond.%s", source)
+
+
 def respond_to_consultation(
     consultation_id: str,
     screen_type: str,
@@ -73,6 +94,7 @@ def respond_to_consultation(
             meta["status"] = "complete"
             meta["responded_at"] = response["responded_at"]
             atomic_write_json(meta_file, meta)
+            _mirror_complete(consultation_id, "respond_to_consultation")
         except Exception as e:
             logger.warning(f"Failed to update metadata status (non-fatal): {e}")
 

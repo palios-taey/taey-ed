@@ -19,6 +19,30 @@ logger = logging.getLogger(__name__)
 CONSULT_DIR = Path("/tmp/taey-ed-consult")
 
 
+def _state_evidence(source: str, **extra) -> dict:
+    return {"source": f"consultation_escalate.{source}", **extra}
+
+
+def _state_repo():
+    from spark.state_repo import get_state_repo
+    return get_state_repo()
+
+
+def _mirror_escalation(consultation_id: str, metadata: dict, reason: str, next_level: str) -> None:
+    try:
+        _state_repo().record_consult_status_event(
+            consult_id=consultation_id,
+            platform=metadata.get("platform", "unknown"),
+            screen_hash=metadata.get("screen_hash"),
+            status=f"escalated_{next_level}",
+            actor="operator",
+            evidence=_state_evidence("escalate_consultation"),
+            payload={"reason": reason},
+        )
+    except Exception:
+        logger.exception("state-store dual-write failed: consultation_escalate.escalate_consultation")
+
+
 def escalate_consultation(consultation_id: str, reason: str) -> dict:
     """
     Escalate consultation to next level.
@@ -51,6 +75,7 @@ def escalate_consultation(consultation_id: str, reason: str) -> dict:
         metadata["spark_attempts"] = state.spark_attempts
         metadata["escalation_reason"] = reason
         atomic_write_json(metadata_file, metadata)
+        _mirror_escalation(consultation_id, metadata, reason, next_level)
 
     if next_level == "perplexity":
         state.perplexity_attempted = True

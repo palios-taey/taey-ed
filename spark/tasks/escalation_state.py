@@ -18,12 +18,23 @@ the count that decides the tier comes from here.
 """
 
 import json
+import logging
 import time
 from pathlib import Path
 
 from spark.tasks.paths import DATA_DIR
 
 _DIR = DATA_DIR / "escalation_state"
+logger = logging.getLogger(__name__)
+
+
+def _state_evidence(source: str, **extra) -> dict:
+    return {"source": f"escalation_state.{source}", **extra}
+
+
+def _state_repo():
+    from spark.state_repo import get_state_repo
+    return get_state_repo()
 
 
 def _path(platform: str, screen_hash: str) -> Path:
@@ -68,6 +79,16 @@ def note_attempt(platform: str, screen_hash: str, consult_id: str) -> int:
     s["last_failed_consult"] = consult_id or ""
     s["updated_at"] = time.time()
     _path(platform, screen_hash).write_text(json.dumps(s))
+    try:
+        _state_repo().record_escalation_attempt(
+            platform=platform,
+            screen_hash=screen_hash,
+            consult_id=consult_id or "",
+            actor="api",
+            evidence=_state_evidence("note_attempt", consult_id=consult_id or ""),
+        )
+    except Exception:
+        logger.exception("state-store dual-write failed: escalation_state.note_attempt")
     return s["attempt"]
 
 
@@ -78,6 +99,15 @@ def set_terminal(platform: str, screen_hash: str) -> None:
     s["terminal"] = True
     s["updated_at"] = time.time()
     _path(platform, screen_hash).write_text(json.dumps(s))
+    try:
+        _state_repo().mark_terminal(
+            platform=platform,
+            screen_hash=screen_hash,
+            actor="api",
+            evidence=_state_evidence("set_terminal"),
+        )
+    except Exception:
+        logger.exception("state-store dual-write failed: escalation_state.set_terminal")
 
 
 def clear(platform: str, screen_hash: str, reason: str) -> None:
@@ -85,6 +115,16 @@ def clear(platform: str, screen_hash: str, reason: str) -> None:
     user-Stop (abandon) or genuine screen-advance. `reason` is logged."""
     import logging
     _path(platform, screen_hash).unlink(missing_ok=True)
+    try:
+        _state_repo().clear_ladder(
+            platform=platform,
+            screen_hash=screen_hash,
+            reason=reason,
+            actor="api",
+            evidence=_state_evidence("clear", reason=reason),
+        )
+    except Exception:
+        logger.exception("state-store dual-write failed: escalation_state.clear")
     logging.getLogger("taey-ed").info(
         f"escalation_state: cleared {platform}_{screen_hash[:16]} (reason={reason})"
     )
@@ -101,6 +141,15 @@ def clear_platform(platform: str, reason: str) -> int:
         for f in _DIR.glob(f"{platform}_*.json"):
             f.unlink(missing_ok=True)
             cleared += 1
+    try:
+        _state_repo().clear_platform_ladders(
+            platform=platform,
+            reason=reason,
+            actor="api",
+            evidence=_state_evidence("clear_platform", reason=reason),
+        )
+    except Exception:
+        logger.exception("state-store dual-write failed: escalation_state.clear_platform")
     logging.getLogger("taey-ed").info(
         f"escalation_state: cleared ALL {cleared} entries for {platform} (reason={reason})"
     )

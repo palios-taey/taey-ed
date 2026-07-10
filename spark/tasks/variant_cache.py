@@ -23,6 +23,59 @@ from .paths import HASH_INDEX_DIR, VARIANT_BTS_DIR
 logger = logging.getLogger("taey-ed")
 
 
+def _state_evidence(source: str, **extra) -> dict:
+    return {"source": f"variant_cache.{source}", **extra}
+
+
+def _state_repo():
+    from spark.state_repo import get_state_repo
+    return get_state_repo()
+
+
+def _mirror_hash_mapping(platform: str, skel_hash: str, variant: str, source: str, validated: bool = False) -> None:
+    if not variant:
+        return
+    try:
+        _state_repo().mirror_hash_mapping(
+            platform=platform,
+            skel_hash=skel_hash,
+            screen_type=variant,
+            actor="api",
+            evidence=_state_evidence(source, skel_hash=skel_hash),
+            validated=validated,
+        )
+    except Exception:
+        logger.exception("state-store dual-write failed: variant_cache.%s", source)
+
+
+def _mirror_screen_type_promotion(platform: str, variant: str, source: str) -> None:
+    if not variant:
+        return
+    try:
+        _state_repo().promote_screen_type(
+            platform=platform,
+            screen_type=variant,
+            actor="api",
+            evidence=_state_evidence(source),
+        )
+    except Exception:
+        logger.exception("state-store dual-write failed: variant_cache.%s", source)
+
+
+def _mirror_screen_type_demotion(platform: str, variant: str, source: str) -> None:
+    if not variant:
+        return
+    try:
+        _state_repo().demote_screen_type(
+            platform=platform,
+            screen_type=variant,
+            actor="api",
+            evidence=_state_evidence(source),
+        )
+    except Exception:
+        logger.exception("state-store dual-write failed: variant_cache.%s", source)
+
+
 def _atomic_write(path: Path, data: dict):
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
@@ -81,6 +134,7 @@ def mark_variant_validated(platform: str, variant: str):
     entry["consecutive_failures"] = 0
     entry["last_success"] = datetime.now(timezone.utc).isoformat()
     _atomic_write(_variant_path(platform), data)
+    _mirror_screen_type_promotion(platform, variant, "mark_variant_validated")
     logger.info(f"variant_cache: validated {variant} (count={entry['success_count']})")
 
 
@@ -93,6 +147,7 @@ def invalidate_variant_bt(platform: str, variant: str):
     entry["validated"] = False
     entry["source"] = None
     _atomic_write(_variant_path(platform), data)
+    _mirror_screen_type_demotion(platform, variant, "invalidate_variant_bt")
     logger.info(f"variant_cache: invalidated BT for {variant}")
 
 
@@ -141,6 +196,7 @@ def register_hash(platform: str, skel_hash: str, variant: str):
         "last_seen": now,
     }
     _atomic_write(_hash_index_path(platform), data)
+    _mirror_hash_mapping(platform, skel_hash, variant, "register_hash")
     logger.info(f"variant_cache: registered hash {skel_hash[:12]} → {variant}")
 
 
@@ -150,6 +206,17 @@ def delete_hash(platform: str, skel_hash: str):
         variant = data["hashes"][skel_hash].get("variant", "?")
         del data["hashes"][skel_hash]
         _atomic_write(_hash_index_path(platform), data)
+        try:
+            _state_repo().record_cache_delete(
+                platform=platform,
+                key_kind="skeleton",
+                key_hash=skel_hash,
+                screen_type=variant,
+                actor="api",
+                evidence=_state_evidence("delete_hash"),
+            )
+        except Exception:
+            logger.exception("state-store dual-write failed: variant_cache.delete_hash")
         logger.info(f"variant_cache: deleted hash {skel_hash[:12]} (was {variant})")
 
 
@@ -161,6 +228,13 @@ def mark_hash_validated(platform: str, skel_hash: str):
         entry["consecutive_failures"] = 0
         entry["last_seen"] = datetime.now(timezone.utc).isoformat()
         _atomic_write(_hash_index_path(platform), data)
+        _mirror_hash_mapping(
+            platform,
+            skel_hash,
+            entry.get("variant", ""),
+            "mark_hash_validated",
+            validated=True,
+        )
 
 
 def record_validated_map_failure(platform: str, skel_hash: str, variant: str = None) -> bool:
@@ -188,6 +262,7 @@ def record_validated_map_failure(platform: str, skel_hash: str, variant: str = N
             ventry["validated"] = False
             ventry["consecutive_failures"] = 0
             _atomic_write(_variant_path(platform), vdata)
+            _mirror_screen_type_demotion(platform, variant, "record_validated_map_failure")
 
     logger.warning(
         f"variant_cache: DEMOTED {variant or skel_hash[:12]} after {fails} consecutive failures"

@@ -64,6 +64,60 @@ STRUCTURAL_PRESENCE_ROLES = {
 }
 
 
+def _state_evidence(source: str, **extra) -> dict:
+    return {"source": f"screen_signatures.{source}", **extra}
+
+
+def _state_repo():
+    from spark.state_repo import get_state_repo
+    return get_state_repo()
+
+
+def _mirror_platform(platform: str, data: dict, source: str) -> None:
+    try:
+        repo = _state_repo()
+        for sig_hash, screen in data.get("screens", {}).items():
+            repo.mirror_signature(
+                platform=platform,
+                sig_hash=sig_hash,
+                screen_type=screen.get("screen_type", "UNKNOWN"),
+                signature=screen.get("signature") or [],
+                behavior_tree=screen.get("behavior_tree"),
+                extract=screen.get("extract"),
+                validated=bool(screen.get("validated", False)),
+                actor="system",
+                evidence=_state_evidence(source, sig_hash=sig_hash),
+            )
+    except Exception:
+        logger.exception("state-store dual-write failed: screen_signatures.%s", source)
+
+
+def _mirror_screen_deleted(platform: str, sig_hash: str, screen_type: str) -> None:
+    try:
+        _state_repo().record_cache_delete(
+            platform=platform,
+            key_kind="signature",
+            key_hash=sig_hash,
+            screen_type=screen_type,
+            actor="operator",
+            evidence=_state_evidence("delete_screen"),
+        )
+    except Exception:
+        logger.exception("state-store dual-write failed: screen_signatures.delete_screen")
+
+
+def _mirror_screen_type_demotion(platform: str, screen_type: str, sig_hash: str) -> None:
+    try:
+        _state_repo().demote_screen_type(
+            platform=platform,
+            screen_type=screen_type,
+            actor="system",
+            evidence=_state_evidence("knowledge_invalidation", sig_hash=sig_hash),
+        )
+    except Exception:
+        logger.exception("state-store dual-write failed: screen_signatures.knowledge_invalidation")
+
+
 def extract_signature(tree: dict) -> frozenset:
     """Walk tree, extract (role, text) pairs for discriminative matching.
 
@@ -131,6 +185,7 @@ def _save_platform(platform: str, data: dict):
     path = SIGNATURES_DIR / f"{platform}.json"
     from spark.tasks.atomic_write import atomic_write_json
     atomic_write_json(path, data)
+    _mirror_platform(platform, data, "_save_platform")
 
 
 def _recompute_common(data: dict) -> list:
@@ -233,6 +288,7 @@ def _check_knowledge_invalidation(platform: str, screen: dict, sig_hash: str,
         screen["behavior_tree"] = None
         screen["knowledge_version"] = None
         _save_platform(platform, data)
+        _mirror_screen_type_demotion(platform, screen.get("screen_type", "UNKNOWN"), sig_hash)
         return True
 
     return False
@@ -369,6 +425,7 @@ def delete_screen(platform: str, sig_hash: str):
     del data["screens"][sig_hash]
     data["common"] = _recompute_common(data)
     _save_platform(platform, data)
+    _mirror_screen_deleted(platform, sig_hash, screen.get("screen_type", "UNKNOWN"))
     logger.info(f"delete_screen: removed {sig_hash}")
 
 

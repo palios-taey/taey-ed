@@ -153,8 +153,22 @@ class StateRepo:
                     screen_id=screen_id,
                     bundle=bundle,
                 )
-            revision = self._next_bt_revision(conn, screen_id)
             body = self._json(bt_json)
+            existing = conn.execute(
+                "SELECT bt_id FROM behavior_trees WHERE screen_id=? AND bt_json=?",
+                (screen_id, body),
+            ).fetchone()
+            if existing:
+                self._record_event(
+                    conn,
+                    kind="bt_seen",
+                    actor=actor,
+                    platform=platform,
+                    screen_id=screen_id,
+                    payload={"bt_id": existing["bt_id"], "source_kind": source_kind, "evidence": evidence},
+                )
+                return existing["bt_id"]
+            revision = self._next_bt_revision(conn, screen_id)
             bt_id = self._stable_id("bt", screen_id, revision, body)
             conn.execute(
                 """
@@ -275,6 +289,151 @@ class StateRepo:
                 evidence={**evidence, "validated": True},
             )
         return screen_id
+
+    def record_cache_delete(
+        self,
+        *,
+        platform: str,
+        key_kind: str,
+        key_hash: str,
+        actor: str,
+        evidence: dict[str, Any],
+        screen_type: str | None = None,
+    ) -> None:
+        self._require_actor(actor, {"api", "operator", "system"}, "cache_delete")
+        self._require_evidence(evidence, "source")
+        with immediate_transaction(self.db_path) as conn:
+            screen_id, _ = self._resolve_or_mint(conn, platform, key_kind, key_hash, None)
+            self._record_event(
+                conn,
+                kind="cache_delete",
+                actor=actor,
+                platform=platform,
+                screen_id=screen_id,
+                payload={
+                    "key_kind": key_kind,
+                    "key_hash": key_hash,
+                    "screen_type": screen_type,
+                    "evidence": evidence,
+                },
+            )
+
+    def record_session_update(
+        self,
+        *,
+        platform: str,
+        skel_hash: str,
+        update_kind: str,
+        actor: str,
+        evidence: dict[str, Any],
+        payload: dict[str, Any],
+    ) -> None:
+        self._require_actor(actor, {"api", "worker", "mac", "system"}, "session_update")
+        self._require_evidence(evidence, "source")
+        with immediate_transaction(self.db_path) as conn:
+            screen_id, _ = self._resolve_or_mint(conn, platform, "skeleton", skel_hash, None)
+            self._record_event(
+                conn,
+                kind=f"screen_session_{update_kind}",
+                actor=actor,
+                platform=platform,
+                screen_id=screen_id,
+                payload={**payload, "evidence": evidence},
+            )
+
+    def record_classification_job(
+        self,
+        *,
+        platform: str,
+        skel_hash: str,
+        status: str,
+        actor: str,
+        evidence: dict[str, Any],
+        classification_id: str,
+        result: dict[str, Any] | None = None,
+    ) -> None:
+        self._require_actor(actor, {"api", "worker", "system"}, "classification_job")
+        self._require_evidence(evidence, "source")
+        with immediate_transaction(self.db_path) as conn:
+            screen_id, _ = self._resolve_or_mint(conn, platform, "skeleton", skel_hash, None)
+            if result is not None:
+                screen_type = result.get("screen_type")
+                success = (
+                    bool(result.get("success", True))
+                    and bool(screen_type)
+                    and str(screen_type).upper() != "UNKNOWN"
+                )
+                if success:
+                    self._ensure_screen_type(conn, platform, screen_type)
+                    bundle_id = self._ensure_bundle_receipt(
+                        conn,
+                        call_kind="classify",
+                        screen_id=screen_id,
+                        bundle={"classification_id": classification_id, "result": result},
+                    )
+                    conn.execute(
+                        """
+                        UPDATE screens
+                           SET screen_type=?,
+                               classification='classified',
+                               classified_by_bundle_id=?,
+                               last_seen=?
+                         WHERE screen_id=?
+                        """,
+                        (screen_type, bundle_id, now_ms(), screen_id),
+                    )
+                else:
+                    conn.execute(
+                        """
+                        UPDATE screens
+                           SET classification='operator_required',
+                               screen_type=NULL,
+                               classified_by_bundle_id=NULL,
+                               last_seen=?
+                         WHERE screen_id=?
+                        """,
+                        (now_ms(), screen_id),
+                    )
+            self._record_event(
+                conn,
+                kind="classification_job",
+                actor=actor,
+                platform=platform,
+                screen_id=screen_id,
+                payload={
+                    "classification_id": classification_id,
+                    "status": status,
+                    "result": result,
+                    "evidence": evidence,
+                },
+            )
+
+    def record_consult_status_event(
+        self,
+        *,
+        consult_id: str,
+        platform: str,
+        status: str,
+        actor: str,
+        evidence: dict[str, Any],
+        screen_hash: str | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        self._require_actor(actor, {"api", "worker", "operator", "system"}, "consult_status")
+        self._require_evidence(evidence, "source")
+        with immediate_transaction(self.db_path) as conn:
+            screen_id = None
+            if screen_hash:
+                screen_id, _ = self._resolve_or_mint(conn, platform, "skeleton", screen_hash, None)
+            self._record_event(
+                conn,
+                kind="consult_status",
+                actor=actor,
+                platform=platform,
+                screen_id=screen_id,
+                consult_id=consult_id,
+                payload={"status": status, **(payload or {}), "evidence": evidence},
+            )
 
     def mirror_signature(
         self,
@@ -406,9 +565,20 @@ class StateRepo:
             screen_id, _ = self._resolve_or_mint(conn, platform, "skeleton", screen_hash, None)
             self._ensure_coordination(conn, screen_id, platform)
             row = conn.execute(
-                "SELECT attempt_count,last_attempt_key FROM coordination WHERE screen_id=?",
+                "SELECT attempt_count,last_attempt_key,terminal FROM coordination WHERE screen_id=?",
                 (screen_id,),
             ).fetchone()
+            if int(row["terminal"]) == 1:
+                self._record_event(
+                    conn,
+                    kind="escalation_attempt_ignored",
+                    actor=actor,
+                    platform=platform,
+                    screen_id=screen_id,
+                    consult_id=consult_id or None,
+                    payload={"reason": "terminal", "evidence": evidence},
+                )
+                return int(row["attempt_count"])
             if consult_id and row["last_attempt_key"] == consult_id:
                 return int(row["attempt_count"])
             next_attempt = min(int(row["attempt_count"]) + 1, 4)

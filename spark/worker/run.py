@@ -31,5 +31,8 @@ logging.basicConfig(level=logging.INFO, handlers=[_fh, _ch])
 
 
 if __name__ == "__main__":
+    from spark.state_db import init_state_db
     from spark.worker.consultation_worker import run_forever
+
+    init_state_db()
     run_forever()

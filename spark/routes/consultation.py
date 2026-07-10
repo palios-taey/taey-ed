@@ -27,6 +27,28 @@ CONSULT_DIR = Path("/tmp/taey-ed-consult")
 router = APIRouter(prefix="/api/v1")
 
 
+def _state_evidence(source: str, **extra) -> dict:
+    return {"source": f"routes.consultation.{source}", **extra}
+
+
+def _state_repo():
+    from spark.state_repo import get_state_repo
+    return get_state_repo()
+
+
+def _mirror_abandoned(consultation_id: str) -> None:
+    try:
+        _state_repo().resolve_consult(
+            consult_id=consultation_id,
+            status="abandoned",
+            actor="api",
+            evidence=_state_evidence("abandon_consultation"),
+            abandon_reason="mac_stop",
+        )
+    except Exception:
+        logger.exception("state-store dual-write failed: routes.consultation.abandon_consultation")
+
+
 @router.post("/consult")
 def submit_consultation(request: ConsultRequest):
     """Submit consultation for unknown screen."""
@@ -124,6 +146,7 @@ def abandon_consultation(consultation_id: str):
     meta["status"] = "abandoned"
     meta["abandoned_at"] = datetime.now().isoformat()
     atomic_write_json(meta_file, meta)
+    _mirror_abandoned(consultation_id)
 
     # user-Stop is one of the two legitimate escalation resets (Jesse 2026-06-14):
     # abandon = the user stopped, so clear this screen's escalation counter +

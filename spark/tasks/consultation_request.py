@@ -48,6 +48,58 @@ PENDING_TTL_SECONDS = 600
 # If one is pending, every code path returns it instead of creating another.
 
 
+def _state_evidence(source: str, **extra) -> dict:
+    return {"source": f"consultation_request.{source}", **extra}
+
+
+def _state_repo():
+    from spark.state_repo import get_state_repo
+    return get_state_repo()
+
+
+def _mirror_open_consult(metadata: dict, consult_path: Path, source: str) -> None:
+    try:
+        _state_repo().open_consult(
+            consult_id=metadata["consultation_id"],
+            platform=metadata["platform"],
+            screen_hash=metadata.get("screen_hash"),
+            payload_dir=str(consult_path),
+            actor="api",
+            evidence=_state_evidence(source),
+        )
+    except Exception:
+        logger.exception("state-store dual-write failed: consultation_request.%s", source)
+
+
+def _mirror_resolve_consult(metadata: dict, status: str, source: str, reason: str | None = None) -> None:
+    try:
+        _state_repo().resolve_consult(
+            consult_id=metadata["consultation_id"],
+            status=status,
+            actor="api",
+            evidence=_state_evidence(source),
+            abandon_reason=reason if status == "abandoned" else None,
+            failure_reason=reason if status == "worker_failed" else None,
+        )
+    except Exception:
+        logger.exception("state-store dual-write failed: consultation_request.%s", source)
+
+
+def _mirror_consult_status(metadata: dict, status: str, source: str, payload: dict | None = None) -> None:
+    try:
+        _state_repo().record_consult_status_event(
+            consult_id=metadata["consultation_id"],
+            platform=metadata["platform"],
+            screen_hash=metadata.get("screen_hash"),
+            status=status,
+            actor="api",
+            evidence=_state_evidence(source),
+            payload=payload,
+        )
+    except Exception:
+        logger.exception("state-store dual-write failed: consultation_request.%s", source)
+
+
 def _require_worker_mode() -> None:
     if not use_worker_enabled():
         raise RuntimeError(
@@ -79,6 +131,7 @@ def _pending_consult_is_blocking(meta: dict, consult_path: Path) -> bool:
     meta["abandoned_reason"] = f"ttl_expired age={int(age)}s"
     try:
         atomic_write_json(consult_path / "metadata.json", meta)
+        _mirror_resolve_consult(meta, "abandoned", "ttl_auto_abandon", meta.get("abandoned_reason"))
         logger.warning(
             f"Auto-abandoned stale pending consult "
             f"{meta.get('consultation_id', consult_path.name)} (age={int(age)}s)"
@@ -223,6 +276,7 @@ def request_consultation(
         "relevant_kb_chunks": kb_payload,
     }
     atomic_write_json(consult_path / "metadata.json", metadata)
+    _mirror_open_consult(metadata, consult_path, "request_consultation")
 
     # Track state
     set_consultation_state(consultation_id, ConsultationState(
@@ -279,6 +333,12 @@ def request_consultation(
             metadata["escalation_level"] = "user"
             metadata["status"] = "user_required"
             atomic_write_json(consult_path / "metadata.json", metadata)
+            _mirror_consult_status(
+                metadata,
+                "user_required",
+                "gave_up_user_required",
+                {"reason": "gave_up_flag"},
+            )
             notify_spark_claude(
                 f"ESCALATION TO USER: Consultation {consultation_id} for {platform} "
                 f"— claude gave up after diagnosis attempts. User input required."
@@ -326,6 +386,12 @@ def request_consultation(
             metadata["escalation_level"] = "terminal"
             metadata["status"] = "user_required"
             atomic_write_json(consult_path / "metadata.json", metadata)
+            _mirror_consult_status(
+                metadata,
+                "user_required",
+                "terminal_user_required",
+                {"retry_count": retry_count},
+            )
             notify_spark_claude(
                 f"TERMINAL ESCALATION — {platform} screen_hash {screen_hash[:16]} "
                 f"marked unsolvable after ladder exhaustion. "
@@ -357,6 +423,12 @@ def request_consultation(
             metadata["escalation_level"] = "spark_claude"
             metadata["claude_diagnosis_cycles"] = retry_count + 1
             atomic_write_json(consult_path / "metadata.json", metadata)
+            _mirror_consult_status(
+                metadata,
+                "pending",
+                "diagnosis_cycle_complete",
+                {"retry_count": retry_count + 1},
+            )
             # Fall through to normal worker dispatch below
 
         else:
@@ -423,6 +495,12 @@ def request_consultation(
             metadata["status"] = "claude_diagnosing"
             metadata["escalation_level"] = f"diagnosing_{tier}"
             atomic_write_json(consult_path / "metadata.json", metadata)
+            _mirror_consult_status(
+                metadata,
+                "claude_diagnosing",
+                "diagnosing",
+                {"tier": tier, "retry_count": retry_count},
+            )
             return {
                 "consultation_id": consultation_id,
                 "status": "claude_diagnosing",
@@ -526,6 +604,7 @@ def request_minimal_consultation(
         "relevant_kb_chunks": kb_payload,
     }
     atomic_write_json(consult_path / "metadata.json", metadata)
+    _mirror_open_consult(metadata, consult_path, "request_minimal_consultation")
 
     set_consultation_state(consultation_id, ConsultationState(
         consultation_id=consultation_id,

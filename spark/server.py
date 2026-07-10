@@ -267,7 +267,9 @@ async def _dump_raw_failure_bodies(request: Request, call_next):
 # ── DB Initialization ──
 
 from spark.db import init_db
+from spark.state_db import init_state_db
 init_db()
+init_state_db()
 
 
 # ── Route Registration ──

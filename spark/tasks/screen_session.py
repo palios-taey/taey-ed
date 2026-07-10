@@ -40,6 +40,40 @@ _MAX_LIVE_LESSONS = 6
 _SESSION_RENDER_CHAR_BUDGET = 9_000
 
 
+def _state_evidence(source: str, **extra) -> dict:
+    return {"source": f"screen_session.{source}", **extra}
+
+
+def _state_repo():
+    from spark.state_repo import get_state_repo
+    return get_state_repo()
+
+
+def _state_actor(author: str) -> str:
+    return "worker" if author == "worker" else "mac"
+
+
+def _mirror_session_update(
+    platform: str,
+    skel_hash: str,
+    update_kind: str,
+    author: str,
+    payload: dict,
+    source: str,
+) -> None:
+    try:
+        _state_repo().record_session_update(
+            platform=platform,
+            skel_hash=skel_hash,
+            update_kind=update_kind,
+            actor=_state_actor(author),
+            evidence=_state_evidence(source),
+            payload=payload,
+        )
+    except Exception:
+        logger.exception("state-store dual-write failed: screen_session.%s", source)
+
+
 def _path(platform: str, skel_hash: str) -> Path:
     d = _BASE / platform
     d.mkdir(parents=True, exist_ok=True)
@@ -237,6 +271,18 @@ def record_attempt(platform: str, skel_hash: str, *,
     })
     _roll_live_window(platform, skel_hash, data)
     _save(platform, skel_hash, data)
+    _mirror_session_update(
+        platform,
+        skel_hash,
+        "attempt",
+        author_name,
+        {
+            "bt_actions": bt_actions or [],
+            "outcome": outcome,
+            "detail": detail,
+        },
+        "record_attempt",
+    )
 
 
 def record_fact(platform: str, skel_hash: str, key: str, value, *, author: str) -> None:
@@ -245,6 +291,14 @@ def record_fact(platform: str, skel_hash: str, key: str, value, *, author: str) 
     data = _load(platform, skel_hash)
     data["facts"][key] = {"value": value, "at": _now(), "author": author_name}
     _save(platform, skel_hash, data)
+    _mirror_session_update(
+        platform,
+        skel_hash,
+        "fact",
+        author_name,
+        {"key": key, "value": value},
+        "record_fact",
+    )
 
 
 def set_plan(platform: str, skel_hash: str, plan, *, author: str) -> None:
@@ -254,6 +308,14 @@ def set_plan(platform: str, skel_hash: str, plan, *, author: str) -> None:
     data = _load(platform, skel_hash)
     data["plan"] = {"value": plan, "at": _now(), "author": author_name}
     _save(platform, skel_hash, data)
+    _mirror_session_update(
+        platform,
+        skel_hash,
+        "plan",
+        author_name,
+        {"plan": plan},
+        "set_plan",
+    )
 
 
 def add_lesson(platform: str, skel_hash: str, lesson: str, *, author: str) -> None:
@@ -262,6 +324,14 @@ def add_lesson(platform: str, skel_hash: str, lesson: str, *, author: str) -> No
     data["lessons"].append({"at": _now(), "lesson": lesson, "author": author_name})
     _roll_live_window(platform, skel_hash, data)
     _save(platform, skel_hash, data)
+    _mirror_session_update(
+        platform,
+        skel_hash,
+        "lesson",
+        author_name,
+        {"lesson": lesson},
+        "add_lesson",
+    )
 
 
 def archive(platform: str, skel_hash: str, reason: str = "advanced") -> None:
@@ -281,6 +351,14 @@ def archive(platform: str, skel_hash: str, reason: str = "advanced") -> None:
             },
         )
         p.unlink()
+        _mirror_session_update(
+            platform,
+            skel_hash,
+            "archive",
+            "machine",
+            {"reason": reason},
+            "archive",
+        )
         logger.info(f"screen_session: archived {platform}/{skel_hash[:12]} ({reason})")
     except OSError as e:
         logger.warning(f"screen_session: archive failed for {p}: {e}")

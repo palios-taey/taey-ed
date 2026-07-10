@@ -42,6 +42,79 @@ MAX_CONCURRENT_JOBS = 3  # bounded so one hung Claude doesn't stall the queue
 JOB_TIMEOUT_S = 300.0  # Claude --print with full prompt_codex prompt can take 2-4 min
 
 
+def _state_evidence(source: str, **extra) -> dict:
+    return {"source": f"consultation_worker.{source}", **extra}
+
+
+def _state_repo():
+    from spark.state_repo import get_state_repo
+    return get_state_repo()
+
+
+def _read_metadata(path: Path) -> dict:
+    return json.loads(path.read_text())
+
+
+def _mirror_worker_failed(consultation_id: str, reason: str, source: str) -> None:
+    try:
+        _state_repo().resolve_consult(
+            consult_id=consultation_id,
+            status="worker_failed",
+            actor="worker",
+            evidence=_state_evidence(source),
+            failure_reason=reason,
+        )
+    except Exception:
+        logger.exception("state-store dual-write failed: consultation_worker.%s", source)
+
+
+def _mirror_worker_complete(consultation_id: str, meta: dict, bt: dict) -> None:
+    repo = _state_repo()
+    try:
+        screen_hash = meta.get("screen_hash")
+        platform = meta.get("platform")
+        if platform and screen_hash and bt.get("tree"):
+            repo.record_behavior_tree(
+                platform=platform,
+                key_kind="skeleton",
+                key_hash=screen_hash,
+                bt_json=bt["tree"],
+                built_by="worker",
+                source_kind="consultation_worker",
+                actor="worker",
+                evidence=_state_evidence("process_one", consultation_id=consultation_id),
+                screen_type=bt.get("screen_type"),
+                bundle={"consultation_id": consultation_id, "screen_type": bt.get("screen_type")},
+            )
+    except Exception:
+        logger.exception("state-store dual-write failed: consultation_worker.process_one.bt")
+    try:
+        repo.resolve_consult(
+            consult_id=consultation_id,
+            status="complete",
+            actor="worker",
+            evidence=_state_evidence("process_one"),
+        )
+    except Exception:
+        logger.exception("state-store dual-write failed: consultation_worker.process_one.consult")
+
+
+def _mirror_classification_job(job_ref: str, status: str, source: str, result: dict | None = None) -> None:
+    try:
+        meta = _read_metadata(CLASSIFY_DIR / job_ref / "metadata.json")
+        _state_repo().record_classification_job(
+            platform=meta["platform"],
+            skel_hash=meta["skeleton_hash"],
+            classification_id=meta.get("classification_id", Path(job_ref).name),
+            status=status,
+            result=result,
+            actor="worker",
+            evidence=_state_evidence(source),
+        )
+    except Exception:
+        logger.exception("state-store dual-write failed: consultation_worker.%s", source)
+
+
 def _list_pending_consultations() -> list[str]:
     """Return consultation IDs whose metadata.status is 'pending'."""
     if not CONSULT_DIR.exists():
@@ -116,12 +189,13 @@ def _write_user_input_needed_fallback(consultation_id: str, reason: str) -> None
     atomic_write_json(consult_dir / "response.json", fallback)
     meta_path = consult_dir / "metadata.json"
     try:
-        meta = json.loads(meta_path.read_text())
+        meta = _read_metadata(meta_path)
         meta["status"] = "worker_failed"
         meta["worker_failure_reason"] = reason
         atomic_write_json(meta_path, meta)
     except Exception:
         pass
+    _mirror_worker_failed(consultation_id, reason, "write_user_input_needed_fallback")
     logger.error(
         f"worker: wrote fallback for {consultation_id} (reason: {reason})"
     )
@@ -138,12 +212,13 @@ def _write_classification_fallback(job_ref: str, reason: str) -> None:
     atomic_write_json(job_dir / "response.json", fallback)
     meta_path = job_dir / "metadata.json"
     try:
-        meta = json.loads(meta_path.read_text())
+        meta = _read_metadata(meta_path)
         meta["status"] = "worker_failed"
         meta["worker_failure_reason"] = reason
         atomic_write_json(meta_path, meta)
     except Exception:
         pass
+    _mirror_classification_job(job_ref, "worker_failed", "write_classification_fallback", fallback)
     logger.error("worker: wrote classification fallback for %s (%s)", job_ref, reason)
 
 
@@ -167,11 +242,12 @@ def _process_one(consultation_id: str) -> None:
     atomic_write_json(response_path, bt)
     meta_path = consult_dir / "metadata.json"
     try:
-        meta = json.loads(meta_path.read_text())
+        meta = _read_metadata(meta_path)
         meta["status"] = "complete"
         meta["responded_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         meta["responded_by"] = "worker"
         atomic_write_json(meta_path, meta)
+        _mirror_worker_complete(consultation_id, meta, bt)
     except Exception as e:
         logger.warning(
             f"worker: response.json written for {consultation_id} but "
@@ -209,11 +285,12 @@ def _process_one_classification(job_ref: str) -> None:
     atomic_write_json(job_dir / "response.json", result)
     meta_path = job_dir / "metadata.json"
     try:
-        meta = json.loads(meta_path.read_text())
+        meta = _read_metadata(meta_path)
         meta["status"] = "complete"
         meta["responded_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         meta["responded_by"] = "worker"
         atomic_write_json(meta_path, meta)
+        _mirror_classification_job(job_ref, "complete", "process_one_classification", result)
     except Exception as e:
         logger.warning(
             "worker: classification response written for %s but metadata update failed: %s",
