@@ -40,6 +40,15 @@ recipe:                                # ENUMERATE-OPTIONS positional wiring (en
                                                            # (NOT store_to_current — _current is
                                                            #  for_each-only and unset here)
       press_escape
+      # b2. NON-EMPTY GATE: an empty discover (race / stale-menu) -> literal $opts_<i> -> HTTP 422. Gate it:
+      conditional:                           # NODE-LEVEL condition/then/else (Rule 6), NOT under params
+        condition: $opts_<i>                 # non-empty list = truthy -> no `then`, fall through to send_to_llm
+        else:                                # empty/unset = falsy -> ONE bounded re-open+re-discover; still-empty ->
+          sequence:                          #   the wait_for_element fails -> else fails -> box fails -> escalate (never send empty)
+            - click: {element: $popups.<i>.element, strategy: mouse_click}
+            - wait_for_element: {role: AXMenuItem, max_wait: 3.0}
+            - discover_menu: {role: AXMenuItem, store: opts_<i>}
+            - press_escape
       # c. answer THIS blank, choosing FROM the enumerated options
       send_to_llm:
         question_type: solve_complex         # screenshot auto-attached -> vision
@@ -54,14 +63,16 @@ recipe:                                # ENUMERATE-OPTIONS positional wiring (en
           exact chosen option, nothing else.
         options: $opts_<i>                   # discovered options (dicts OK; engine extracts text)
         store: ans_<i>                       # $ans_<i>.answer = the exact chosen option string
-      # d. enter THIS box
+      # d. enter THIS box. RE-FIND fresh IMMEDIATELY before select — the top $popups ref goes
+      #    stale as earlier boxes re-render (-25202); same order, take i-th (WRAPPER-DUP: first half).
+      find_all: {role: AXComboBox, store: popups_sel_<i>}   # fresh refs, same order
       select_dropdown_option:
-        trigger_element: $popups.<i>.element # ELEMENT REF — never by name/label
+        trigger_element: $popups_sel_<i>.<i>.element # FRESH element ref for THIS box (not stale $popups)
         option: $ans_<i>.answer              # the exact option string for THIS box
         open_strategy: mouse_click
         open_wait: 0.7
         verify_wait: 0.4
-      then wait 1.0
+      then wait 1.5   # inter-box settle (was 1.0): prev box's menu-close must clear before the next box's wait_for_element AXMenuItem (else it matches early -> empty discover)
   - wait_for_element: {target: Check, role: AXButton, max_wait: 3.0}
   - find_and_click: {target: Check, role: AXButton, strategy: mouse_click, match_mode: exact, post_delay: 2.5}
   - store_qa: {question: <the blank(s)/label(s), verbatim>, answer: <the chosen option(s)>, question_type: solve_complex}
@@ -85,9 +96,16 @@ contracts:
     (GenerateRequest.options) and extracts display text. No flattening needed.
   - discover_menu uses a PLAIN node-level `store: opts_<i>` — NOT store_to_current
     (which writes blackboard['_current'], bound ONLY inside for_each; unrolled has none).
-  - POSITIONAL BY CONSTRUCTION: one open+discover+answer+select PER BOX;
-    $ans_<i>.answer -> $popups.<i>.element. NO matches dict, NO lookup_match, NO
-    key indexing, NO single-blob $answers.<i>.
+  - NON-EMPTY GATE: a `conditional` on $opts_<i> guards send_to_llm — non-empty falls
+    through; empty/unset -> else re-opens+re-discovers ONCE, still-empty fails -> escalate.
+    Never pass an empty/literal $opts_<i> (that is the 422). condition/else NODE-LEVEL (Rule 6).
+  - FRESH REF FOR SELECT: re-find (find_all -> $popups_sel_<i>) immediately before each
+    select_dropdown_option, target $popups_sel_<i>.<i>.element (top $popups goes stale -> -25202).
+    Discovery-open (step a) still uses $popups.<i>.element; only SELECT needs the fresh ref.
+  - POSITIONAL BY CONSTRUCTION: one open+discover+answer+select PER BOX, all keyed to
+    box i (the i-th AXComboBox, top-to-bottom): discovery-open uses $popups.<i>.element,
+    SELECT uses the fresh $popups_sel_<i>.<i>.element, option is $ans_<i>.answer. NO
+    matches dict, NO lookup_match, NO key indexing, NO single-blob $answers.<i>.
   - SELECTION is select_dropdown_option ONLY (owns the strategy ladder + verify).
     NEVER hand-roll selection via find_and_click on an AXMenuItem, and NEVER open a
     trigger with click_at (coordinates). Opening for DISCOVERY uses an ELEMENT
@@ -103,8 +121,9 @@ actuation:
     ax_press silently no-ops on Chrome).
   settle: wait_for_element AXComboBox (max 6s) gates INITIAL presence — never a naked
     find_all after a blind sleep (hydration flicker returns []); then the proven 2.0s
-    settle before the first box; 1.0s between boxes; wait_for_element gates the open
-    menu AND Check.
+    settle before the first box; 1.5s between boxes (prev menu-close must clear before the
+    next wait_for_element); wait_for_element gates the open menu AND Check. A still-empty
+    discover is caught by the NON-EMPTY conditional gate (re-discover once, else escalate).
   no_scroll: dropdowns are element-based — solve in ONE pass regardless of fold.
 verification:
   - per box: after select, its AXComboBox value flips from "Select an answer" to the
@@ -117,9 +136,12 @@ failure_modes:
     escalate (R3). Never re-pick, never resubmit.
   - LLM answers a non-option ("cm") or rambles -> options were not enumerated for
     that box; ensure the open->discover_menu->store ran and $opts_<i> reached send_to_llm.
-  - menu_items_seen=[] / discover_menu empty -> the box did not open or fired too
-    early; the click(open) + wait_for_element AXMenuItem must precede
-    discover_menu; settle >=2s before the first box, >=1s between boxes.
+  - menu_items_seen=[] / discover_menu empty -> fired too early (race, or a stale prev-box
+    menu satisfied wait_for_element); settle >=2s before first box, >=1.5s between. The
+    NON-EMPTY gate re-discovers ONCE, still-empty -> escalate; never let empty $opts_<i>
+    reach send_to_llm (literal -> 422).
+  - select_dropdown_option AXUIElementRef -25202 (stale element) -> re-find (find_all ->
+    $popups_sel_<i>) immediately before select, target $popups_sel_<i>.<i>.element.
   - targeting by name/label (not element ref + position) -> both selects hit box 0.
   - click_at to open / find_and_click an AXMenuItem to SELECT -> HARD BAN; selection
     is select_dropdown_option only.
