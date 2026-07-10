@@ -48,8 +48,34 @@ def _source_seen(db_path: Path, source_sha: str) -> bool:
         ).fetchone() is not None
 
 
-def _real_screen_type(screen_type: str | None) -> str | None:
-    value = str(screen_type or "").strip()
+def _canonical_screen_type(platform: str, screen_type: str | None) -> str:
+    value = str(screen_type or "").strip().upper()
+    if not value:
+        return ""
+    try:
+        from spark.tasks.classify_screen import canonicalize_screen_type
+        canonical = canonicalize_screen_type(platform, value)
+        if canonical != "UNKNOWN":
+            return canonical
+    except Exception:
+        pass
+    return value
+
+
+def _canonical_expected_next(platform: str, expected_next: Any) -> list[str]:
+    if not isinstance(expected_next, list):
+        return []
+    return [
+        canonical
+        for item in expected_next
+        if (canonical := _canonical_screen_type(platform, item))
+        and canonical != "UNKNOWN"
+        and canonical not in MASTER_CATEGORIES
+    ]
+
+
+def _real_screen_type(platform: str, screen_type: str | None) -> str | None:
+    value = _canonical_screen_type(platform, screen_type)
     if not value or value == "UNKNOWN":
         return None
     if value in MASTER_CATEGORIES:
@@ -75,7 +101,7 @@ def _import_hash_index(repo: StateRepo, data_dir: Path, db_path: Path, dry_run: 
             if _source_seen(db_path, source_sha):
                 stats["skipped_seen"] += 1
                 continue
-            screen_type = _real_screen_type(entry.get("variant"))
+            screen_type = _real_screen_type(platform, entry.get("variant"))
             if screen_type is None:
                 stats["skipped_unresolved_type"] += 1
             if dry_run:
@@ -91,7 +117,7 @@ def _import_hash_index(repo: StateRepo, data_dir: Path, db_path: Path, dry_run: 
                     evidence=_evidence("state_import.hash_index", path, source_sha),
                 )
                 stats["hash_index_imported"] += 1
-            variant_entry = variants_by_platform.get(platform, {}).get(entry.get("variant") or "")
+            variant_entry = variants_by_platform.get(platform, {}).get(screen_type or "")
             if screen_type and variant_entry and variant_entry.get("behavior_tree"):
                 _import_behavior_tree(
                     repo,
@@ -115,8 +141,14 @@ def _load_variants(data_dir: Path) -> dict[str, dict]:
     if not root.exists():
         return variants
     for path in sorted(root.glob("*.json")):
+        platform = path.stem
         data = _load_json(path)
-        variants[path.stem] = data.get("variants") or {}
+        normalized: dict[str, dict] = {}
+        for variant, entry in (data.get("variants") or {}).items():
+            screen_type = _real_screen_type(platform, variant)
+            if screen_type:
+                normalized[screen_type] = entry
+        variants[platform] = normalized
     return variants
 
 
@@ -169,7 +201,7 @@ def _import_signatures(repo: StateRepo, data_dir: Path, db_path: Path, dry_run: 
             if _source_seen(db_path, source_sha):
                 stats["skipped_seen"] += 1
                 continue
-            screen_type = _real_screen_type(entry.get("screen_type"))
+            screen_type = _real_screen_type(platform, entry.get("screen_type"))
             if screen_type is None:
                 stats["skipped_unresolved_type"] += 1
             if dry_run:
@@ -262,6 +294,126 @@ def _import_escalation_state(repo: StateRepo, data_dir: Path, db_path: Path, dry
         stats["escalation_imported"] += 1
 
 
+def _normalize_variant_entry(platform: str, variant: str, entry: dict[str, Any]) -> tuple[str | None, dict[str, Any]]:
+    screen_type = _real_screen_type(platform, variant)
+    if screen_type is None:
+        return None, entry
+    normalized = dict(entry)
+    normalized["expected_next"] = _canonical_expected_next(platform, normalized.get("expected_next", []))
+    normalized["master_type"] = screen_type.split("__", 1)[0].split("_", 1)[0]
+    return screen_type, normalized
+
+
+def _merge_variant_entry(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(existing)
+    history = list(merged.get("history") or [])
+    if incoming.get("behavior_tree") and incoming.get("behavior_tree") != existing.get("behavior_tree"):
+        if existing.get("behavior_tree"):
+            history.append({
+                "behavior_tree": existing.get("behavior_tree"),
+                "extract": existing.get("extract"),
+                "expected_next": existing.get("expected_next", []),
+                "source": existing.get("source"),
+                "validated": existing.get("validated", False),
+                "success_count": existing.get("success_count", 0),
+                "superseded_by_migration": True,
+            })
+        merged.update(incoming)
+    else:
+        for key, value in incoming.items():
+            if key not in merged or merged.get(key) in (None, "", [], {}):
+                merged[key] = value
+    if history:
+        merged["history"] = history[-25:]
+    return merged
+
+
+def _write_json(path: Path, data: dict[str, Any]) -> None:
+    from spark.tasks.atomic_write import atomic_write_json
+    atomic_write_json(path, data)
+
+
+def _migrate_hash_index_names(data_dir: Path, dry_run: bool, stats: dict[str, int]) -> None:
+    root = data_dir / "hash_index"
+    if not root.exists():
+        return
+    for path in sorted(root.glob("*.json")):
+        platform = path.stem
+        data = _load_json(path)
+        changed = False
+        for entry in (data.get("hashes") or {}).values():
+            old = entry.get("variant")
+            new = _real_screen_type(platform, old)
+            if new and new != old:
+                stats["legacy_names_seen"] += 1
+                changed = True
+                if not dry_run:
+                    entry["variant"] = new
+                    stats["legacy_names_migrated"] += 1
+        if changed and not dry_run:
+            _write_json(path, data)
+
+
+def _migrate_variant_names(data_dir: Path, dry_run: bool, stats: dict[str, int]) -> None:
+    root = data_dir / "variant_bts"
+    if not root.exists():
+        return
+    for path in sorted(root.glob("*.json")):
+        platform = path.stem
+        data = _load_json(path)
+        variants = data.get("variants") or {}
+        normalized: dict[str, dict[str, Any]] = {}
+        changed = False
+        for variant, entry in variants.items():
+            new, normalized_entry = _normalize_variant_entry(platform, variant, entry)
+            if new is None:
+                normalized[variant] = entry
+                continue
+            if new != variant:
+                stats["legacy_names_seen"] += 1
+                changed = True
+                if not dry_run:
+                    stats["legacy_names_migrated"] += 1
+            if normalized_entry != entry:
+                changed = True
+            if new in normalized:
+                stats["variant_keys_merged"] += 1
+                normalized[new] = _merge_variant_entry(normalized[new], normalized_entry)
+                changed = True
+            else:
+                normalized[new] = normalized_entry
+        if changed and not dry_run:
+            data["variants"] = normalized
+            _write_json(path, data)
+
+
+def _migrate_signature_names(data_dir: Path, dry_run: bool, stats: dict[str, int]) -> None:
+    root = data_dir / "signatures"
+    if not root.exists():
+        return
+    for path in sorted(root.glob("*.json")):
+        platform = path.stem
+        data = _load_json(path)
+        changed = False
+        for entry in (data.get("screens") or {}).values():
+            old = entry.get("screen_type")
+            new = _real_screen_type(platform, old)
+            if new and new != old:
+                stats["legacy_names_seen"] += 1
+                changed = True
+                if not dry_run:
+                    entry["screen_type"] = new
+                    stats["legacy_names_migrated"] += 1
+        if changed and not dry_run:
+            _write_json(path, data)
+
+
+def _migrate_file_store_names(data_dir: Path, dry_run: bool, stats: dict[str, int]) -> None:
+    _migrate_hash_index_names(data_dir, dry_run, stats)
+    _migrate_variant_names(data_dir, dry_run, stats)
+    _migrate_signature_names(data_dir, dry_run, stats)
+
+
 def _empty_stats() -> dict[str, int]:
     keys = (
         "hash_index_seen",
@@ -281,13 +433,18 @@ def _empty_stats() -> dict[str, int]:
         "escalation_imported",
         "skipped_seen",
         "skipped_unresolved_type",
+        "legacy_names_seen",
+        "legacy_names_migrated",
+        "variant_keys_merged",
     )
     return {key: 0 for key in keys}
 
 
-def run(data_dir: Path, db_path: Path, dry_run: bool) -> dict[str, Any]:
+def run(data_dir: Path, db_path: Path, dry_run: bool, migrate_names: bool = False) -> dict[str, Any]:
     stats = _empty_stats()
     repo = StateRepo(db_path=db_path)
+    if migrate_names:
+        _migrate_file_store_names(data_dir, dry_run, stats)
     if not dry_run:
         init_state_db(db_path)
     variants = _import_hash_index(repo, data_dir, db_path, dry_run, stats)
@@ -298,6 +455,7 @@ def run(data_dir: Path, db_path: Path, dry_run: bool) -> dict[str, Any]:
     result: dict[str, Any] = {
         "ok": True,
         "dry_run": dry_run,
+        "migrate_names": migrate_names,
         "data_dir": str(data_dir),
         "db_path": str(db_path),
         "stats": stats,
@@ -312,10 +470,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--data-dir", type=Path, default=DATA_DIR)
     parser.add_argument("--state-db", type=Path, default=state_db_path())
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--migrate-names", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     try:
-        result = run(args.data_dir, args.state_db, args.dry_run)
+        result = run(args.data_dir, args.state_db, args.dry_run, args.migrate_names)
     except Exception as exc:
         if args.json:
             print(json.dumps({"ok": False, "error": str(exc)}, indent=2, sort_keys=True))
@@ -326,6 +485,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(result, indent=2, sort_keys=True))
     else:
         print(f"state import: {'DRY RUN' if result['dry_run'] else 'APPLIED'}")
+        print(f"migrate_names: {result['migrate_names']}")
         print(f"data_dir: {result['data_dir']}")
         print(f"state_db: {result['db_path']}")
         print("stats:", json.dumps(result["stats"], sort_keys=True))

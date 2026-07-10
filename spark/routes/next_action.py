@@ -27,6 +27,7 @@ import json
 import logging
 import time
 import uuid
+from collections import OrderedDict
 from pathlib import Path
 
 from fastapi import APIRouter
@@ -410,6 +411,12 @@ MAX_VARIANT_FAILURES = 1  # ONE SHOT: after 1 failure, escalate to claude (was 2
 _staging_counts: dict[str, int] = {}
 MAX_STAGING_CYCLES = 3
 
+# The frozen Mac reports only directive_id + metadata after executing a tree.
+# Keep the issued execute_tree body long enough for Step 2 to persist it when the
+# real screen proves it worked.
+_issued_directives: OrderedDict[str, dict] = OrderedDict()
+MAX_ISSUED_DIRECTIVES = 512
+
 
 def _record_variant_failure(platform: str, variant: str):
     """Record that a variant's BT failed. Used to prevent reclassify loops."""
@@ -443,6 +450,32 @@ def _clear_variant_failures(platform: str):
 
 def _make_directive_id() -> str:
     return f"d-{uuid.uuid4().hex[:8]}"
+
+
+def _remember_issued_directive(response: dict) -> None:
+    if response.get("directive") != "execute_tree":
+        return
+    directive_id = response.get("directive_id")
+    tree = response.get("tree")
+    if not directive_id or not isinstance(tree, dict):
+        return
+    _issued_directives[directive_id] = {
+        "tree": tree,
+        "screen": response.get("screen"),
+        "skeleton_hash": response.get("skeleton_hash"),
+        "expected_next": response.get("expected_next", []),
+        "extract": response.get("extract"),
+    }
+    _issued_directives.move_to_end(directive_id)
+    while len(_issued_directives) > MAX_ISSUED_DIRECTIVES:
+        _issued_directives.popitem(last=False)
+
+
+def _issued_directive_for(lr) -> dict | None:
+    directive_id = getattr(lr, "directive_id", None)
+    if directive_id and directive_id in _issued_directives:
+        return _issued_directives[directive_id]
+    return None
 
 
 def _bt_actions_from_tail(bt_debug_tail) -> list:
@@ -515,10 +548,138 @@ def _log_fingerprint(platform: str, variant: str, skel_hash: str, fingerprint: d
 
 def _with_chat(response: dict, platform: str, messages: list[dict]) -> dict:
     """Attach chat_messages to a response and persist them to Redis."""
+    _remember_issued_directive(response)
     for msg in messages:
         store_message(platform, msg)
     response["chat_messages"] = messages
     return response
+
+
+def _canonical_screen_type(platform: str, screen_type: str, tree: dict | None = None) -> str:
+    from spark.tasks.classify_screen import canonicalize_screen_type
+
+    canonical = canonicalize_screen_type(platform, screen_type, tree)
+    if canonical != "UNKNOWN":
+        return canonical
+    return str(screen_type or "UNKNOWN").strip().upper() or "UNKNOWN"
+
+
+def _canonical_expected_next(platform: str, expected_next: list, tree: dict | None = None) -> list[str]:
+    if not isinstance(expected_next, list):
+        return []
+    return [
+        canonical
+        for item in expected_next
+        if (canonical := _canonical_screen_type(platform, item, tree)) != "UNKNOWN"
+    ]
+
+
+def _r910_validated(vr: dict) -> bool:
+    return (
+        bool(vr.get("screen_transitioned"))
+        and vr.get("expected_next_match") is True
+        and not bool(vr.get("wrong_answer"))
+        and not bool(vr.get("not_advanced"))
+    )
+
+
+def _persist_validated_directive(platform: str, lr, vr: dict) -> bool:
+    if not _r910_validated(vr):
+        logger.info(
+            "Step 2: not persisting BT proof for %s; R9.10 not met "
+            "(expected_next_match=%s, reason=%s)",
+            getattr(lr, "screen", None),
+            vr.get("expected_next_match"),
+            vr.get("reason"),
+        )
+        return False
+
+    issued = _issued_directive_for(lr)
+    if not issued:
+        logger.warning(
+            "Step 2: cannot persist validated BT for %s; directive body missing "
+            "(directive_id=%s)",
+            getattr(lr, "screen", None),
+            getattr(lr, "directive_id", None),
+        )
+        return False
+
+    skel_hash = getattr(lr, "directive_skeleton_hash", None) or issued.get("skeleton_hash") or ""
+    screen = _canonical_screen_type(platform, getattr(lr, "screen", None) or issued.get("screen") or "UNKNOWN")
+    expected_next = issued.get("expected_next") or getattr(lr, "directive_expected_next", None) or []
+    behavior_tree = issued.get("tree")
+    if not skel_hash or screen == "UNKNOWN":
+        logger.warning(
+            "Step 2: cannot persist validated BT; missing hash/screen "
+            "(hash=%s, screen=%s)",
+            skel_hash[:12] if skel_hash else "",
+            screen,
+        )
+        return False
+
+    from spark.tasks.variant_cache import (
+        mark_hash_validated,
+        mark_variant_validated,
+        store_variant_bt,
+    )
+
+    if not store_variant_bt(
+        platform=platform,
+        variant=screen,
+        behavior_tree=behavior_tree,
+        extract=issued.get("extract"),
+        expected_next=expected_next,
+        source="r9_10_validated_success",
+    ):
+        return False
+
+    try:
+        from spark.state_repo import get_state_repo
+
+        repo = get_state_repo()
+        evidence = {
+            "source": "next_action.r9_10_validated_success",
+            "directive_id": getattr(lr, "directive_id", None),
+            "skeleton_hash": skel_hash,
+            "new_screen": vr.get("new_screen"),
+            "expected_next": _canonical_expected_next(platform, expected_next),
+        }
+        bt_id = repo.record_behavior_tree(
+            platform=platform,
+            key_kind="skeleton",
+            key_hash=skel_hash,
+            bt_json=behavior_tree,
+            built_by="api",
+            source_kind="r9_10_validated_success",
+            actor="api",
+            evidence=evidence,
+            screen_type=screen,
+            status="candidate",
+        )
+        repo.mark_behavior_tree_validated(
+            bt_id=bt_id,
+            actor="api",
+            evidence=evidence,
+        )
+        repo.promote_screen_type(
+            platform=platform,
+            screen_type=screen,
+            actor="api",
+            evidence=evidence,
+        )
+    except Exception:
+        logger.exception("Step 2: state-store validated BT write failed")
+        raise
+
+    mark_hash_validated(platform=platform, skel_hash=skel_hash)
+    mark_variant_validated(platform=platform, variant=screen, mirror_state=False)
+    logger.info(
+        "Step 2: persisted validated BT for %s (hash=%s, next=%s)",
+        screen,
+        skel_hash[:12],
+        vr.get("new_screen"),
+    )
+    return True
 
 
 
@@ -838,7 +999,7 @@ def _validate_last_action(platform: str, lr, current_tree: dict) -> dict:
     1. Did the tree hash change? (action had effect)
     2. Does the after_tree match a known screen?
     3. Same QUIZ/ASSESSMENT screen? (wrong answer detection)
-    4. New screen in expected_next? (informational)
+    4. New screen in expected_next? (R9.10 proof for durable promotion)
     """
     tree_changed = lr.tree_hash_before != lr.tree_hash_after
 
@@ -859,6 +1020,8 @@ def _validate_last_action(platform: str, lr, current_tree: dict) -> dict:
     after_hash = _skel_hash(after_skel)
     hash_result = lookup_by_hash(platform, after_hash)
     new_screen = hash_result["variant"] if hash_result else None
+    if new_screen:
+        new_screen = _canonical_screen_type(platform, new_screen, after_tree_to_match)
 
     if not new_screen:
         logger.warning(
@@ -1012,21 +1175,28 @@ def _validate_last_action(platform: str, lr, current_tree: dict) -> dict:
                 f"progress to next question."
             )
 
-    # Expected_next check (informational)
-    expected_next = lr.directive_expected_next or []
+    issued = _issued_directive_for(lr) or {}
+    expected_next = _canonical_expected_next(
+        platform,
+        lr.directive_expected_next or issued.get("expected_next") or [],
+        after_tree_to_match,
+    )
     expected_match = None
     if expected_next and new_screen:
         expected_match = new_screen in expected_next
 
     validated = tree_changed and not wrong_answer and not not_advanced
+    r910_validated = validated and expected_match is True
 
     return {
         "validated": validated,
+        "r910_validated": r910_validated,
         "screen_transitioned": tree_changed,
         "new_screen": new_screen,
         "wrong_answer": wrong_answer,
         "not_advanced": not_advanced,
         "expected_next_match": expected_match,
+        "expected_next": expected_next,
         "after_skeleton_hash": after_hash,
         "reason": ("validated" if validated else
                    ("wrong_answer" if wrong_answer else
@@ -1541,14 +1711,12 @@ def _next_action_impl(request: NextActionRequest):
         if vr["validated"]:
             if lr.directive_skeleton_hash:
                 try:
-                    from spark.tasks.variant_cache import mark_variant_validated, mark_hash_validated
-                    mark_hash_validated(platform=platform, skel_hash=lr.directive_skeleton_hash)
-                    if lr.screen:
-                        mark_variant_validated(platform=platform, variant=lr.screen)
+                    persisted = _persist_validated_directive(platform, lr, vr)
                     logger.info(
                         f"Step 2: Validated {lr.screen} "
                         f"(hash={lr.directive_skeleton_hash[:12]}, "
-                        f"new_screen={vr.get('new_screen')})"
+                        f"new_screen={vr.get('new_screen')}, "
+                        f"persisted={'yes' if persisted else 'no'})"
                     )
                 except Exception as e:
                     logger.warning(f"Step 2: mark_validated failed (non-fatal): {e}")
@@ -2104,7 +2272,8 @@ def _next_action_impl(request: NextActionRequest):
                 logger.exception("Step 4: bare-master delete_hash failed")
             hash_result = None
     if hash_result:
-        variant = hash_result["variant"]
+        variant = _canonical_screen_type(platform, hash_result["variant"], tree)
+        hash_result["variant"] = variant
         logger.info(f"  Step 4: Hash hit → variant={variant}")
 
         # Per Jesse 2026-05-19: every screen-map use of an UNVALIDATED entry
@@ -2182,7 +2351,7 @@ def _next_action_impl(request: NextActionRequest):
     from spark.tasks.screen_signatures import match_signature
     sig_result = match_signature(platform, tree)
     if sig_result.get("matched"):
-        variant = sig_result["screen_type"]
+        variant = _canonical_screen_type(platform, sig_result["screen_type"], tree)
         score = sig_result["match_score"]
         sig_hash = sig_result["sig_hash"]
         logger.info(

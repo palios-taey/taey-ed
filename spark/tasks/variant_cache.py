@@ -32,6 +32,31 @@ def _state_repo():
     return get_state_repo()
 
 
+def _canonical_variant(platform: str, variant: str | None, tree: dict | None = None) -> str:
+    value = str(variant or "").strip().upper()
+    if not value:
+        return ""
+    try:
+        from spark.tasks.classify_screen import canonicalize_screen_type
+        canonical = canonicalize_screen_type(platform, value, tree)
+        if canonical != "UNKNOWN":
+            return canonical
+    except Exception:
+        logger.exception("variant_cache: canonicalize failed for %s/%s", platform, value)
+    return value
+
+
+def _canonical_expected_next(platform: str, expected_next) -> list[str]:
+    if not isinstance(expected_next, list):
+        return []
+    return [
+        canonical
+        for item in expected_next
+        if (canonical := _canonical_variant(platform, item))
+        and canonical != "UNKNOWN"
+    ]
+
+
 def _mirror_hash_mapping(platform: str, skel_hash: str, variant: str, source: str, validated: bool = False) -> None:
     if not variant:
         return
@@ -108,7 +133,139 @@ def _load_variants(platform: str) -> dict:
     return data
 
 
+def _contains_generic_solver(bt: dict) -> bool:
+    if not isinstance(bt, dict):
+        return False
+    stack = [bt]
+    while stack:
+        node = stack.pop()
+        if not isinstance(node, dict):
+            continue
+        if node.get("action") == "send_to_llm":
+            return True
+        for key in ("children",):
+            children = node.get(key)
+            if isinstance(children, list):
+                stack.extend(children)
+        for key in ("do", "then", "else"):
+            child = node.get(key)
+            if isinstance(child, dict):
+                stack.append(child)
+    return False
+
+
+def _has_frozen_answer(bt: dict) -> bool:
+    if not isinstance(bt, dict):
+        return False
+    stack = [bt]
+    while stack:
+        node = stack.pop()
+        if not isinstance(node, dict):
+            continue
+        action = node.get("action")
+        params = node.get("params") or {}
+        if action == "select_dropdown_option":
+            option = str(params.get("option") or "")
+            if option and not option.startswith("$"):
+                return True
+        if action == "find_and_type":
+            text = str(params.get("text") or "")
+            if text and not text.startswith("$"):
+                return True
+        if action == "find_and_click":
+            role = params.get("role")
+            target = str(params.get("target") or "")
+            if role in {"AXRadioButton", "AXCheckBox"} and target and not target.startswith("$"):
+                return True
+        children = node.get("children")
+        if isinstance(children, list):
+            stack.extend(children)
+        for key in ("do", "then", "else"):
+            child = node.get(key)
+            if isinstance(child, dict):
+                stack.append(child)
+    return False
+
+
+def _cache_safe_behavior_tree(variant: str, behavior_tree: dict) -> bool:
+    from spark.tasks.screen_type_util import get_master_category
+
+    if get_master_category(variant) != "EXERCISE":
+        return True
+    return _contains_generic_solver(behavior_tree) and not _has_frozen_answer(behavior_tree)
+
+
+def store_variant_bt(
+    platform: str,
+    variant: str,
+    behavior_tree: dict,
+    *,
+    extract=None,
+    expected_next=None,
+    master_type: str | None = None,
+    source: str = "validated_success",
+) -> bool:
+    variant = _canonical_variant(platform, variant)
+    if not variant or variant == "UNKNOWN":
+        return False
+
+    from spark.tasks.screen_type_util import get_master_category
+
+    if get_master_category(variant) == variant:
+        logger.info("variant_cache: NOT storing BT for bare master %s", variant)
+        return False
+    if not isinstance(behavior_tree, dict) or not behavior_tree:
+        logger.info("variant_cache: NOT storing empty BT for %s", variant)
+        return False
+    if not _cache_safe_behavior_tree(variant, behavior_tree):
+        logger.warning(
+            "variant_cache: NOT storing non-generic EXERCISE BT for %s "
+            "(frozen answer guard)",
+            variant,
+        )
+        return False
+
+    data = _load_variants(platform)
+    variants = data["variants"]
+    now = datetime.now(timezone.utc).isoformat()
+    existing = variants.get(variant) or {}
+    replacing = existing.get("behavior_tree") and existing.get("behavior_tree") != behavior_tree
+    entry = dict(existing)
+    if replacing:
+        history = list(entry.get("history") or [])
+        history.append({
+            "behavior_tree": entry.get("behavior_tree"),
+            "extract": entry.get("extract"),
+            "expected_next": entry.get("expected_next", []),
+            "source": entry.get("source"),
+            "validated": entry.get("validated", False),
+            "success_count": entry.get("success_count", 0),
+            "superseded_at": now,
+        })
+        entry["history"] = history[-25:]
+        entry["validated"] = False
+        entry["success_count"] = 0
+        entry["consecutive_failures"] = 0
+
+    entry.update({
+        "behavior_tree": behavior_tree,
+        "extract": extract,
+        "expected_next": _canonical_expected_next(platform, expected_next),
+        "master_type": master_type or get_master_category(variant),
+        "source": source,
+        "stored_at": now,
+        "validated": bool(entry.get("validated", False)) and not replacing,
+        "success_count": int(entry.get("success_count", 0) or 0) if not replacing else 0,
+        "consecutive_failures": int(entry.get("consecutive_failures", 0) or 0),
+    })
+    variants[variant] = entry
+    _atomic_write(_variant_path(platform), data)
+    logger.info("variant_cache: stored BT for %s (source=%s)", variant, source)
+    return True
+
+
 def lookup_variant_bt(platform: str, variant: str) -> dict | None:
+    variant = _canonical_variant(platform, variant)
     data = _load_variants(platform)
     entry = data["variants"].get(variant)
     if not entry or not entry.get("behavior_tree"):
@@ -116,7 +273,7 @@ def lookup_variant_bt(platform: str, variant: str) -> dict | None:
     return {
         "behavior_tree": entry["behavior_tree"],
         "extract": entry.get("extract"),
-        "expected_next": entry.get("expected_next", []),
+        "expected_next": _canonical_expected_next(platform, entry.get("expected_next", [])),
         "master_type": entry.get("master_type", variant.split("_")[0]),
         "validated": entry.get("validated", False),
         "success_count": entry.get("success_count", 0),
@@ -124,7 +281,8 @@ def lookup_variant_bt(platform: str, variant: str) -> dict | None:
     }
 
 
-def mark_variant_validated(platform: str, variant: str):
+def mark_variant_validated(platform: str, variant: str, *, mirror_state: bool = True):
+    variant = _canonical_variant(platform, variant)
     data = _load_variants(platform)
     entry = data["variants"].get(variant)
     if not entry:
@@ -134,11 +292,13 @@ def mark_variant_validated(platform: str, variant: str):
     entry["consecutive_failures"] = 0
     entry["last_success"] = datetime.now(timezone.utc).isoformat()
     _atomic_write(_variant_path(platform), data)
-    _mirror_screen_type_promotion(platform, variant, "mark_variant_validated")
+    if mirror_state:
+        _mirror_screen_type_promotion(platform, variant, "mark_variant_validated")
     logger.info(f"variant_cache: validated {variant} (count={entry['success_count']})")
 
 
 def invalidate_variant_bt(platform: str, variant: str):
+    variant = _canonical_variant(platform, variant)
     data = _load_variants(platform)
     entry = data["variants"].get(variant)
     if not entry:
@@ -168,12 +328,13 @@ def lookup_by_hash(platform: str, skel_hash: str) -> dict | None:
     if not entry:
         return None
     return {
-        "variant": entry["variant"],
+        "variant": _canonical_variant(platform, entry["variant"]),
         "validated": entry.get("validated", False),
     }
 
 
 def register_hash(platform: str, skel_hash: str, variant: str):
+    variant = _canonical_variant(platform, variant)
     # NEVER cache a bare MASTER (subtype unresolved, e.g. "EXERCISE" without
     # _MULTIPLE_SELECT) — it has no recipe, so serving it later hands the worker
     # the generic guide -> freelance/{}. RCA 2026-06-15 (d2b842): a mid-hydration
@@ -224,6 +385,7 @@ def mark_hash_validated(platform: str, skel_hash: str):
     data = _load_hash_index(platform)
     entry = data["hashes"].get(skel_hash)
     if entry:
+        entry["variant"] = _canonical_variant(platform, entry.get("variant"))
         entry["validated"] = True
         entry["consecutive_failures"] = 0
         entry["last_seen"] = datetime.now(timezone.utc).isoformat()
@@ -238,10 +400,12 @@ def mark_hash_validated(platform: str, skel_hash: str):
 
 
 def record_validated_map_failure(platform: str, skel_hash: str, variant: str = None) -> bool:
+    variant = _canonical_variant(platform, variant) if variant else None
     data = _load_hash_index(platform)
     entry = data["hashes"].get(skel_hash)
     if not entry or not entry.get("validated"):
         return False
+    entry["variant"] = _canonical_variant(platform, entry.get("variant"))
     fails = int(entry.get("consecutive_failures", 0) or 0) + 1
     entry["consecutive_failures"] = fails
     if fails < 2:

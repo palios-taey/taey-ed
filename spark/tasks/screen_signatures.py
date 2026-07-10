@@ -73,6 +73,18 @@ def _state_repo():
     return get_state_repo()
 
 
+def _canonical_screen_type(platform: str, screen_type: str | None) -> str:
+    value = str(screen_type or "UNKNOWN").strip().upper() or "UNKNOWN"
+    try:
+        from spark.tasks.classify_screen import canonicalize_screen_type
+        canonical = canonicalize_screen_type(platform, value)
+        if canonical != "UNKNOWN":
+            return canonical
+    except Exception:
+        logger.exception("screen_signatures: canonicalize failed for %s/%s", platform, value)
+    return value
+
+
 def _mirror_platform(platform: str, data: dict, source: str) -> None:
     try:
         repo = _state_repo()
@@ -80,7 +92,7 @@ def _mirror_platform(platform: str, data: dict, source: str) -> None:
             repo.mirror_signature(
                 platform=platform,
                 sig_hash=sig_hash,
-                screen_type=screen.get("screen_type", "UNKNOWN"),
+                screen_type=_canonical_screen_type(platform, screen.get("screen_type", "UNKNOWN")),
                 signature=screen.get("signature") or [],
                 behavior_tree=screen.get("behavior_tree"),
                 extract=screen.get("extract"),
@@ -225,6 +237,7 @@ def learn_screen(platform: str, tree: dict, screen_type: str,
     """
     from spark.tasks.knowledge_loader import get_knowledge_version
 
+    screen_type = _canonical_screen_type(platform, screen_type)
     sig = extract_signature(tree)
     sig_hash = _sig_hash(sig)
     data = _load_platform(platform)
@@ -232,6 +245,9 @@ def learn_screen(platform: str, tree: dict, screen_type: str,
     if sig_hash in data["screens"]:
         existing = data["screens"][sig_hash]
         updated = False
+        if existing.get("screen_type") != screen_type:
+            existing["screen_type"] = screen_type
+            updated = True
         if behavior_tree and not existing.get("behavior_tree"):
             existing["behavior_tree"] = behavior_tree
             existing["source"] = source

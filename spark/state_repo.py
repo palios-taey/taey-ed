@@ -71,7 +71,7 @@ class StateRepo:
         self._require_evidence(evidence, "source")
         with immediate_transaction(self.db_path) as conn:
             screen_id, _ = self._resolve_or_mint(conn, platform, key_kind, key_hash, features)
-            normalized_type = self._normalize_screen_type(screen_type)
+            normalized_type = self._normalize_screen_type(screen_type, platform)
             if success and normalized_type:
                 self._ensure_screen_type(conn, platform, normalized_type)
                 bundle_id = self._ensure_bundle_receipt(
@@ -487,7 +487,7 @@ class StateRepo:
     ) -> None:
         self._require_actor(actor, {"api", "worker", "operator", "system"}, "promote")
         self._require_evidence(evidence, "source")
-        normalized_type = self._normalize_screen_type(screen_type)
+        normalized_type = self._normalize_screen_type(screen_type, platform)
         if not normalized_type or normalized_type == "UNKNOWN":
             raise StateRepoError("cannot promote missing or UNKNOWN screen type")
         with immediate_transaction(self.db_path) as conn:
@@ -529,7 +529,7 @@ class StateRepo:
     ) -> None:
         self._require_actor(actor, {"api", "worker", "operator", "system"}, "demote")
         self._require_evidence(evidence, "source")
-        normalized_type = self._normalize_screen_type(screen_type)
+        normalized_type = self._normalize_screen_type(screen_type, platform)
         if not normalized_type or normalized_type == "UNKNOWN":
             raise StateRepoError("cannot demote missing or UNKNOWN screen type")
         with immediate_transaction(self.db_path) as conn:
@@ -1193,7 +1193,7 @@ class StateRepo:
             conn.execute("INSERT INTO platforms(platform) VALUES(?)", (platform,))
 
     def _ensure_screen_type(self, conn, platform: str, screen_type: str) -> None:
-        normalized_type = self._normalize_screen_type(screen_type)
+        normalized_type = self._normalize_screen_type(screen_type, platform)
         if not normalized_type or normalized_type == "UNKNOWN":
             raise StateRepoError("screen type is required")
         category = self._category_for_type(normalized_type)
@@ -1300,10 +1300,18 @@ class StateRepo:
             raise StateRepoError(f"cannot infer category for screen type {screen_type!r}")
         return candidate
 
-    def _normalize_screen_type(self, screen_type: str | None) -> str | None:
+    def _normalize_screen_type(self, screen_type: str | None, platform: str | None = None) -> str | None:
         if screen_type is None:
             return None
-        value = str(screen_type).strip()
+        value = str(screen_type).strip().upper()
+        if value and platform:
+            try:
+                from spark.tasks.classify_screen import canonicalize_screen_type
+                canonical = canonicalize_screen_type(platform, value)
+                if canonical != "UNKNOWN":
+                    return canonical
+            except Exception:
+                logger.exception("state_repo: canonicalize failed for %s/%s", platform, value)
         return value or None
 
     def _normalize_clear_reason(self, reason: str) -> str:
