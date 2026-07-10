@@ -411,6 +411,10 @@ def run_continuous(
                     "tree_hash_after": after_hash,
                     "continue_loop": bt_result.get("continue_loop", False),
                 }
+                if bt_result.get("bt_blackboard"):
+                    last_result["bt_blackboard"] = bt_result["bt_blackboard"]
+                if bt_result.get("bt_find_all_results"):
+                    last_result["bt_find_all_results"] = bt_result["bt_find_all_results"]
 
                 # Send failed BT so Spark/Gemini knows what was tried
                 if not bt_result.get("success", False):

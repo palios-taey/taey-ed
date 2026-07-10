@@ -27,8 +27,8 @@ PINNED_EXECUTOR_MANIFEST_HASH = (
 PINNED_EXECUTOR_MANIFEST_V2_SHA256 = (
     "3ffc6274ab27fa41ce51d036944a5e02ce07f36ab071265429e30c1675410d34"
 )
-PINNED_PROBE_MIN_COUNT = 22
-PINNED_PROBE_REGISTRY_HASH = "sha256:5b726ed7a2c3100e79f80b3c36ce753e73790fdd3d3da148a4c787ccac147127"
+PINNED_PROBE_MIN_COUNT = 23
+PINNED_PROBE_REGISTRY_HASH = "sha256:e8f988b62c495e30ad05414351a39998bad6851c9f0b3b1ab2e39986923ff7bb"
 DEFAULT_CONTRACT_RED_RUN_REGISTER = Path(__file__).with_name("contract_probe_red_runs.jsonl")
 
 # V2 names the select_dropdown_option surface as an 11-slot minimum; the live
@@ -132,6 +132,15 @@ PROBE_SPECS: tuple[ProbeSpec, ...] = (
         incident_ref="cl1-worker-schema jsonschema + bounded retry contract",
         red_fixture="worker output missing slots/evidence/confidence",
         description="Worker output is server-side JSON-schema validated, retried once with violation feedback, then escalated with rejected output.",
+    ),
+    ProbeSpec(
+        id="thesis.engine_primitives",
+        group="structural-gap-thesis",
+        check_name="engine_primitives",
+        current_mode="enforced",
+        incident_ref="cl2-primitives wait-until-stable + scoped addressing",
+        red_fixture="last_result without bt_find_all_results/bt_blackboard",
+        description="Engine owns bounded wait-until-stable and scoped exact addressing over posted tree/find_all telemetry.",
     ),
     ProbeSpec(
         id="thesis.ladder_timer_monotone_bound",
@@ -611,6 +620,60 @@ def _check_worker_output_schema_retry(ctx: ProbeContext) -> list[str]:
     return residues
 
 
+def _check_engine_primitives(ctx: ProbeContext) -> list[str]:
+    residues = _require_source(
+        ctx,
+        "spark/tasks/deterministic_resolvers.py",
+        (
+            "STABILITY_REQUIRED_MATCHES = 2",
+            "STABILITY_MAX_POLLS = 6",
+            "tree_stability_digest",
+            "last_result_signal_digest",
+            "observe_wait_until_stable",
+            "build_wait_until_stable_directive",
+            "\"engine_wait_until_stable\"",
+            "resolve_scoped_address",
+            "build_scoped_click_bt",
+            "match_mode=\"exact\"",
+        ),
+    )
+    residues.extend(
+        _require_source(
+            ctx,
+            "app/tasks/bt_core.py",
+            (
+                "def wire_snapshot",
+                "def find_all_results",
+                "def mark_find_all",
+                "if action_name == \"find_all\":",
+                "\"bt_blackboard\": ctx.blackboard.wire_snapshot()",
+                "\"bt_find_all_results\": ctx.blackboard.find_all_results()",
+            ),
+        )
+    )
+    residues.extend(
+        _require_source(
+            ctx,
+            "app/pipeline.py",
+            (
+                "last_result[\"bt_blackboard\"] = bt_result[\"bt_blackboard\"]",
+                "last_result[\"bt_find_all_results\"] = bt_result[\"bt_find_all_results\"]",
+            ),
+        )
+    )
+    residues.extend(
+        _require_source(
+            ctx,
+            "spark/models.py",
+            (
+                "bt_blackboard: Optional[dict] = None",
+                "bt_find_all_results: Optional[dict] = None",
+            ),
+        )
+    )
+    return residues
+
+
 def _state_liveness_residue() -> list[str]:
     from spark.tools import state_closure_suite
 
@@ -964,6 +1027,7 @@ CHECKS: dict[str, Callable[[ProbeContext], list[str]]] = {
     "validated_store_source": _check_validated_store_source,
     "worker_handoff_receipt": _check_worker_handoff_receipt,
     "worker_output_schema_retry": _check_worker_output_schema_retry,
+    "engine_primitives": _check_engine_primitives,
     "state_ladder_liveness": _check_state_ladder_liveness,
     "yaml_fold_reset": _check_yaml_fold_reset,
     "escalation_auto_dispatch": _check_escalation_auto_dispatch,

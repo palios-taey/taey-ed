@@ -42,6 +42,7 @@ class Status:
 class Blackboard:
     def __init__(self):
         self._data: Dict[str, Any] = {}
+        self._find_all_keys: set[str] = set()
 
     def set(self, key: str, value: Any):
         self._data[key] = value
@@ -94,6 +95,50 @@ class Blackboard:
     def snapshot(self) -> dict:
         """Return keys for debugging (not full data - elements aren't serializable)."""
         return {k: type(v).__name__ for k, v in self._data.items()}
+
+    def wire_snapshot(self) -> dict:
+        """Return a bounded serializable snapshot for Spark-side stability checks."""
+        return {k: _wire_value(v) for k, v in self._data.items()}
+
+    def find_all_results(self) -> dict:
+        """Return only stored find_all-like lists with raw AX refs stripped."""
+        out = {}
+        for key, value in self._data.items():
+            if key in self._find_all_keys or _looks_like_find_all_result(value):
+                out[key] = _wire_value(value)
+        return out
+
+    def mark_find_all(self, key: str):
+        self._find_all_keys.add(key)
+
+
+def _looks_like_find_all_result(value: Any) -> bool:
+    return (
+        isinstance(value, list)
+        and bool(value)
+        and all(isinstance(item, dict) and "ax" in item for item in value)
+    )
+
+
+def _wire_value(value: Any, depth: int = 0) -> Any:
+    if depth > 5:
+        return {"_truncated": type(value).__name__}
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, list):
+        return [_wire_value(item, depth + 1) for item in value[:50]]
+    if isinstance(value, tuple):
+        return [_wire_value(item, depth + 1) for item in value[:50]]
+    if isinstance(value, dict):
+        result = {}
+        for key, item in value.items():
+            key_str = str(key)
+            if key_str == "element":
+                result[key_str] = {"_type": type(item).__name__}
+            else:
+                result[key_str] = _wire_value(item, depth + 1)
+        return result
+    return {"_type": type(value).__name__}
 
 
 # =========================================================================
@@ -227,6 +272,8 @@ def _tick_action(node_def: dict, ctx: ExecutionContext) -> str:
     store_key = node_def.get("store")
     if store_key:
         ctx.blackboard.set(store_key, result)
+        if action_name == "find_all":
+            ctx.blackboard.mark_find_all(store_key)
 
     # Store to current loop element's attribute
     store_to_current = node_def.get("store_to_current")
@@ -436,4 +483,6 @@ def execute_tree(
         "success": status == Status.SUCCESS,
         "action": f"behavior_tree ({status})",
         "continue_loop": continue_loop,
+        "bt_blackboard": ctx.blackboard.wire_snapshot(),
+        "bt_find_all_results": ctx.blackboard.find_all_results(),
     }

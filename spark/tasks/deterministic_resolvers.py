@@ -19,14 +19,39 @@ do not carry.
 from __future__ import annotations
 
 import logging
+import hashlib
+import json
 import re
-from typing import Callable, Optional
+from dataclasses import asdict, dataclass
+from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
 UNIT_BANNER_RE = re.compile(r"^Unit \d+ Up next for you!$", re.IGNORECASE)
 SUMMARY_ADVANCE_BUTTONS = ("next question", "show summary")
 INTRO_ADVANCE_BUTTONS = ("lets go", "start quiz", "start unit test")
+STABILITY_REQUIRED_MATCHES = 2
+STABILITY_MAX_POLLS = 6
+_STABILITY_STATE: dict[str, dict[str, Any]] = {}
+
+
+@dataclass(frozen=True)
+class ScopedAddress:
+    role: str
+    target: str
+    match_mode: str
+    source_field: str
+    scope: str = ""
+
+
+@dataclass(frozen=True)
+class StabilityObservation:
+    key: str
+    stable: bool
+    exhausted: bool
+    stable_count: int
+    poll_count: int
+    signature: str
 
 
 def _walk_axlinks_dom_order(tree: dict):
@@ -84,6 +109,183 @@ def _normalize_label(value: str) -> str:
 
 def _button_label_key(value: str) -> str:
     return _normalize_label(value).replace("'", "")
+
+
+def _stable_node(node: Any) -> Any:
+    if not isinstance(node, dict):
+        return None
+    stable = {}
+    for key in (
+        "role",
+        "name",
+        "description",
+        "value",
+        "visible_bbox",
+        "position",
+        "size",
+        "element_id",
+    ):
+        value = node.get(key)
+        if value not in (None, "", [], {}):
+            stable[key] = value
+    children = [
+        child
+        for child in (_stable_node(item) for item in (node.get("children") or []))
+        if child is not None
+    ]
+    if children:
+        stable["children"] = children
+    return stable
+
+
+def _digest(payload: Any) -> str:
+    body = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def tree_stability_digest(tree: dict) -> str:
+    return _digest(_stable_node(tree))
+
+
+def find_all_stability_digest(find_all_results: Any) -> str:
+    return _digest(find_all_results or {})
+
+
+def _last_result_get(last_result: Any, key: str) -> Any:
+    if last_result is None:
+        return None
+    if isinstance(last_result, dict):
+        return last_result.get(key)
+    return getattr(last_result, key, None)
+
+
+def last_result_signal_digest(last_result: Any) -> str:
+    return find_all_stability_digest(_last_result_get(last_result, "bt_find_all_results"))
+
+
+def observe_wait_until_stable(
+    *,
+    key: str,
+    tree: dict,
+    last_result: Any = None,
+    required_matches: int = STABILITY_REQUIRED_MATCHES,
+    max_polls: int = STABILITY_MAX_POLLS,
+) -> StabilityObservation:
+    tree_sig = tree_stability_digest(tree)
+    find_all_sig = last_result_signal_digest(last_result)
+    signature = _digest({"tree": tree_sig, "find_all": find_all_sig})
+    prior = _STABILITY_STATE.get(key) or {}
+    same = prior.get("signature") == signature
+    stable_count = int(prior.get("stable_count", 0)) + 1 if same else 1
+    poll_count = int(prior.get("poll_count", 0)) + 1
+    required = max(1, int(required_matches))
+    limit = max(required, int(max_polls))
+    stable = stable_count >= required
+    exhausted = poll_count >= limit and not stable
+    observation = StabilityObservation(
+        key=key,
+        stable=stable,
+        exhausted=exhausted,
+        stable_count=stable_count,
+        poll_count=poll_count,
+        signature=signature,
+    )
+    if stable or exhausted:
+        _STABILITY_STATE.pop(key, None)
+    else:
+        _STABILITY_STATE[key] = {
+            "signature": signature,
+            "stable_count": stable_count,
+            "poll_count": poll_count,
+        }
+    return observation
+
+
+def build_wait_until_stable_directive(
+    observation: StabilityObservation,
+    *,
+    seconds: float = 1.0,
+) -> dict | None:
+    if observation.stable or observation.exhausted:
+        return None
+    return {
+        "directive": "wait",
+        "reason": "engine_wait_until_stable",
+        "seconds": max(0.5, float(seconds)),
+        "stability": asdict(observation),
+    }
+
+
+def _node_matches_text(node: dict, text: str | None, contains: bool = False) -> bool:
+    if not text:
+        return True
+    needle = _normalize_label(text)
+    for value in _text_values(node):
+        haystack = _normalize_label(value)
+        if (contains and needle in haystack) or (not contains and needle == haystack):
+            return True
+    return False
+
+
+def _scope_nodes(tree: dict, role: str | None, text: str | None) -> list[tuple[str, dict]]:
+    if not role and not text:
+        return [("", tree)]
+    scopes = []
+    for node in _walk_nodes_dom_order(tree):
+        if role and node.get("role") != role:
+            continue
+        if not _node_matches_text(node, text, contains=True):
+            continue
+        label = " / ".join(_text_values(node)[:2]) or str(node.get("role") or "")
+        scopes.append((label, node))
+    return scopes
+
+
+def resolve_scoped_address(
+    tree: dict,
+    *,
+    role: str,
+    target: str | None = None,
+    contains: str | None = None,
+    scope_role: str | None = None,
+    scope_text: str | None = None,
+    index: int = 0,
+) -> ScopedAddress | None:
+    candidates: list[ScopedAddress] = []
+    for scope_label, scope in _scope_nodes(tree, scope_role, scope_text):
+        for node in _walk_nodes_dom_order(scope):
+            if node.get("role") != role:
+                continue
+            if target and not _node_matches_text(node, target, contains=False):
+                continue
+            if contains and not _node_matches_text(node, contains, contains=True):
+                continue
+            for field in ("name", "description", "value"):
+                value = str(node.get(field) or "").strip()
+                if value:
+                    candidates.append(
+                        ScopedAddress(
+                            role=role,
+                            target=value,
+                            match_mode="exact",
+                            source_field=field,
+                            scope=scope_label,
+                        )
+                    )
+                    break
+    if not candidates:
+        return None
+    if index < 0 or index >= len(candidates):
+        return None
+    return candidates[index]
+
+
+def build_scoped_click_bt(address: ScopedAddress, *, post_delay: float = 2.5) -> dict:
+    return build_click_bt(
+        address.target,
+        role=address.role,
+        post_delay=post_delay,
+    )
 
 
 def _find_transition_button(tree: dict, allowed: tuple[str, ...]) -> str | None:
