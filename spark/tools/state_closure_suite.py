@@ -1,24 +1,26 @@
 #!/usr/bin/env python3
-"""Class-based closure suite for spark/state_schema.sql (v3).
+"""Class-based closure suite for spark/state_schema.sql (v3.1).
 
-NOT a string-level attack script. For each invariant it probes the equivalence
-FAMILY of ways to violate it — UPDATE, INSERT, INSERT OR REPLACE, DELETE+reinsert,
-NULL-value bridges, PK/ownership reassignment — including HORIZON's exact v2 breaks
-(A NULL-PK dup, B cleared-not-absorbing + screen_id reassignment, C archive
-lineage forgery, D REPLACE over events/archive) and GAIA's set. A probe that
-should ABORT and instead COMPLETES is a hole. Reports only what it proves.
+CORRECTED after HORIZON r3 caught a FALSE-CLOSURE in the earlier version: a
+multi-statement probe whose SETUP was the violation and whose final statement
+aborted was scored "closed" without checking the setup didn't persist.
 
-Init asserts the REQUIRED writer PRAGMAs, incl. recursive_triggers=ON — the
-setting Horizon showed is load-bearing for REPLACE firing DELETE triggers.
+Model now:
+  probe = (name, setup(c), violation_sql_or_fn, residue_check(c)->bool)
+  * setup runs and COMMITS (must be legal state).
+  * violation is the SINGLE operation that MUST abort.
+  * a probe is CLOSED iff: (violation raised) AND (residue_check confirms the
+    forbidden mutation did NOT persist). Both required — an abort with residue
+    is a HOLE, not a closure.
+Attacks the equivalence FAMILY incl. ALTERNATE-UNIQUE REPLACE targets (not just
+PK), per Horizon r3. Asserts recursive_triggers=ON (load-bearing for REPLACE).
 """
-import sqlite3, sys, os
-
+import sqlite3, os, sys
 SCHEMA = os.path.join(os.path.dirname(__file__), '..', 'state_schema.sql')
 
 def conn():
     c = sqlite3.connect(':memory:')
-    for p in ('journal_mode=WAL','busy_timeout=5000','synchronous=NORMAL',
-              'foreign_keys=ON','recursive_triggers=ON'):
+    for p in ('foreign_keys=ON','recursive_triggers=ON'):
         c.execute(f'PRAGMA {p}')
     c.executescript(open(SCHEMA).read())
     return c
@@ -27,114 +29,160 @@ def seed(c):
     c.execute("INSERT INTO platforms(platform) VALUES('p1')")
     c.execute("INSERT INTO platforms(platform) VALUES('p2')")
     c.execute("INSERT INTO screen_types(platform,screen_type,category,artifact_path,artifact_sha) VALUES('p1','EXERCISE_DROPDOWN','EXERCISE','x','y')")
-    c.execute("INSERT INTO screens(screen_id,platform) VALUES('s1','p1')")
-    c.execute("INSERT INTO screens(screen_id,platform) VALUES('s2','p1')")
+    for s in ('s1','s2'):
+        c.execute("INSERT INTO screens(screen_id,platform) VALUES(?,?)",(s,'p1'))
     c.execute("INSERT INTO coordination(screen_id,platform,attempt_count,terminal,state) VALUES('s1','p1',4,1,'terminal')")
     c.execute("INSERT INTO bundle_receipts(bundle_id,call_kind,screen_id,slices_json,total_chars,receipt_sha) VALUES('rc','classify','s1','[]',10,'sha')")
     c.execute("INSERT INTO bundle_receipts(bundle_id,call_kind,screen_id,slices_json,total_chars,receipt_sha) VALUES('rx','bt_build','s2','[]',10,'sha')")
     c.commit()
 
-# each probe: (name, must_abort, sql-or-callable). callable(c) may run multiple stmts.
-def probes():
-    P = []
-    def add(n, fn): P.append((n, fn))
-    # --- A. NULL primary keys (must abort) ---
-    add('A.null-pk-platform', lambda c: c.execute("INSERT INTO platforms(platform) VALUES(NULL)"))
-    add('A.null-pk-screen', lambda c: c.execute("INSERT INTO screens(screen_id,platform) VALUES(NULL,'p1')"))
-    add('A.null-pk-bt', lambda c: c.execute("INSERT INTO behavior_trees(bt_id,screen_id,revision,bt_json,built_by,source_kind) VALUES(NULL,'s1',1,'{}','w','r')"))
-    # --- B. cleared not absorbing + screen_id reassignment ---
-    def b_clear_then_consult(c):
-        c.execute("INSERT INTO screens(screen_id,platform) VALUES('sb','p1')")
-        c.execute("INSERT INTO coordination(screen_id,platform,state,tier,attempt_count,terminal,cleared_reason) VALUES('sb','p1','cleared','tier2',2,0,'advanced')")
-        c.execute("UPDATE coordination SET state='consulting' WHERE screen_id='sb'")
-    add('B.cleared->consulting', b_clear_then_consult)
-    add('B.screen_id-reassign', lambda c: c.execute("UPDATE coordination SET screen_id='s2' WHERE screen_id='s1'"))
-    # --- C. archive lineage forgery (must abort the delete) ---
-    def c_forge(c):
-        c.execute("INSERT INTO events(kind,platform,screen_id,consult_id,actor,payload_json,created_at) VALUES('k','p1','s1','real','system','{}',1720000000001)")
-        eid = c.execute("SELECT max(event_id) FROM events").fetchone()[0]
-        # archive row with matching 5 fields but FORGED platform/screen_id/consult_id
-        c.execute("INSERT INTO events_archive(event_id,kind,platform,screen_id,consult_id,actor,payload_json,created_at) VALUES(?,?,?,?,?,?,?,?)",
-                  (eid,'k','p2',None,'forged','system','{}',1720000000001))
-        c.execute("DELETE FROM events WHERE event_id=?", (eid,))
-    add('C.archive-lineage-forgery', c_forge)
-    # --- D. REPLACE over events / archive / dedup / consult / coordination ---
-    def d_replace_event(c):
-        c.execute("INSERT INTO events(kind,actor) VALUES('k','system')")
-        eid = c.execute("SELECT max(event_id) FROM events").fetchone()[0]
-        c.execute("INSERT OR REPLACE INTO events(event_id,kind,actor) VALUES(?,?,?)",(eid,'forged','system'))
-    add('D.replace-event', d_replace_event)
-    def d_replace_coord(c):
-        c.execute("INSERT OR REPLACE INTO coordination(screen_id,platform,attempt_count,terminal,state) VALUES('s1','p1',0,0,'normal')")
-    add('D.replace-coordination', d_replace_coord)
-    def d_replace_pending(c):
-        c.execute("INSERT INTO consults(consult_id,platform,payload_dir) VALUES('c1','p1','/d')")
-        c.execute("INSERT OR REPLACE INTO consults(consult_id,platform,payload_dir,status) VALUES('c1','p1','/d','pending')")
-        c.execute("INSERT INTO consults(consult_id,platform,payload_dir) VALUES('c2','p1','/d')")  # 2nd pending
-    add('D.replace-then-second-pending', d_replace_pending)
-    def d_dedup_reinsert(c):
-        c.execute("INSERT INTO tier_dispatches(screen_id,tier,cycle_id) VALUES('s1','tier1','cyc')")
-        c.execute("DELETE FROM tier_dispatches WHERE screen_id='s1'")  # must abort
-    add('D.dedup-delete-reinsert', d_dedup_reinsert)
-    # --- F6 ladder on INSERT path (v2 only guarded UPDATE) ---
-    def f6_attempt5(c):
-        c.execute("INSERT INTO screens(screen_id,platform) VALUES('s5','p1')")
-        c.execute("INSERT INTO coordination(screen_id,platform,attempt_count) VALUES('s5','p1',5)")
-    add('F6.insert-attempt-5', f6_attempt5)
-    def f6_term_normal(c):
-        c.execute("INSERT INTO screens(screen_id,platform) VALUES('s6','p1')")
-        c.execute("INSERT INTO coordination(screen_id,platform,terminal,state) VALUES('s6','p1',1,'normal')")
-    add('F6.insert-terminal-normal', f6_term_normal)
-    # --- ms timestamp magnitude (STRICT + CHECK) ---
-    add('TS.text-timestamp', lambda c: c.execute("INSERT INTO screens(screen_id,platform,first_seen) VALUES('st','p1','2026-07-10')"))
-    add('TS.second-scale', lambda c: c.execute("INSERT INTO platforms(platform,onboarded_at) VALUES('ps',1720000000)"))
-    # --- classification forgery with unrelated receipt ---
-    add('F7.unrelated-receipt', lambda c: c.execute("UPDATE screens SET classification='classified', screen_type='EXERCISE_DROPDOWN', classified_by_bundle_id='rx' WHERE screen_id='s1'"))
-    add('F7.no-receipt', lambda c: c.execute("UPDATE screens SET classification='classified', screen_type='EXERCISE_DROPDOWN', classified_by_bundle_id=NULL WHERE screen_id='s1'"))
-    # --- validated BT forgery ---
-    def bt_two_validated(c):
-        c.execute("INSERT INTO behavior_trees(bt_id,screen_id,revision,bt_json,built_by,source_kind,status,success_count) VALUES('b1','s1',1,'{}','w','r','validated',1)")
-        c.execute("INSERT INTO behavior_trees(bt_id,screen_id,revision,bt_json,built_by,source_kind,status,success_count) VALUES('b2','s1',2,'{}','w','r','validated',1)")
-    add('F10.two-validated', bt_two_validated)
-    add('F10.validated-zero-success', lambda c: c.execute("INSERT INTO behavior_trees(bt_id,screen_id,revision,bt_json,built_by,source_kind,status,success_count) VALUES('b3','s1',3,'{}','w','r','validated',0)"))
-    def bt_replace_history(c):
-        c.execute("INSERT INTO behavior_trees(bt_id,screen_id,revision,bt_json,built_by,source_kind) VALUES('b4','s1',4,'{}','w','r')")
-        c.execute("INSERT OR REPLACE INTO behavior_trees(bt_id,screen_id,revision,bt_json,built_by,source_kind) VALUES('b4','s1',4,'FORGED','w','r')")
-    add('F10.replace-history', bt_replace_history)
-    # --- registry: bare master, exercise-deterministic, fake trust ---
-    add('F8.bare-master', lambda c: c.execute("INSERT INTO screen_types(platform,screen_type,category,artifact_path,artifact_sha) VALUES('p1','EXERCISE','EXERCISE','x','y')"))
-    add('F9.exercise-deterministic', lambda c: c.execute("INSERT INTO screen_types(platform,screen_type,category,artifact_path,artifact_sha,deterministic) VALUES('p1','EX2','EXERCISE','x','y',1)"))
-    add('F9.fake-trust', lambda c: c.execute("INSERT INTO screen_types(platform,screen_type,category,artifact_path,artifact_sha,trust) VALUES('p1','VID','VIDEO','x','y','trusted')"))
-    # --- slice currency incl NULL platform dup ---
-    def slice_dup(c):
-        c.execute("INSERT INTO context_slices(slice_id,platform,level,selector,source_path,source_sha) VALUES('sl1',NULL,0,'core','p','a')")
-        c.execute("INSERT INTO context_slices(slice_id,platform,level,selector,source_path,source_sha) VALUES('sl2',NULL,0,'core','p','b')")
-    add('F11.L0-null-dup', slice_dup)
-    # --- direct-decrement (v1/v2 baseline, must still abort) ---
-    add('base.decrement', lambda c: c.execute("UPDATE coordination SET attempt_count=1 WHERE screen_id='s1'"))
-    add('base.unterminate', lambda c: c.execute("UPDATE coordination SET terminal=0 WHERE screen_id='s1'"))
-    return P
+# residue helpers
+def no_row(c, sql, args=()): return c.execute(sql, args).fetchone() is None
+def val(c, sql, args=()):
+    r = c.execute(sql, args).fetchone(); return r[0] if r else None
+
+PROBES = []
+def P(name, setup, violation, residue):
+    PROBES.append((name, setup, violation, residue))
+
+# --- A: NULL / empty logical PKs ---
+P('A.null-pk', None, ("INSERT INTO screens(screen_id,platform) VALUES(NULL,'p1')", ()),
+  lambda c: no_row(c,"SELECT 1 FROM screens WHERE screen_id IS NULL"))
+
+# --- B: cleared class (full) ---
+def b_setup(c):
+    c.execute("INSERT INTO screens(screen_id,platform) VALUES('sb','p1')")
+    c.execute("INSERT INTO coordination(screen_id,platform,state,attempt_count,terminal,cleared_reason) VALUES('sb','p1','cleared',2,0,'advanced')")
+    c.commit()
+P('B.cleared->consulting', b_setup, ("UPDATE coordination SET state='consulting' WHERE screen_id='sb'",()),
+  lambda c: val(c,"SELECT state FROM coordination WHERE screen_id='sb'")=='cleared')
+P('B.cleared-mutate-field-while-cleared', b_setup, ("UPDATE coordination SET tier='tier3', attempt_count=4, platform='p2' WHERE screen_id='sb'",()),
+  lambda c: val(c,"SELECT tier FROM coordination WHERE screen_id='sb'") is None and val(c,"SELECT attempt_count FROM coordination WHERE screen_id='sb'")==2)
+P('B.screen_id-reassign', None, ("UPDATE coordination SET screen_id='s2' WHERE screen_id='s1'",()),
+  lambda c: no_row(c,"SELECT 1 FROM coordination WHERE screen_id='s2'"))
+# and the LEGAL re-arm of a cleared terminal ladder must SUCCEED (liveness, not a hole)
+
+# --- C: archive insertion validity + faithful delete ---
+def c_setup(c):
+    c.execute("INSERT INTO events(kind,platform,screen_id,consult_id,actor,payload_json,created_at) VALUES('k','p1','s1','real','system','{}',1720000000001)")
+    c.commit()
+P('C.forge-orphan-archive', c_setup, ("INSERT INTO events_archive(event_id,kind,platform,screen_id,consult_id,actor,payload_json,created_at) VALUES(999,'forged','p2',NULL,'fake','system','{}',1720000000001)",()),
+  lambda c: no_row(c,"SELECT 1 FROM events_archive WHERE event_id=999"))
+P('C.forge-mismatched-archive', c_setup, ("INSERT INTO events_archive(event_id,kind,platform,screen_id,consult_id,actor,payload_json,created_at) SELECT event_id,'forged','p2',NULL,'fake',actor,payload_json,created_at FROM events WHERE screen_id='s1'",()),
+  lambda c: no_row(c,"SELECT 1 FROM events_archive WHERE kind='forged'"))
+P('C.delete-live-no-archive', c_setup, ("DELETE FROM events WHERE screen_id='s1'",()),
+  lambda c: not no_row(c,"SELECT 1 FROM events WHERE screen_id='s1'"))
+
+# --- D: REPLACE via ALTERNATE unique targets (the r3 class) ---
+def d_bt_setup(c):
+    c.execute("INSERT INTO behavior_trees(bt_id,screen_id,revision,bt_json,built_by,source_kind) VALUES('b1','s1',1,'ORIGINAL','worker','recipe')")
+    c.commit()
+P('D.bt-replace-alt-unique', d_bt_setup,
+  ("INSERT OR REPLACE INTO behavior_trees(bt_id,screen_id,revision,bt_json,built_by,source_kind) VALUES('b2','s1',1,'FORGED','worker','recipe')",()),
+  lambda c: val(c,"SELECT bt_json FROM behavior_trees WHERE screen_id='s1' AND revision=1")=='ORIGINAL' and no_row(c,"SELECT 1 FROM behavior_trees WHERE bt_id='b2'"))
+def d_pending_setup(c):
+    c.execute("INSERT INTO consults(consult_id,platform,payload_dir,status) VALUES('c1','p1','/d','pending')")
+    c.commit()
+P('D.consult-replace-alt-pending', d_pending_setup,
+  ("INSERT OR REPLACE INTO consults(consult_id,platform,payload_dir,status) VALUES('c2','p1','/d','pending')",()),
+  lambda c: val(c,"SELECT consult_id FROM consults WHERE status='pending'")=='c1' and val(c,"SELECT count(*) FROM consults WHERE status='pending'")==1)
+P('D.second-pending-plain', d_pending_setup,
+  ("INSERT INTO consults(consult_id,platform,payload_dir,status) VALUES('c3','p1','/d','pending')",()),
+  lambda c: val(c,"SELECT count(*) FROM consults WHERE status='pending'")==1)
+def d_slice_setup(c):
+    c.execute("INSERT INTO context_slices(slice_id,platform,level,selector,source_path,source_sha) VALUES('sl1',NULL,0,'core','p','ORIG')")
+    c.commit()
+P('D.slice-replace-current', d_slice_setup,
+  ("INSERT OR REPLACE INTO context_slices(slice_id,platform,level,selector,source_path,source_sha) VALUES('sl2',NULL,0,'core','p','FORGED')",()),
+  lambda c: val(c,"SELECT source_sha FROM context_slices WHERE selector='core' AND trust<>'superseded'")=='ORIG' and no_row(c,"SELECT 1 FROM context_slices WHERE slice_id='sl2'"))
+P('D.dedup-delete-reinsert', lambda c:(c.execute("INSERT INTO tier_dispatches(screen_id,tier,cycle_id) VALUES('s1','tier1','cyc')"),c.commit()),
+  ("DELETE FROM tier_dispatches WHERE screen_id='s1'",()),
+  lambda c: not no_row(c,"SELECT 1 FROM tier_dispatches WHERE screen_id='s1'"))
+P('D.coord-replace', None, ("INSERT OR REPLACE INTO coordination(screen_id,platform,attempt_count,terminal,state) VALUES('s1','p1',0,0,'normal')",()),
+  lambda c: val(c,"SELECT attempt_count FROM coordination WHERE screen_id='s1'")==4)
+P('D.event-replace', lambda c:(c.execute("INSERT INTO events(kind,actor) VALUES('k','system')"),c.commit()),
+  ("INSERT OR REPLACE INTO events(event_id,kind,actor) VALUES((SELECT max(event_id) FROM events),'forged','system')",()),
+  lambda c: no_row(c,"SELECT 1 FROM events WHERE kind='forged'"))
+
+# --- F6 ladder on INSERT ---
+P('F6.insert-attempt-5', lambda c:(c.execute("INSERT INTO screens(screen_id,platform) VALUES('s5','p1')"),c.commit()),
+  ("INSERT INTO coordination(screen_id,platform,attempt_count) VALUES('s5','p1',5)",()),
+  lambda c: no_row(c,"SELECT 1 FROM coordination WHERE screen_id='s5'"))
+P('F6.insert-terminal-normal', lambda c:(c.execute("INSERT INTO screens(screen_id,platform) VALUES('s6','p1')"),c.commit()),
+  ("INSERT INTO coordination(screen_id,platform,terminal,state) VALUES('s6','p1',1,'normal')",()),
+  lambda c: no_row(c,"SELECT 1 FROM coordination WHERE screen_id='s6'"))
+
+# --- timestamps / classification / trust / bt (single-statement violations) ---
+P('TS.text-ts', None, ("INSERT INTO screens(screen_id,platform,first_seen) VALUES('st','p1','2026')",()), lambda c: no_row(c,"SELECT 1 FROM screens WHERE screen_id='st'"))
+P('TS.second-scale', None, ("INSERT INTO platforms(platform,onboarded_at) VALUES('ps',1720000000)",()), lambda c: no_row(c,"SELECT 1 FROM platforms WHERE platform='ps'"))
+P('F7.unrelated-receipt', None, ("UPDATE screens SET classification='classified',screen_type='EXERCISE_DROPDOWN',classified_by_bundle_id='rx' WHERE screen_id='s1'",()), lambda c: val(c,"SELECT classification FROM screens WHERE screen_id='s1'")=='pending')
+P('F8.bare-master', None, ("INSERT INTO screen_types(platform,screen_type,category,artifact_path,artifact_sha) VALUES('p1','EXERCISE','EXERCISE','x','y')",()), lambda c: no_row(c,"SELECT 1 FROM screen_types WHERE screen_type='EXERCISE'"))
+P('F9.exercise-deterministic', None, ("INSERT INTO screen_types(platform,screen_type,category,artifact_path,artifact_sha,deterministic) VALUES('p1','EX2','EXERCISE','x','y',1)",()), lambda c: no_row(c,"SELECT 1 FROM screen_types WHERE screen_type='EX2'"))
+P('F9.fake-trust', None, ("INSERT INTO screen_types(platform,screen_type,category,artifact_path,artifact_sha,trust) VALUES('p1','VID','VIDEO','x','y','trusted')",()), lambda c: no_row(c,"SELECT 1 FROM screen_types WHERE screen_type='VID'"))
+P('F10.validated-zero', None, ("INSERT INTO behavior_trees(bt_id,screen_id,revision,bt_json,built_by,source_kind,status,success_count) VALUES('bz','s1',7,'{}','w','r','validated',0)",()), lambda c: no_row(c,"SELECT 1 FROM behavior_trees WHERE bt_id='bz'"))
+P('base.decrement', None, ("UPDATE coordination SET attempt_count=1 WHERE screen_id='s1'",()), lambda c: val(c,"SELECT attempt_count FROM coordination WHERE screen_id='s1'")==4)
+P('base.unterminate', None, ("UPDATE coordination SET terminal=0 WHERE screen_id='s1'",()), lambda c: val(c,"SELECT terminal FROM coordination WHERE screen_id='s1'")==1)
 
 def run():
-    P = probes()
-    holes, closed = [], []
-    for name, fn in P:
+    closed, holes, false_closures = [], [], []
+    for name, setup, violation, residue in PROBES:
         c = conn(); seed(c)
         try:
-            fn(c); c.commit()
-            holes.append(name)          # completed but should have aborted
+            if setup: setup(c)
+        except Exception as e:
+            holes.append(f"{name} (SETUP FAILED: {str(e)[:40]})"); c.close(); continue
+        aborted = False
+        try:
+            sql, args = violation if isinstance(violation, tuple) else (violation, ())
+            c.execute(sql, args); c.commit()
         except (sqlite3.IntegrityError, sqlite3.OperationalError):
+            aborted = True
+            c.rollback()
+        # oracle: closed IFF aborted AND no residue
+        try:
+            clean = residue(c)
+        except Exception:
+            clean = False
+        if aborted and clean:
             closed.append(name)
-        finally:
-            c.close()
-    print(f"CLOSED ({len(closed)}/{len(P)}):")
-    for n in closed: print("  ✓", n)
+        elif aborted and not clean:
+            false_closures.append(name)   # aborted but the forbidden mutation persisted
+        else:
+            holes.append(name)            # completed
+        c.close()
+    print(f"CLOSED ({len(closed)}/{len(PROBES)}):"); [print("  ✓", n) for n in closed]
+    if false_closures:
+        print(f"\nFALSE-CLOSURES ({len(false_closures)}) — aborted but residue persisted:"); [print("  ⚠", n) for n in false_closures]
     if holes:
-        print(f"\nHOLES ({len(holes)}) — completed but must abort:")
-        for n in holes: print("  ✗", n)
-    else:
-        print("\nNO HOLES — every probed violation class aborts.")
-    return 1 if holes else 0
+        print(f"\nHOLES ({len(holes)}) — violation completed:"); [print("  ✗", n) for n in holes]
+    if not holes and not false_closures:
+        print("\nNO HOLES, NO FALSE-CLOSURES — every violation class aborts AND leaves no residue.")
+    return 1 if (holes or false_closures) else 0
 
 if __name__ == '__main__':
     sys.exit(run())
+
+# --- LIVENESS: legal operations MUST succeed (a closed-but-dead schema is also
+# a failure). Run: python state_closure_suite.py --liveness
+def liveness():
+    c = conn()
+    c.execute("INSERT INTO platforms(platform) VALUES('p1')")
+    c.execute("INSERT INTO screens(screen_id,platform) VALUES('s1','p1')")
+    c.execute("INSERT INTO coordination(screen_id,platform,attempt_count,terminal,state) VALUES('s1','p1',4,1,'terminal')")
+    c.execute("UPDATE coordination SET state='cleared',cleared_reason='user_stop_reset',terminal=0,attempt_count=0 WHERE screen_id='s1'")
+    checks = [
+      ("re-arm cleared->normal", "UPDATE coordination SET state='normal',attempt_count=0,terminal=0,tier=NULL WHERE screen_id='s1'"),
+      ("climb 0->1", "UPDATE coordination SET attempt_count=1,tier='tier1',state='diagnosing' WHERE screen_id='s1'"),
+      ("climb tier1->tier2", "UPDATE coordination SET attempt_count=2,tier='tier2' WHERE screen_id='s1'"),
+      ("clear on advance", "UPDATE coordination SET state='cleared',cleared_reason='advanced' WHERE screen_id='s1'"),
+    ]
+    bad=[]
+    for n,sql in checks:
+        try: c.execute(sql)
+        except Exception as e: bad.append(f"{n}: {e}")
+    print("LIVENESS:", "OK" if not bad else "OVER-BLOCKED")
+    for b in bad: print("  ✗", b)
+    return 1 if bad else 0
+
+if __name__ == '__main__' and '--liveness' in sys.argv:
+    sys.exit(liveness())

@@ -183,6 +183,20 @@ CREATE TRIGGER IF NOT EXISTS behavior_trees_no_clobber
 BEFORE INSERT ON behavior_trees
 WHEN EXISTS (SELECT 1 FROM behavior_trees WHERE bt_id = NEW.bt_id)
 BEGIN SELECT RAISE(ABORT,'no REPLACE over a behavior tree (history is immutable)'); END;
+-- v3.1 (Horizon r3 D): REPLACE resolves conflicts on ANY unique target, not
+-- just the PK. behavior_trees has UNIQUE(screen_id,revision) + the validated
+-- partial index — so a REPLACE with a NEW bt_id but a colliding (screen_id,
+-- revision) would implicit-DELETE the original and slip past the bt_id guard.
+-- General close: block ALL deletes (BT history is immutable; supersede via
+-- status, never delete) — with recursive_triggers=ON this aborts every
+-- REPLACE's implicit delete regardless of which unique it targets.
+CREATE TRIGGER IF NOT EXISTS behavior_trees_no_delete
+BEFORE DELETE ON behavior_trees
+BEGIN SELECT RAISE(ABORT,'behavior tree history is immutable — supersede via status, never delete/REPLACE'); END;
+-- identity/content/provenance columns are immutable (only status + counters mutate)
+CREATE TRIGGER IF NOT EXISTS behavior_trees_identity_immutable
+BEFORE UPDATE OF bt_id, screen_id, revision, bt_json, built_by, source_kind, bundle_id, supersedes ON behavior_trees
+BEGIN SELECT RAISE(ABORT,'behavior tree identity/content/provenance is immutable'); END;
 
 CREATE TABLE IF NOT EXISTS qa_captures (
     qa_id           TEXT NOT NULL PRIMARY KEY,
@@ -215,6 +229,12 @@ CREATE TABLE IF NOT EXISTS context_slices (
 CREATE UNIQUE INDEX IF NOT EXISTS ux_slice_current
   ON context_slices(ifnull(platform,'*'), level, selector) WHERE trust <> 'superseded';
 CREATE INDEX IF NOT EXISTS idx_slices_lookup ON context_slices(platform, level, selector, trust);
+-- v3.1 (Horizon r3 D): supersession is an UPDATE (trust->'superseded'); a slice
+-- is never deleted. Blocks REPLACE via ux_slice_current from silently deleting
+-- the current row.
+CREATE TRIGGER IF NOT EXISTS context_slices_no_delete
+BEFORE DELETE ON context_slices
+BEGIN SELECT RAISE(ABORT,'context slices supersede (SCD), never delete/REPLACE'); END;
 
 -- ---------------------------------------------------------------------------
 -- COORDINATION — escalation state machine. v3 closes: leaving 'cleared',
@@ -252,30 +272,35 @@ CREATE TRIGGER IF NOT EXISTS coordination_no_clobber
 BEFORE INSERT ON coordination
 WHEN EXISTS (SELECT 1 FROM coordination WHERE screen_id = NEW.screen_id)
 BEGIN SELECT RAISE(ABORT,'no REPLACE over a live ladder (R8.3)'); END;
+-- The authorized RE-ARM (cleared -> fresh normal ladder) is the ONE legal exit
+-- from cleared. Define it once; monotonic + sticky exempt it so a cleared row
+-- with attempt>0 / terminal=1 CAN re-arm (Horizon r3 B: the re-arm was
+-- over-blocked). Reused via the identical predicate in each WHEN.
 CREATE TRIGGER IF NOT EXISTS coordination_monotonic
 BEFORE UPDATE ON coordination
 WHEN NEW.attempt_count < OLD.attempt_count AND NEW.state <> 'cleared'
+ AND NOT (OLD.state = 'cleared' AND NEW.state = 'normal' AND NEW.attempt_count = 0 AND NEW.terminal = 0 AND NEW.tier IS NULL)
 BEGIN SELECT RAISE(ABORT,'attempt_count is monotonic (R8.3)'); END;
 CREATE TRIGGER IF NOT EXISTS coordination_sticky_terminal
 BEFORE UPDATE ON coordination
 WHEN OLD.terminal = 1 AND NEW.terminal = 0 AND NEW.state <> 'cleared'
+ AND NOT (OLD.state = 'cleared' AND NEW.state = 'normal' AND NEW.attempt_count = 0 AND NEW.terminal = 0 AND NEW.tier IS NULL)
 BEGIN SELECT RAISE(ABORT,'terminal is sticky (R8.3)'); END;
--- 'cleared' is ABSORBING: the only exit is an authorized re-arm to a fresh
--- ladder (state='normal', attempt_count=0, terminal=0). Any other exit — to
--- consulting/diagnosing/etc, or leaving cleared with protected fields intact —
--- aborts. (Horizon break B: cleared->consulting.)
-CREATE TRIGGER IF NOT EXISTS coordination_cleared_absorbing
+-- 'cleared' is FROZEN: the ONLY legal UPDATE of a cleared row is the authorized
+-- re-arm to a fresh normal ladder. Any other change — leaving cleared to a
+-- non-normal state, OR mutating ANY field while staying cleared (platform,
+-- attempt_count, tier, terminal, last_attempt_key) — aborts. (Horizon r3 B:
+-- v3 only caught cleared->consulting + decrement; a cleared row could still
+-- mutate other fields while staying cleared.)
+CREATE TRIGGER IF NOT EXISTS coordination_cleared_frozen
 BEFORE UPDATE ON coordination
 WHEN OLD.state = 'cleared'
- AND NOT (NEW.state = 'cleared')
- AND NOT (NEW.state = 'normal' AND NEW.attempt_count = 0 AND NEW.terminal = 0 AND NEW.tier IS NULL)
-BEGIN SELECT RAISE(ABORT,'a cleared ladder exits only via an authorized re-arm to a fresh normal ladder (R8.3/R8.5)'); END;
-CREATE TRIGGER IF NOT EXISTS coordination_cleared_immutable
-BEFORE UPDATE ON coordination
-WHEN OLD.state = 'cleared'
- AND (NEW.attempt_count < OLD.attempt_count OR (OLD.terminal = 1 AND NEW.terminal = 0))
- AND NOT (NEW.state = 'normal' AND NEW.attempt_count = 0 AND NEW.terminal = 0)
-BEGIN SELECT RAISE(ABORT,'a cleared row is not a mutable row (R8.3)'); END;
+ AND NOT (NEW.state = 'normal' AND NEW.attempt_count = 0 AND NEW.terminal = 0 AND NEW.tier IS NULL)  -- the re-arm
+ AND NOT (NEW.state = 'cleared'                                                                      -- or a frozen no-op:
+      AND NEW.attempt_count = OLD.attempt_count AND NEW.terminal = OLD.terminal
+      AND NEW.tier IS OLD.tier AND NEW.platform IS OLD.platform
+      AND NEW.last_attempt_key IS OLD.last_attempt_key AND NEW.cleared_reason IS OLD.cleared_reason)
+BEGIN SELECT RAISE(ABORT,'a cleared ladder is frozen: only an authorized re-arm to a fresh normal ladder is legal (R8.3/R8.5)'); END;
 CREATE TRIGGER IF NOT EXISTS coordination_clear_requires_reason
 BEFORE UPDATE ON coordination
 WHEN NEW.state = 'cleared' AND OLD.state <> 'cleared' AND NEW.cleared_reason IS NULL
@@ -347,6 +372,20 @@ CREATE TRIGGER IF NOT EXISTS consults_no_clobber
 BEFORE INSERT ON consults
 WHEN EXISTS (SELECT 1 FROM consults WHERE consult_id = NEW.consult_id)
 BEGIN SELECT RAISE(ABORT,'no REPLACE over a consult'); END;
+-- v3.1 (Horizon r3 D): the "one pending" invariant must be guarded on VALUE,
+-- not just the unique index — a REPLACE via ux_one_pending would implicit-
+-- delete the existing pending and swap in a new one. Block a 2nd pending
+-- regardless of consult_id; and forbid DELETING a pending consult (a pending
+-- consult RESOLVES via status UPDATE, it is never deleted/swapped). Resolved
+-- consults may still be cleaned up (delete allowed only when not pending).
+CREATE TRIGGER IF NOT EXISTS consults_no_second_pending
+BEFORE INSERT ON consults
+WHEN NEW.status = 'pending' AND EXISTS (SELECT 1 FROM consults WHERE status = 'pending')
+BEGIN SELECT RAISE(ABORT,'ONE consultation at a time (R8.6): a pending consult already exists'); END;
+CREATE TRIGGER IF NOT EXISTS consults_pending_not_deletable
+BEFORE DELETE ON consults
+WHEN OLD.status = 'pending'
+BEGIN SELECT RAISE(ABORT,'a pending consult resolves via status, never delete/REPLACE (R8.6)'); END;
 
 -- ---------------------------------------------------------------------------
 -- EVENTS — append-only (rowid+AUTOINCREMENT so it stays a rowid table; STRICT).
@@ -405,3 +444,18 @@ CREATE TRIGGER IF NOT EXISTS events_archive_no_id_reuse
 BEFORE INSERT ON events_archive
 WHEN EXISTS (SELECT 1 FROM events_archive WHERE event_id = NEW.event_id)
 BEGIN SELECT RAISE(ABORT,'archive event_id never reused'); END;
+-- v3.1 (Horizon r3 C): guard the VALIDITY of the archive insertion, not just
+-- immutability-after. An archive row may only be inserted for a live event
+-- whose lineage it faithfully copies (NULL-safe across ALL columns). Closes
+-- forged/orphan archive insertion (audit-floor pollution + denial-of-archive).
+-- Legit archival: the live event still exists at archive-insert time (the
+-- delete follows in the same txn), so this passes for real archival.
+CREATE TRIGGER IF NOT EXISTS events_archive_insert_must_match_live
+BEFORE INSERT ON events_archive
+WHEN NOT EXISTS (
+  SELECT 1 FROM events e WHERE e.event_id = NEW.event_id
+    AND e.kind IS NEW.kind AND e.actor IS NEW.actor
+    AND e.payload_json IS NEW.payload_json AND e.created_at IS NEW.created_at
+    AND e.platform IS NEW.platform AND e.screen_id IS NEW.screen_id
+    AND e.consult_id IS NEW.consult_id)
+BEGIN SELECT RAISE(ABORT,'archive insert must faithfully copy a live event (no forged/orphan archive)'); END;
