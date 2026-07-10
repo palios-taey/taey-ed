@@ -1,5 +1,5 @@
 # Taey-Ed State Store — Design
-**Status: DRAFT v0 (2026-07-09)** — decisions locked against grok's LOGOS refutation (dispatches/2026-07-09_grok_state_store_validation_REPORT.md), the migration surface inventory (dispatches/2026-07-09_migration_surface_inventory.md), and docs/REQUIREMENTS.md. Full DDL lands with `taey-ed-state-context::p1-schema-design`. Every grok verdict gets a design decision below — none are waved off.
+**Status: v1 (2026-07-10)** — decisions locked against grok's LOGOS refutation (dispatches/2026-07-09_grok_state_store_validation_REPORT.md), the migration surface inventory (dispatches/2026-07-09_migration_surface_inventory.md), and docs/REQUIREMENTS.md. **Formal DDL: `spark/state_schema.sql`** (tables + CHECK enums + monotonicity/stickiness/append-only TRIGGERS — invariants live at the store, R8.3). §8-§9 added per Jesse 2026-07-10: scaling + leveled JIT context + durable mappings are first-class design goals, not afterthoughts.
 
 ## 0. Regime honesty (what kind of system this is)
 The Mac polls every 0.5–3s and must NEVER block (R7.6, grok premise-invalidator #1). DCM recomputes verdicts on read because its reads are rare; taey-ed's reads are constant. Therefore:
@@ -56,6 +56,25 @@ On every capture: compute skeleton_hash + signature markers + UNCAPPED widget pr
 - **Importer** is only for DURABLE backfill (signatures, variant_bts, hash_index, session archives, escalation_state) run in a quiesced window; /tmp in-flight state is NEVER imported — it drains via TTL (600s) before Phase C. Idempotency via natural keys + source sha. "Lossless" is claimed only for durable state; ephemeral in-flight state is explicitly out of scope *(concedes grok Claim 6's live-state point)*.
 
 ## 7. Open design questions (for Chats DB review + grok round 2)
-1. `coordination.resume_at` + response-ready-gated resume (canon O9): add `response_pending_until`/extension on DR dispatch so an in-flight research response holds the dead-man window?
+1. ~~response-ready-gated resume~~ DECIDED: `coordination.response_pending_until` — a live DR/Family dispatch extends the dead-man window; the timer never steamrolls in-flight research (fixes O9).
 2. events retention/pruning policy (append-only forever vs archive table past N days) — no silent loss, explicit archive.
 3. Whether `screen_sessions` (working memory) moves in Phase A or stays file-backed until p4 (its render-budget semantics are the most write-amplified — grok Claim 2 evidence).
+
+## 8. Durable mappings — map once, NEVER redo (Jesse 2026-07-10)
+The point of identity is that recognition work is never repeated:
+- **TYPE grain** (`screen_types` + `type_signatures`): the first time a screen type is mapped on a platform, its feature signatures (uncapped widget-presence set, discriminative markers, dom-classes) are registered. Every later instance of that type matches **deterministically by signature — no LLM call, no re-classification, no re-mapping.** Only a genuinely novel feature signature ever reaches the classifier. The type's YAML is authored once and improved in place (R10.6); its trust/promotion state (`provisional → 3 validated successes → trusted`, demote-on-failure) lives on the registry row (R10.5).
+- **INSTANCE grain** (`screens` + `screen_keys` + `screen_features`): minted `screen_id`, many-to-many lookup keys, collisions representable (rows, never fusions). Deterministic types replay their validated BT (`behavior_trees.status='validated'`); dynamic types rebuild fresh from the type recipe — but the RECOGNITION is never redone.
+- **BT auto-build path (the steady state):** capture → resolver (signatures → screen_id + type, deterministic) → JIT bundle (§9) → worker builds the BT from THE ONE recipe with on-point context → conformance → execute → validate → promotion counters. Once a platform's types are mapped, screens flow through with zero classification cost and zero operator involvement; the worker builds BTs automatically with instructions that are precise every time.
+
+## 9. Leveled JIT context injection (Jesse 2026-07-10: "no confusing noise")
+Context is a 5-level hierarchy; every LLM call gets a **bounded recipe of slices — one per level, exactly scoped** — assembled from `context_slices` (L0-L3 index over the canonical files) + live screen state (L4). Never a dump; every call writes a `bundle_receipts` row (what was served, what was dropped and WHY — R7.1/R7.5).
+
+| Level | Scope | Content | Store |
+|---|---|---|---|
+| L0 | universal | core BT rules, handler contracts, universal exercise pattern | `context_slices(platform=NULL, level=0)` |
+| L1 | platform | knowledge.json: timing, never_click, quirks(-for-this-category only) | `context_slices(level=1)` |
+| L2 | category | MASTER routing context (optional, small) | `context_slices(level=2)` |
+| L3 | screen type | THE ONE YAML (recipe/contracts/actuation/verification) | `context_slices(level=3)` |
+| L4 | screen instance | screen session (attempts/lessons for THIS screen), qa history, KB chunks (exercise family only) | `screens`/`qa_captures`/session |
+
+Call recipes (per `bundle_receipts.call_kind`): **classify** = L0-lite + L1 classification guide + registered-type list (small — and rare, per §8); **bt_build** = L0 core + L1 quirks-for-category + L3 full + L4 session (+ KB chunks if exercise); **retry_build** = bt_build + the failure context (failed BT + verdict); **diagnose** (escalation packet) = everything above + full attempt history. Required-slice-empty ⇒ refuse and escalate (fail-closed, R7.4). Budget pressure drops WHOLE optional slices with a receipt — never mid-content cuts (R7.1). This is the worker-confinement contract (R7.9/R7.10) made mechanical: core + THE ONE YAML + THIS screen's state, nothing else, receipted.
