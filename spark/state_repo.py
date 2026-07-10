@@ -812,7 +812,7 @@ class StateRepo:
             screen_id, _ = self._resolve_or_mint(conn, platform, "skeleton", screen_hash, None)
             self._ensure_coordination(conn, screen_id, platform)
             row = conn.execute(
-                "SELECT state,terminal FROM coordination WHERE screen_id=?",
+                "SELECT state,terminal,resume_at FROM coordination WHERE screen_id=?",
                 (screen_id,),
             ).fetchone()
             if int(row["terminal"]) == 1:
@@ -825,7 +825,7 @@ class StateRepo:
                     payload={"reason": "terminal", "tier": tier, "evidence": evidence},
                 )
                 return False
-            if row["state"] == "diagnosing":
+            if row["state"] == "diagnosing" and int(row["resume_at"] or 0) > 0:
                 return False
             deadline = int(response_pending_until_ms or resume_at_ms)
             conn.execute(
