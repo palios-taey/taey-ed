@@ -991,6 +991,116 @@ class StateRepo:
                 conn.execute("DELETE FROM events WHERE event_id=?", (row["event_id"],))
             return len(rows)
 
+    def import_escalation_snapshot(
+        self,
+        *,
+        platform: str,
+        screen_hash: str,
+        attempt_count: int,
+        terminal: bool,
+        actor: str,
+        evidence: dict[str, Any],
+    ) -> None:
+        self._require_actor(actor, {"system", "supervisor"}, "import_escalation_snapshot")
+        self._require_evidence(evidence, "source", "source_sha")
+        target_attempt = max(0, min(int(attempt_count), 4))
+        with immediate_transaction(self.db_path) as conn:
+            screen_id, _ = self._resolve_or_mint(conn, platform, "skeleton", screen_hash, None)
+            marker = f'"source_sha":"{evidence["source_sha"]}"'
+            exists = conn.execute(
+                """
+                SELECT 1 FROM events
+                 WHERE kind='escalation_snapshot_imported'
+                   AND screen_id=?
+                   AND payload_json LIKE ?
+                 LIMIT 1
+                """,
+                (screen_id, f"%{marker}%"),
+            ).fetchone()
+            if exists:
+                return
+            self._ensure_coordination(conn, screen_id, platform)
+            current = conn.execute(
+                "SELECT attempt_count,terminal FROM coordination WHERE screen_id=?",
+                (screen_id,),
+            ).fetchone()
+            if terminal:
+                conn.execute(
+                    """
+                    UPDATE coordination
+                       SET state='terminal',
+                           terminal=1,
+                           tier='terminal',
+                           attempt_count=CASE WHEN attempt_count < ? THEN ? ELSE attempt_count END,
+                           updated_at=?
+                     WHERE screen_id=?
+                    """,
+                    (max(target_attempt, 4), max(target_attempt, 4), now_ms(), screen_id),
+                )
+            elif int(current["terminal"]) == 0 and target_attempt > int(current["attempt_count"]):
+                tier, state, terminal_flag = self._tier_for_attempt(target_attempt)
+                conn.execute(
+                    """
+                    UPDATE coordination
+                       SET attempt_count=?,
+                           tier=?,
+                           state=?,
+                           terminal=?,
+                           updated_at=?
+                     WHERE screen_id=?
+                    """,
+                    (target_attempt, tier, state, terminal_flag, now_ms(), screen_id),
+                )
+            self._record_event(
+                conn,
+                kind="escalation_snapshot_imported",
+                actor=actor,
+                platform=platform,
+                screen_id=screen_id,
+                payload={
+                    "attempt_count": attempt_count,
+                    "terminal": terminal,
+                    "evidence": evidence,
+                },
+            )
+
+    def import_session_archive_entry(
+        self,
+        *,
+        platform: str,
+        skel_hash: str,
+        source_sha: str,
+        actor: str,
+        evidence: dict[str, Any],
+        payload: dict[str, Any],
+    ) -> bool:
+        self._require_actor(actor, {"system", "supervisor"}, "import_session_archive")
+        self._require_evidence(evidence, "source", "source_sha")
+        with immediate_transaction(self.db_path) as conn:
+            screen_id, _ = self._resolve_or_mint(conn, platform, "skeleton", skel_hash, None)
+            marker = f'"source_sha":"{source_sha}"'
+            exists = conn.execute(
+                """
+                SELECT 1 FROM events
+                 WHERE kind='screen_session_archive_imported'
+                   AND screen_id=?
+                   AND payload_json LIKE ?
+                 LIMIT 1
+                """,
+                (screen_id, f"%{marker}%"),
+            ).fetchone()
+            if exists:
+                return False
+            self._record_event(
+                conn,
+                kind="screen_session_archive_imported",
+                actor=actor,
+                platform=platform,
+                screen_id=screen_id,
+                payload={**payload, "source_sha": source_sha, "evidence": evidence},
+            )
+            return True
+
     def counts(self) -> dict[str, int]:
         tables = (
             "platforms",
