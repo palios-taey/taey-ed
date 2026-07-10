@@ -27,8 +27,8 @@ PINNED_EXECUTOR_MANIFEST_HASH = (
 PINNED_EXECUTOR_MANIFEST_V2_SHA256 = (
     "3ffc6274ab27fa41ce51d036944a5e02ce07f36ab071265429e30c1675410d34"
 )
-PINNED_PROBE_MIN_COUNT = 21
-PINNED_PROBE_REGISTRY_HASH = "sha256:072fe183fdf7a25decad21e790edabfe3e5ba00079ea076fdbf1ba759efae30d"
+PINNED_PROBE_MIN_COUNT = 22
+PINNED_PROBE_REGISTRY_HASH = "sha256:5b726ed7a2c3100e79f80b3c36ce753e73790fdd3d3da148a4c787ccac147127"
 DEFAULT_CONTRACT_RED_RUN_REGISTER = Path(__file__).with_name("contract_probe_red_runs.jsonl")
 
 # V2 names the select_dropdown_option surface as an 11-slot minimum; the live
@@ -123,6 +123,15 @@ PROBE_SPECS: tuple[ProbeSpec, ...] = (
         incident_ref="worker handoff input contract row",
         red_fixture="handoffs/consult_1783696442_0b0f4cd5_p7qad__p",
         description="Worker handoff carries tree, screenshot, artifact metadata, and KB receipt fields.",
+    ),
+    ProbeSpec(
+        id="thesis.worker_output_schema_retry",
+        group="structural-gap-thesis",
+        check_name="worker_output_schema_retry",
+        current_mode="enforced",
+        incident_ref="cl1-worker-schema jsonschema + bounded retry contract",
+        red_fixture="worker output missing slots/evidence/confidence",
+        description="Worker output is server-side JSON-schema validated, retried once with violation feedback, then escalated with rejected output.",
     ),
     ProbeSpec(
         id="thesis.ladder_timer_monotone_bound",
@@ -563,6 +572,45 @@ def _check_worker_handoff_receipt(ctx: ProbeContext) -> list[str]:
     return residues
 
 
+def _check_worker_output_schema_retry(ctx: ProbeContext) -> list[str]:
+    residues = _require_source(
+        ctx,
+        "spark/worker/bt_generator.py",
+        (
+            "from jsonschema import Draft202012Validator",
+            "WORKER_SCHEMA_MAX_ATTEMPTS = 2",
+            "WORKER_OUTPUT_SCHEMA",
+            "\"slots\"",
+            "\"evidence\"",
+            "\"confidence\"",
+            "SERVER-SIDE WORKER OUTPUT REJECTION",
+            "user_instruction_retry.txt",
+            "worker_rejection_attempt{attempt}.json",
+            "worker_output_schema_rejection",
+            "rejected_bt.json",
+            "new dialect repairs",
+        ),
+    )
+    residues.extend(
+        _require_source(
+            ctx,
+            "spark/routes/next_action.py",
+            (
+                "worker_output_schema_rejection",
+                "failed to load rejected_bt.json for worker rejection escalation",
+            ),
+        )
+    )
+    residues.extend(
+        _require_source(
+            ctx,
+            "requirements.txt",
+            ("jsonschema",),
+        )
+    )
+    return residues
+
+
 def _state_liveness_residue() -> list[str]:
     from spark.tools import state_closure_suite
 
@@ -918,6 +966,7 @@ CHECKS: dict[str, Callable[[ProbeContext], list[str]]] = {
     "expected_next_seed_never_veto": _check_expected_next_seed_never_veto,
     "validated_store_source": _check_validated_store_source,
     "worker_handoff_receipt": _check_worker_handoff_receipt,
+    "worker_output_schema_retry": _check_worker_output_schema_retry,
     "state_ladder_liveness": _check_state_ladder_liveness,
     "yaml_fold_reset": _check_yaml_fold_reset,
     "escalation_auto_dispatch": _check_escalation_auto_dispatch,

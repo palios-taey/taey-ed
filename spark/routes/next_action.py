@@ -1718,7 +1718,11 @@ def _next_action_impl(request: NextActionRequest):
                     _wf_kind = "conformance_rejection"
                 _cp = Path("/tmp/taey-ed-consult") / consultation_id
                 _failed_bt = lr.failed_bt if lr and lr.failed_bt else None
-                if _wf_kind == "conformance_rejection":
+                if _wf_kind in {
+                    "conformance_rejection",
+                    "validation_rejection",
+                    "worker_output_schema_rejection",
+                }:
                     _rbp = Path(
                         consult_status.get("_rejected_bt_path")
                         or (_cp / "rejected_bt.json")
@@ -1727,9 +1731,11 @@ def _next_action_impl(request: NextActionRequest):
                         if _rbp.exists():
                             _failed_bt = json.loads(_rbp.read_text())
                     except Exception:
-                        logger.exception("failed to load rejected_bt.json for conformance escalation")
+                        logger.exception("failed to load rejected_bt.json for worker rejection escalation")
                 if _wf_kind == "conformance_rejection":
                     _escalation_reason = f"conformance_rejection: {_wf_reason}"
+                elif _wf_kind == "worker_output_schema_rejection":
+                    _escalation_reason = f"worker_output_schema_rejection: {_wf_reason}"
                 elif _wf_kind == "validation_rejection":
                     _escalation_reason = f"validation_rejection: {_wf_reason}"
                 else:
