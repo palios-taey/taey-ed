@@ -106,27 +106,28 @@ def _iter_served_bts(corpus: Path):
             yield f"{resp.parent.name}/response.json", platform, screen, bt
 
 
-def _remaining_composite_key_paths(node, path: str = "tree") -> list[str]:
-    paths: list[str] = []
+def _executor_shape_violations(node, path: str = "tree") -> list[str]:
+    violations: list[str] = []
     if isinstance(node, dict):
-        keys = list(node.keys())
-        if (
-            "type" not in node
-            and "action" not in node
-            and len(keys) == 1
-            and keys[0] in {"sequence", "fallback"}
-            and isinstance(node[keys[0]], list)
-        ):
-            paths.append(f"{path}.{keys[0]}")
+        node_type = node.get("type")
+        action = node.get("action")
+        if node_type is None:
+            if action is None:
+                violations.append(f"{path}: missing type/action")
+        elif node_type == "action":
+            if not isinstance(action, str) or not action:
+                violations.append(f"{path}: type='action' missing action")
+        elif node_type not in {"sequence", "fallback"} and action != node_type:
+            violations.append(f"{path}: type={node_type!r} action={action!r}")
         for index, child in enumerate(node.get("children") or []):
-            paths.extend(_remaining_composite_key_paths(child, f"{path}.children[{index}]"))
+            violations.extend(_executor_shape_violations(child, f"{path}.children[{index}]"))
         for key in ("do", "then", "else"):
             if key in node:
-                paths.extend(_remaining_composite_key_paths(node.get(key), f"{path}.{key}"))
+                violations.extend(_executor_shape_violations(node.get(key), f"{path}.{key}"))
     elif isinstance(node, list):
         for index, item in enumerate(node):
-            paths.extend(_remaining_composite_key_paths(item, f"{path}[{index}]"))
-    return paths
+            violations.extend(_executor_shape_violations(item, f"{path}[{index}]"))
+    return violations
 
 
 def check_served(corpus: Path, findings: list) -> dict:
@@ -137,18 +138,19 @@ def check_served(corpus: Path, findings: list) -> dict:
     from spark.tasks.screen_type_util import get_master_category
     from spark.worker.bt_generator import _normalize_bt_nodes
 
-    checked = skipped = 0
+    checked = skipped = executor_shape_violations = 0
     for name, platform, screen, bt in _iter_served_bts(corpus):
         if get_master_category(screen) != "EXERCISE":
             skipped += 1
             continue
         parsed = {"screen_type": screen, "tree": copy.deepcopy(bt)}
         _normalize_bt_nodes(parsed["tree"])
-        unnormalized = _remaining_composite_key_paths(parsed["tree"])
-        if unnormalized:
+        shape_violations = _executor_shape_violations(parsed["tree"])
+        if shape_violations:
+            executor_shape_violations += len(shape_violations)
             findings.append(
-                f"B:{name}: composite-as-key nodes survived normalizer: "
-                f"{', '.join(unnormalized[:5])}"
+                f"B:{name}: executor-native shape violation after normalizer: "
+                f"{', '.join(shape_violations[:5])}"
             )
         try:
             validate_worker_bt_response(
@@ -160,7 +162,11 @@ def check_served(corpus: Path, findings: list) -> dict:
         except Exception as exc:  # noqa: BLE001
             skipped += 1
             findings.append(f"B:{name}: validator raised unexpectedly for {screen}: {exc!r}")
-    return {"served_checked": checked, "served_skipped": skipped}
+    return {
+        "served_checked": checked,
+        "served_skipped": skipped,
+        "executor_shape_violations": executor_shape_violations,
+    }
 
 
 def check_store(data_dir: Path, findings: list) -> dict:

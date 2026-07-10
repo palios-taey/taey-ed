@@ -178,6 +178,7 @@ _NODE_LEVEL_KEYS = {
     "children", "do", "then", "else",
     "items", "variable", "condition", "params",
 }
+_ACTION_AS_KEY_METADATA_KEYS = {"comment"}
 
 
 def _normalize_bt_nodes(node) -> None:
@@ -211,16 +212,24 @@ def _normalize_bt_nodes(node) -> None:
         # recognizes it, so every action is reported omitted -> conformance
         # rejects a perfectly good BT. (RCA 2026-06-15, d2b842: the worker emitted
         # {"find_and_click": {...}}, {"wait": 1.5}, {"store_qa": {...}}.) Canonicalize
-        # when the node has no type/action and exactly one key that is a registered
-        # action. Runs BEFORE the for_each/conditional canonicalization so
-        # {"for_each": {...}} flows through both.
+        # action. The only tolerated sibling is non-execution metadata such as
+        # `comment`, which is carried into the node label. Runs BEFORE the
+        # for_each/conditional canonicalization so {"for_each": {...}} flows
+        # through both.
         if "type" not in node and "action" not in node:
             _akeys = [k for k in node.keys() if k in KNOWN_ACTIONS]
-            if len(_akeys) == 1 and len(node) == 1:
+            _non_action_keys = [k for k in node.keys() if k not in _akeys]
+            if (
+                len(_akeys) == 1
+                and all(k in _ACTION_AS_KEY_METADATA_KEYS for k in _non_action_keys)
+            ):
                 _ak = _akeys[0]
                 _val = node.pop(_ak)
+                _comment = node.pop("comment", None)
                 node["type"] = "action"
                 node["action"] = _ak
+                if isinstance(_comment, str) and _comment:
+                    node["name"] = _comment
                 if isinstance(_val, dict):
                     node["params"] = _val
                 elif _ak == "wait" and isinstance(_val, (int, float)):
@@ -260,12 +269,15 @@ def _normalize_bt_nodes(node) -> None:
         # dropped). The worker sometimes emits them as an ACTION
         # ({type:action, action:for_each}) or nests their structural keys under
         # params: ({type:for_each, params:{items,variable,do}}). The Mac reads
-        # items/variable/do/condition/then/else at NODE level (Rule 6). Run this
-        # BEFORE the missing-type inference (which looks for items/variable at node
-        # level) and the action-param-nesting. (2026-06-15, operator for_each RCA.)
+        # items/variable/do/condition/then/else at NODE level (Rule 6), but its
+        # dispatcher reaches these handlers through action=="for_each"/"conditional".
+        # Keep action=<type> on control nodes; type-only control nodes fail as
+        # action=None on the Mac. Run this BEFORE missing-type inference and
+        # action-param-nesting. (2026-06-15 for_each RCA; 2026-07-10 conditional RCA.)
         if node.get("action") in ("for_each", "conditional"):
-            node["type"] = node.pop("action")
+            node["type"] = node["action"]
         if node.get("type") in ("for_each", "conditional"):
+            node.setdefault("action", node["type"])
             _p = node.get("params")
             if isinstance(_p, dict):
                 for _k in ("items", "variable", "do", "condition", "then", "else"):
