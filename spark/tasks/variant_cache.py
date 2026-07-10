@@ -101,6 +101,22 @@ def _mirror_screen_type_demotion(platform: str, variant: str, source: str) -> No
         logger.exception("state-store dual-write failed: variant_cache.%s", source)
 
 
+def _mirror_variant_bt_delete(platform: str, variant: str, source: str) -> None:
+    if not variant:
+        return
+    try:
+        _state_repo().record_cache_delete(
+            platform=platform,
+            key_kind="widget_set",
+            key_hash=f"variant_bt:{variant}",
+            screen_type=variant,
+            actor="api",
+            evidence=_state_evidence(source, variant=variant),
+        )
+    except Exception:
+        logger.exception("state-store dual-write failed: variant_cache.%s", source)
+
+
 def _atomic_write(path: Path, data: dict):
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
@@ -195,6 +211,51 @@ def _cache_safe_behavior_tree(variant: str, behavior_tree: dict) -> bool:
     return _contains_generic_solver(behavior_tree) and not _has_frozen_answer(behavior_tree)
 
 
+def _is_transition_variant(variant: str) -> bool:
+    from spark.tasks.screen_type_util import get_master_category
+
+    return get_master_category(variant) == "TRANSITION"
+
+
+def _purge_variant_bt_entry(entry: dict, *, source: str) -> bool:
+    if not isinstance(entry, dict) or not entry.get("behavior_tree"):
+        return False
+
+    now = datetime.now(timezone.utc).isoformat()
+    history = list(entry.get("history") or [])
+    history.append({
+        "behavior_tree": entry.get("behavior_tree"),
+        "extract": entry.get("extract"),
+        "expected_next": entry.get("expected_next", []),
+        "source": entry.get("source"),
+        "validated": entry.get("validated", False),
+        "success_count": entry.get("success_count", 0),
+        "purged_at": now,
+        "purge_source": source,
+    })
+    entry["history"] = history[-25:]
+    entry["behavior_tree"] = None
+    entry["extract"] = None
+    entry["expected_next"] = []
+    entry["source"] = None
+    entry["validated"] = False
+    entry["consecutive_failures"] = 0
+    entry["purged_at"] = now
+    entry["purge_source"] = source
+    return True
+
+
+def _purge_active_variant_bt(platform: str, variant: str, source: str) -> bool:
+    data = _load_variants(platform)
+    entry = data["variants"].get(variant)
+    if not _purge_variant_bt_entry(entry, source=source):
+        return False
+    _atomic_write(_variant_path(platform), data)
+    _mirror_variant_bt_delete(platform, variant, source)
+    logger.warning("variant_cache: purged BT for %s (source=%s)", variant, source)
+    return True
+
+
 def store_variant_bt(
     platform: str,
     variant: str,
@@ -213,6 +274,18 @@ def store_variant_bt(
 
     if get_master_category(variant) == variant:
         logger.info("variant_cache: NOT storing BT for bare master %s", variant)
+        return False
+    if _is_transition_variant(variant):
+        _purge_active_variant_bt(
+            platform,
+            variant,
+            f"store_variant_bt_refused_transition.{source}",
+        )
+        logger.warning(
+            "variant_cache: NOT storing BT for transition %s "
+            "(transitions deterministic-serve from live tree)",
+            variant,
+        )
         return False
     if not isinstance(behavior_tree, dict) or not behavior_tree:
         logger.info("variant_cache: NOT storing empty BT for %s", variant)
@@ -266,6 +339,9 @@ def store_variant_bt(
 
 def lookup_variant_bt(platform: str, variant: str) -> dict | None:
     variant = _canonical_variant(platform, variant)
+    if _is_transition_variant(variant):
+        _purge_active_variant_bt(platform, variant, "lookup_variant_bt_refused_transition")
+        return None
     data = _load_variants(platform)
     entry = data["variants"].get(variant)
     if not entry or not entry.get("behavior_tree"):
@@ -309,6 +385,41 @@ def invalidate_variant_bt(platform: str, variant: str):
     _atomic_write(_variant_path(platform), data)
     _mirror_screen_type_demotion(platform, variant, "invalidate_variant_bt")
     logger.info(f"variant_cache: invalidated BT for {variant}")
+
+
+def purge_transition_variant_bts(platform: str | None = None) -> dict:
+    platforms = [platform] if platform else sorted(path.stem for path in VARIANT_BTS_DIR.glob("*.json"))
+    result = {
+        "platforms": platforms,
+        "examined": 0,
+        "purged": 0,
+        "variants": [],
+    }
+    for platform_name in platforms:
+        data = _load_variants(platform_name)
+        changed = False
+        for variant, entry in sorted(data["variants"].items()):
+            canonical = _canonical_variant(platform_name, variant)
+            if not _is_transition_variant(canonical):
+                continue
+            result["examined"] += 1
+            if _purge_variant_bt_entry(entry, source="purge_transition_variant_bts"):
+                changed = True
+                result["purged"] += 1
+                result["variants"].append(f"{platform_name}:{variant}")
+                _mirror_variant_bt_delete(
+                    platform_name,
+                    canonical,
+                    "purge_transition_variant_bts",
+                )
+        if changed:
+            _atomic_write(_variant_path(platform_name), data)
+            logger.warning(
+                "variant_cache: purged %s transition BT(s) for %s",
+                result["purged"],
+                platform_name,
+            )
+    return result
 
 
 def _hash_index_path(platform: str) -> Path:

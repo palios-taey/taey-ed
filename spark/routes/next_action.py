@@ -807,6 +807,34 @@ def _build_screen_directive(request, platform: str, tree: dict, screen_type: str
         )
     screen_type = canonical_screen_type
 
+    from spark.tasks.screen_type_util import get_master_category
+    if get_master_category(screen_type) == "TRANSITION":
+        from spark.tasks.deterministic_resolvers import build_transition_bt
+        transition_bt = build_transition_bt(screen_type, tree)
+        if transition_bt:
+            return _with_chat({
+                "directive": "execute_tree",
+                "directive_id": _make_directive_id(),
+                "tree": transition_bt,
+                "screen": screen_type,
+                "course_id": course_id,
+                "lesson": "",
+                "expected_next": [],
+                "skeleton_hash": sig_hash,
+            }, platform, [build_status(f"Using deterministic {screen_type} automation")])
+        return _with_chat({
+            "directive": "user_input_needed",
+            "directive_id": _make_directive_id(),
+            "reason": (
+                f"Transition subtype '{screen_type}' has no live forward control "
+                "(Next question, Show summary, Up next, or Lets go)."
+            ),
+            "screen_type": screen_type,
+        }, platform, [
+            build_status(f"No forward transition control found for {screen_type}"),
+            build_question(f"I recognized this as {screen_type}, but no forward control is present. What should I do?"),
+        ])
+
     # ── Hard-image rule, Tier 0: exact figure alt-text read (Jesse 2026-06-15) ──
     # Khan describes its wave figures in AXImage alt-text with the EXACT square
     # counts ("The wave extends 4 squares from the equilibrium level. There are 5
@@ -2305,7 +2333,8 @@ def _next_action_impl(request: NextActionRequest):
                 f"(variant={variant}). claude-primary should mark_validated or "
                 f"delete after observed-success on this screen."
             )
-        if not request.screenshot_b64:
+        from spark.tasks.screen_type_util import get_master_category as _gmc_step4b
+        if not request.screenshot_b64 and _gmc_step4b(variant) != "TRANSITION":
             return {
                 "directive": "need_screenshot",
                 "directive_id": _make_directive_id(),
@@ -2593,8 +2622,11 @@ def _next_action_impl(request: NextActionRequest):
                 "course_id": cs.course_id,
             }, platform, [build_status(f"Executing {variant} automation")])
 
-    # Step 5D: Worker consultation is the only BT build path now
-    logger.info(f"  Step 5D: requesting worker consultation for {variant}")
+    from spark.tasks.screen_type_util import get_master_category as _gmc_step5d
+    if _gmc_step5d(variant) == "TRANSITION":
+        logger.info(f"  Step 5D: deterministic transition serve for {variant}")
+    else:
+        logger.info(f"  Step 5D: requesting worker consultation for {variant}")
     store_message(platform, build_status(f"Identified screen as {variant}"))
 
     if screen_type == "UNKNOWN":

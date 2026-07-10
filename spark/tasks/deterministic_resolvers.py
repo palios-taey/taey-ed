@@ -25,6 +25,8 @@ from typing import Callable, Optional
 logger = logging.getLogger(__name__)
 
 UNIT_BANNER_RE = re.compile(r"^Unit \d+ Up next for you!$", re.IGNORECASE)
+SUMMARY_ADVANCE_BUTTONS = ("next question", "show summary")
+INTRO_ADVANCE_BUTTONS = ("lets go", "start quiz", "start unit test")
 
 
 def _walk_axlinks_dom_order(tree: dict):
@@ -48,11 +50,65 @@ def _walk_axlinks_dom_order(tree: dict):
             stack.append(c)
 
 
+def _walk_nodes_dom_order(tree: dict):
+    stack = [tree]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            yield node
+            children = node.get("children") or []
+            for child in reversed(children):
+                stack.append(child)
+
+
 def _is_visible(bbox) -> bool:
     """A bbox is visible if both width and height are > 0."""
     if not bbox or len(bbox) < 4:
         return False
     return bbox[2] > 0 and bbox[3] > 0
+
+
+def _text_values(node: dict) -> list[str]:
+    values: list[str] = []
+    for key in ("name", "description", "value"):
+        value = str(node.get(key) or "").strip()
+        if value:
+            values.append(value)
+    return values
+
+
+def _normalize_label(value: str) -> str:
+    normalized = re.sub(r"\s+", " ", str(value or "").strip()).casefold()
+    return normalized.replace("’", "'")
+
+
+def _button_label_key(value: str) -> str:
+    return _normalize_label(value).replace("'", "")
+
+
+def _find_transition_button(tree: dict, allowed: tuple[str, ...]) -> str | None:
+    matches: dict[str, str] = {}
+    for node in _walk_nodes_dom_order(tree):
+        if node.get("role") != "AXButton":
+            continue
+        for value in _text_values(node):
+            key = _button_label_key(value)
+            if key in allowed and key not in matches:
+                matches[key] = value
+    for key in allowed:
+        if key in matches:
+            return matches[key]
+    return None
+
+
+def _has_upnext_link(tree: dict) -> bool:
+    for node in _walk_nodes_dom_order(tree):
+        if node.get("role") != "AXLink":
+            continue
+        for value in _text_values(node):
+            if "up next" in _normalize_label(value):
+                return True
+    return False
 
 
 def resolve_khan_course_overview_target(tree: dict) -> Optional[str]:
@@ -136,6 +192,50 @@ def build_click_bt(target: str, role: str = "AXLink", post_delay: float = 3.5) -
             },
         ],
     }
+
+
+def build_transition_bt(variant: str, tree: dict) -> dict | None:
+    target = _find_transition_button(tree, SUMMARY_ADVANCE_BUTTONS)
+    if target:
+        logger.info(
+            "transition_resolver: %s -> AXButton %r",
+            variant,
+            target,
+        )
+        return build_click_bt(target, role="AXButton", post_delay=2.5)
+
+    if _has_upnext_link(tree):
+        logger.info("transition_resolver: %s -> AXLink description_contains 'Up next'", variant)
+        return {
+            "type": "sequence",
+            "name": "transition_upnext",
+            "children": [
+                {
+                    "type": "action",
+                    "action": "find_all",
+                    "params": {"role": "AXLink", "description_contains": "Up next"},
+                    "store": "upnext",
+                },
+                {
+                    "type": "action",
+                    "action": "click",
+                    "params": {"element": "$upnext.0.element", "strategy": "mouse_click"},
+                },
+                {"type": "action", "action": "wait", "params": {"seconds": 3.0}},
+            ],
+        }
+
+    target = _find_transition_button(tree, INTRO_ADVANCE_BUTTONS)
+    if target:
+        logger.info(
+            "transition_resolver: %s -> intro AXButton %r",
+            variant,
+            target,
+        )
+        return build_click_bt(target, role="AXButton", post_delay=3.0)
+
+    logger.warning("transition_resolver: %s has no live forward control", variant)
+    return None
 
 
 def resolve(variant: str, tree: dict) -> Optional[str]:
