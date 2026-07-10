@@ -10,6 +10,7 @@ pyobjc-framework-ApplicationServices
 
 # HTTP client for Spark API calls
 httpx
+jsonschema
 
 # Phase 5: Content extraction and storage
 Pillow                  # Image cropping for VLM

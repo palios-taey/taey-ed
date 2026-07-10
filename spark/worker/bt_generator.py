@@ -13,6 +13,8 @@ import json
 import logging
 from pathlib import Path
 
+from jsonschema import Draft202012Validator
+
 from spark.tasks.claude_runner import (
     call_claude_cli,
     ClaudeCallError,
@@ -29,6 +31,7 @@ from spark.tasks.screen_type_assembler import (
 logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT_S = 180
+WORKER_SCHEMA_MAX_ATTEMPTS = 2
 
 
 class BTGenerationError(RuntimeError):
@@ -43,16 +46,68 @@ class BTGenerationError(RuntimeError):
         rejected_bt_path: str | None = None,
         worker_raw_response_path: str | None = None,
         worker_raw_stdout_path: str | None = None,
+        worker_output=None,
     ):
         super().__init__(message)
         self.failure_kind = failure_kind
         self.rejected_bt_path = rejected_bt_path
         self.worker_raw_response_path = worker_raw_response_path
         self.worker_raw_stdout_path = worker_raw_stdout_path
+        self.worker_output = worker_output
 
 
 WORKER_RAW_STDOUT_NAME = "worker_raw_stdout.txt"
 WORKER_RAW_RESPONSE_NAME = "worker_raw_response.json"
+
+WORKER_OUTPUT_SCHEMA = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": [
+        "tree",
+        "screen_type",
+        "expected_next",
+        "extract",
+        "slots",
+        "evidence",
+        "confidence",
+    ],
+    "properties": {
+        "tree": {"type": "object"},
+        "screen_type": {"type": "string", "minLength": 1},
+        "expected_next": {
+            "type": "array",
+            "items": {"type": "string"},
+        },
+        "extract": {},
+        "slots": {
+            "type": "object",
+            "additionalProperties": True,
+        },
+        "evidence": {
+            "type": "object",
+            "required": ["target_source", "why_safe", "never_clicks_avoided"],
+            "properties": {
+                "target_source": {"type": "string", "minLength": 1},
+                "why_safe": {"type": "string", "minLength": 1},
+                "never_clicks_avoided": {
+                    "oneOf": [
+                        {"type": "string", "minLength": 1},
+                        {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {"type": "string", "minLength": 1},
+                        },
+                    ],
+                },
+            },
+            "additionalProperties": True,
+        },
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "_session": {"type": "object"},
+    },
+    "additionalProperties": True,
+}
+WORKER_OUTPUT_SCHEMA_VALIDATOR = Draft202012Validator(WORKER_OUTPUT_SCHEMA)
 
 
 def _load_consult_context(consultation_id: str) -> tuple[dict, dict]:
@@ -87,6 +142,15 @@ Shape:
   "screen_type": "<canonical screen_type from the selected YAML, or UNKNOWN-guide classification>",
   "expected_next": ["<screen_type>", ...],
   "extract": null,
+  "slots": {{
+    "<slot_name>": "<slot value copied or derived for this screen>"
+  }},
+  "evidence": {{
+    "target_source": "<exact text/name/value from the tree or screenshot that anchors the chosen target>",
+    "why_safe": "<why this BT advances the current screen without clicking forbidden controls>",
+    "never_clicks_avoided": ["Skip", "Take again", "mastery marketing controls"]
+  }},
+  "confidence": 0.0,
   "_session": {{
     "facts": {{}},
     "plan": null,
@@ -95,6 +159,10 @@ Shape:
 }}
 
 Only emit "_session" if you learned something the next cycle must retain for THIS screen.
+Use "slots": {{}} only when there is no typed slot value for this screen yet.
+The server validates screen_type, slots, evidence, and confidence with JSON Schema
+before storage or execution; missing fields or wrong types are rejected.
+confidence is a number from 0.0 to 1.0.
 
 Never click "Skip" mid-exercise; "Up next" only on post-completion transitions.
 
@@ -192,6 +260,50 @@ def _persist_json_artifact(path: Path, payload) -> str | None:
     except Exception:
         logger.exception("failed to persist %s", path.name)
         return None
+
+
+def _schema_error_path(error) -> str:
+    path = "$"
+    for part in error.absolute_path:
+        if isinstance(part, int):
+            path += f"[{part}]"
+        else:
+            path += f".{part}"
+    return path
+
+
+def _schema_error_summary(errors) -> str:
+    ordered = sorted(errors, key=lambda e: list(e.absolute_path))
+    return "; ".join(
+        f"{_schema_error_path(error)}: {error.message}"
+        for error in ordered[:6]
+    )
+
+
+def _build_retry_instruction(user_instruction: str, rejection: str) -> str:
+    return f"""{user_instruction}
+
+==============================================================
+SERVER-SIDE WORKER OUTPUT REJECTION
+==============================================================
+Your previous response was rejected before storage or execution:
+{rejection}
+
+Emit a complete corrected JSON object now. Do not explain the rejection.
+Keep the same task and include the required top-level worker contract fields:
+screen_type, slots, evidence, and confidence.
+=============================================================="""
+
+
+def _persist_rejection_artifact(path: Path, error: BTGenerationError) -> str | None:
+    payload = {
+        "failure_kind": error.failure_kind,
+        "reason": str(error),
+        "worker_raw_response_path": error.worker_raw_response_path,
+        "worker_raw_stdout_path": error.worker_raw_stdout_path,
+        "worker_output": error.worker_output,
+    }
+    return _persist_json_artifact(path, payload)
 
 
 def _root_shape_summary(value) -> str:
@@ -421,9 +533,20 @@ def _validate_bt(
 ) -> None:
     """Validate the parsed BT response has the required shape.
 
-    Minimal schema check — the BT engine on the Mac is robust to many shapes
-    but the top-level keys must be present.
+    Server-side JSON Schema owns the worker output envelope. The legacy BT
+    checks below remain because the Mac still executes the tree until slotized
+    compilers replace worker-authored BTs.
     """
+    schema_errors = list(WORKER_OUTPUT_SCHEMA_VALIDATOR.iter_errors(parsed))
+    if schema_errors:
+        raise BTGenerationError(
+            f"BT response for {consultation_id} failed worker output schema: "
+            f"{_schema_error_summary(schema_errors)}",
+            failure_kind="worker_output_schema_rejection",
+            worker_raw_response_path=worker_raw_response_path,
+            worker_raw_stdout_path=worker_raw_stdout_path,
+            worker_output=parsed,
+        )
     required = ("tree", "screen_type", "expected_next", "extract")
     for k in required:
         if k not in parsed:
@@ -432,6 +555,7 @@ def _validate_bt(
                 failure_kind="validation_rejection",
                 worker_raw_response_path=worker_raw_response_path,
                 worker_raw_stdout_path=worker_raw_stdout_path,
+                worker_output=parsed,
             )
     if not isinstance(parsed["tree"], dict):
         raise BTGenerationError(
@@ -440,6 +564,7 @@ def _validate_bt(
             failure_kind="validation_rejection",
             worker_raw_response_path=worker_raw_response_path,
             worker_raw_stdout_path=worker_raw_stdout_path,
+            worker_output=parsed,
         )
     if "type" not in parsed["tree"]:
         root = parsed["tree"]
@@ -455,12 +580,14 @@ def _validate_bt(
                 failure_kind="validation_rejection",
                 worker_raw_response_path=worker_raw_response_path,
                 worker_raw_stdout_path=worker_raw_stdout_path,
+                worker_output=parsed,
             )
         raise BTGenerationError(
             f"BT response for {consultation_id}: tree missing 'type' field",
             failure_kind="validation_rejection",
             worker_raw_response_path=worker_raw_response_path,
             worker_raw_stdout_path=worker_raw_stdout_path,
+            worker_output=parsed,
         )
     # GLOBAL REGISTERED-HANDLER FLOOR (2026-06-15). EVERY action must be a real
     # Mac handler — regardless of artifact kind (the recipe conformance check only
@@ -483,6 +610,7 @@ def _validate_bt(
             failure_kind="validation_rejection",
             worker_raw_response_path=worker_raw_response_path,
             worker_raw_stdout_path=worker_raw_stdout_path,
+            worker_output=parsed,
         )
     if "_session" in parsed and not isinstance(parsed["_session"], dict):
         raise BTGenerationError(
@@ -490,6 +618,7 @@ def _validate_bt(
             failure_kind="validation_rejection",
             worker_raw_response_path=worker_raw_response_path,
             worker_raw_stdout_path=worker_raw_stdout_path,
+            worker_output=parsed,
         )
 
 
@@ -566,91 +695,125 @@ def generate_bt(
         prompt_meta["handoff_dir"],
     )
 
-    logger.info(
-        f"bt_generator: invoking claude for consult={consultation_id} "
-        f"(timeout={timeout_s}s, budget=${max_budget_usd})"
-    )
-    try:
-        raw_text, meta = call_claude_cli(
-            system_prompt=Path(prompt_meta["system_prompt_path"]).read_text(encoding="utf-8"),
-            user_message=user_instruction,
-            screenshot_path=prompt_meta["screenshot_path"],
-            timeout_s=timeout_s,
-            max_budget_usd=max_budget_usd,
-            require_screenshot_read=True,
-            permission_mode="dontAsk",
-            tools=["Read"],
-            add_dirs=[prompt_meta["handoff_dir"]],
-            working_dir=prompt_meta["handoff_dir"],
+    system_prompt = Path(prompt_meta["system_prompt_path"]).read_text(encoding="utf-8")
+    meta = {}
+    bt = None
+    last_rejection = ""
+    attempt = 0
+    for attempt in range(1, WORKER_SCHEMA_MAX_ATTEMPTS + 1):
+        attempt_instruction = (
+            user_instruction
+            if attempt == 1
+            else _build_retry_instruction(user_instruction, last_rejection)
         )
-    except ClaudeCallError as e:
-        raise BTGenerationError(
-            f"Claude call failed for {consultation_id}: {e}"
-        ) from e
-
-    worker_raw_stdout_path = None
-    try:
-        inner_text = _extract_json_object(raw_text)
-    except ValueError as e:
-        worker_raw_stdout_path = _persist_text_artifact(
-            consult_dir / WORKER_RAW_STDOUT_NAME,
-            raw_text,
+        if attempt > 1:
+            _persist_text_artifact(consult_dir / "user_instruction_retry.txt", attempt_instruction)
+        logger.info(
+            f"bt_generator: invoking claude for consult={consultation_id} "
+            f"(attempt={attempt}/{WORKER_SCHEMA_MAX_ATTEMPTS}, "
+            f"timeout={timeout_s}s, budget=${max_budget_usd})"
         )
-        raise BTGenerationError(
-            f"BT JSON for {consultation_id} extraction failed: {e}; "
-            f"head: {raw_text[:300]}",
-            worker_raw_stdout_path=worker_raw_stdout_path,
-        ) from e
-    try:
-        bt = json.loads(inner_text)
-    except json.JSONDecodeError as e:
-        worker_raw_stdout_path = _persist_text_artifact(
-            consult_dir / WORKER_RAW_STDOUT_NAME,
-            raw_text,
-        )
-        raise BTGenerationError(
-            f"BT JSON for {consultation_id} parse failed: {e}; head: {inner_text[:300]}",
-            worker_raw_stdout_path=worker_raw_stdout_path,
-        ) from e
-
-    worker_raw_response_path = _persist_json_artifact(
-        consult_dir / WORKER_RAW_RESPONSE_NAME,
-        bt,
-    )
-
-    if isinstance(bt, dict) and isinstance(bt.get("tree"), list):
-        bt["tree"] = {"type": "sequence", "children": bt["tree"]}
-
-    # Correct the store-in-params defect before validation / send (live RCA).
-    _normalize_bt_nodes(bt.get("tree", bt))
-
-    _validate_bt(
-        bt,
-        consultation_id,
-        worker_raw_response_path=worker_raw_response_path,
-        worker_raw_stdout_path=worker_raw_stdout_path,
-    )
-    try:
-        validate_worker_bt_response(bt, platform=platform, screen_type=context["screen_type"])
-    except ScreenTypeAssemblerError as e:
-        # Observability (2026-06-13): persist the worker's exact BT on a
-        # conformance rejection so the failure is diagnosable. The raw output
-        # is otherwise lost — we could only infer why the worker's actions
-        # weren't recognized. No behavior change; written before the raise.
-        rejected_bt_path = consult_dir / "rejected_bt.json"
         try:
-            rejected_bt_path.write_text(
-                json.dumps(bt, indent=2, ensure_ascii=False), encoding="utf-8"
+            raw_text, meta = call_claude_cli(
+                system_prompt=system_prompt,
+                user_message=attempt_instruction,
+                screenshot_path=prompt_meta["screenshot_path"],
+                timeout_s=timeout_s,
+                max_budget_usd=max_budget_usd,
+                require_screenshot_read=True,
+                permission_mode="dontAsk",
+                tools=["Read"],
+                add_dirs=[prompt_meta["handoff_dir"]],
+                working_dir=prompt_meta["handoff_dir"],
             )
-        except Exception:
-            logger.exception("failed to persist rejected_bt.json (non-fatal)")
-        raise BTGenerationError(
-            f"BT recipe-conformance validation failed for {consultation_id}: {e}",
-            failure_kind="conformance_rejection",
-            rejected_bt_path=str(rejected_bt_path),
-            worker_raw_response_path=worker_raw_response_path,
-            worker_raw_stdout_path=worker_raw_stdout_path,
-        ) from e
+        except ClaudeCallError as e:
+            raise BTGenerationError(
+                f"Claude call failed for {consultation_id}: {e}"
+            ) from e
+
+        worker_raw_stdout_path = None
+        worker_raw_response_path = None
+        try:
+            inner_text = _extract_json_object(raw_text)
+        except ValueError as e:
+            worker_raw_stdout_path = _persist_text_artifact(
+                consult_dir / WORKER_RAW_STDOUT_NAME,
+                raw_text,
+            )
+            rejection = BTGenerationError(
+                f"BT JSON for {consultation_id} extraction failed: {e}; "
+                f"head: {raw_text[:300]}",
+                failure_kind="worker_output_schema_rejection",
+                worker_raw_stdout_path=worker_raw_stdout_path,
+            )
+        else:
+            try:
+                bt = json.loads(inner_text)
+            except json.JSONDecodeError as e:
+                worker_raw_stdout_path = _persist_text_artifact(
+                    consult_dir / WORKER_RAW_STDOUT_NAME,
+                    raw_text,
+                )
+                rejection = BTGenerationError(
+                    f"BT JSON for {consultation_id} parse failed: {e}; head: {inner_text[:300]}",
+                    failure_kind="worker_output_schema_rejection",
+                    worker_raw_stdout_path=worker_raw_stdout_path,
+                )
+            else:
+                worker_raw_response_path = _persist_json_artifact(
+                    consult_dir / WORKER_RAW_RESPONSE_NAME,
+                    bt,
+                )
+
+                if isinstance(bt, dict):
+                    if isinstance(bt.get("tree"), list):
+                        bt["tree"] = {"type": "sequence", "children": bt["tree"]}
+
+                    # Correct historical dialect variance only; new dialect repairs
+                    # must be schema-retried, not added to the normalizer.
+                    _normalize_bt_nodes(bt.get("tree", bt))
+
+                try:
+                    _validate_bt(
+                        bt,
+                        consultation_id,
+                        worker_raw_response_path=worker_raw_response_path,
+                        worker_raw_stdout_path=worker_raw_stdout_path,
+                    )
+                    validate_worker_bt_response(bt, platform=platform, screen_type=context["screen_type"])
+                except ScreenTypeAssemblerError as e:
+                    rejection = BTGenerationError(
+                        f"BT recipe-conformance validation failed for {consultation_id}: {e}",
+                        failure_kind="conformance_rejection",
+                        worker_raw_response_path=worker_raw_response_path,
+                        worker_raw_stdout_path=worker_raw_stdout_path,
+                        worker_output=bt,
+                    )
+                except BTGenerationError as e:
+                    rejection = e
+                else:
+                    break
+
+        last_rejection = str(rejection)
+        _persist_rejection_artifact(
+            consult_dir / f"worker_rejection_attempt{attempt}.json",
+            rejection,
+        )
+        if attempt < WORKER_SCHEMA_MAX_ATTEMPTS:
+            logger.warning(
+                "bt_generator: worker output rejected for %s attempt %d/%d: %s",
+                consultation_id,
+                attempt,
+                WORKER_SCHEMA_MAX_ATTEMPTS,
+                last_rejection,
+            )
+            continue
+        if not rejection.rejected_bt_path:
+            rejection.rejected_bt_path = _persist_rejection_artifact(
+                consult_dir / "rejected_bt.json",
+                rejection,
+            )
+        raise rejection
 
     # Screen session: absorb the worker's _session contribution (facts/plan/
     # lesson) so the NEXT cycle on this screen resumes with what this build
@@ -678,6 +841,7 @@ def generate_bt(
 
     logger.info(
         f"bt_generator: success for {consultation_id} in {meta['elapsed_wall_s']:.1f}s "
+        f"(schema_attempts={attempt}) "
         f"(turns={meta['num_turns']}, api-equivalent cost "
         f"${meta['total_cost_usd']:.3f}, "
         f"screen_type={bt.get('screen_type')}, root_type={bt['tree'].get('type')})"
