@@ -1,13 +1,13 @@
 """Mira-side runtime paths and config for taey-ed.
 
 Single source of truth for paths/ports/secrets so the server can be moved
-without grepping the codebase. All values are env-overridable; defaults are
-Mira-local (/home/user/...). The /var/spark/* paths from the original Spark
-deployment are deprecated and not referenced anywhere else in code.
+without grepping the codebase. Persistent data paths are env-owned; tools must
+fail loudly when the data root is not provided. The /var/spark/* paths from the
+original Spark deployment are deprecated and not referenced anywhere else in
+code.
 
 Env overrides:
-  TAEY_ED_DATA_DIR     persistent data root (required in production;
-                       default /home/user/taey-ed-data in dev)
+  TAEY_ED_DATA_DIR     persistent data root (required)
   TAEY_ED_SECRETS_PATH path to API secrets json (default /etc/taey-ed/secrets.json)
   TAEY_ED_PORT         server port (default 5003)
   TAEY_ED_HOST         server host used in self-referencing prompts (default 127.0.0.1)
@@ -17,18 +17,14 @@ import base64
 import os
 from pathlib import Path
 
-from spark.secrets_loader import is_production
-
 
 def _resolve_data_dir() -> Path:
     raw = os.environ.get("TAEY_ED_DATA_DIR")
     if raw:
         return Path(raw).expanduser()
-    if is_production():
-        raise RuntimeError(
-            "TAEY_ED_DATA_DIR is required in production; refusing to use an implicit runtime data root"
-        )
-    return Path("/home/user/taey-ed-data")
+    raise RuntimeError(
+        "TAEY_ED_DATA_DIR is required; refusing to use an implicit runtime data root"
+    )
 
 
 # Persistent server state (signatures, variant BTs, hash index, fingerprint log).

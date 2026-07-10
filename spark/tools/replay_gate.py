@@ -37,6 +37,7 @@ import argparse
 import copy
 import hashlib
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -306,6 +307,7 @@ def main() -> int:
     parser.add_argument("--contract-red-run-register", type=Path, default=DEFAULT_CONTRACT_RED_RUN_REGISTER)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
+    os.environ.setdefault("TAEY_ED_DATA_DIR", str(args.data_dir))
 
     findings: list[str] = []
     stats = {}

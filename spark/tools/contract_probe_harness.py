@@ -13,6 +13,9 @@ import contextlib
 import hashlib
 import io
 import json
+import os
+import subprocess
+import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable
@@ -24,8 +27,8 @@ PINNED_EXECUTOR_MANIFEST_HASH = (
 PINNED_EXECUTOR_MANIFEST_V2_SHA256 = (
     "3ffc6274ab27fa41ce51d036944a5e02ce07f36ab071265429e30c1675410d34"
 )
-PINNED_PROBE_MIN_COUNT = 20
-PINNED_PROBE_REGISTRY_HASH = "sha256:2eb4840ee50d494d485e8825fe3ac506f88871a2d626624baa142837435378ae"
+PINNED_PROBE_MIN_COUNT = 21
+PINNED_PROBE_REGISTRY_HASH = "sha256:072fe183fdf7a25decad21e790edabfe3e5ba00079ea076fdbf1ba759efae30d"
 DEFAULT_CONTRACT_RED_RUN_REGISTER = Path(__file__).with_name("contract_probe_red_runs.jsonl")
 
 # V2 names the select_dropdown_option surface as an 11-slot minimum; the live
@@ -201,6 +204,15 @@ PROBE_SPECS: tuple[ProbeSpec, ...] = (
         incident_ref="2026-07-10 executor manifest V2",
         red_fixture="dispatches/2026-07-10_executor_manifest_v2.md",
         description="V2 handler value domains are pinned; handler blackboard access is mediated by _tick_action.",
+    ),
+    ProbeSpec(
+        id="missed.paths_fail_loud_env",
+        group="codex-missed-contract",
+        check_name="paths_fail_loud_env",
+        current_mode="enforced",
+        incident_ref="supervisor audit 2026-07-10 env-free tools must not touch implicit data roots",
+        red_fixture="env -u TAEY_ED_DATA_DIR python -c 'import spark.tasks.paths'",
+        description="Path resolution fails loudly without TAEY_ED_DATA_DIR instead of silently using an operator-local default.",
     ),
     ProbeSpec(
         id="missed.recipe_ast_slot_schema",
@@ -809,6 +821,40 @@ def _check_handler_param_manifest_v2(ctx: ProbeContext) -> list[str]:
     return residues
 
 
+def _check_paths_fail_loud_env(ctx: ProbeContext) -> list[str]:
+    residues = _require_source(
+        ctx,
+        "spark/tasks/paths.py",
+        (
+            "TAEY_ED_DATA_DIR is required",
+            "refusing to use an implicit runtime data root",
+        ),
+    )
+    paths_source = _source(ctx, "spark/tasks/paths.py")
+    if "return Path(\"/home/user/taey-ed-data\")" in paths_source:
+        residues.append("paths.py still contains the implicit /home/user data-root fallback")
+
+    env = os.environ.copy()
+    env.pop("TAEY_ED_DATA_DIR", None)
+    env["PYTHONPATH"] = str(ctx.repo_root)
+    proc = subprocess.run(
+        [sys.executable, "-c", "import spark.tasks.paths"],
+        cwd=str(ctx.repo_root),
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+    combined = f"{proc.stdout}\n{proc.stderr}"
+    if proc.returncode == 0:
+        residues.append("env-free spark.tasks.paths import succeeded")
+    if "TAEY_ED_DATA_DIR" not in combined:
+        residues.append("env-free paths failure did not name TAEY_ED_DATA_DIR")
+    if "/home/user/taey-ed-data" in combined:
+        residues.append("env-free paths failure still references the implicit data root")
+    return residues
+
+
 def _check_recipe_ast_registered(ctx: ProbeContext) -> list[str]:
     return _require_source(
         ctx,
@@ -878,6 +924,7 @@ CHECKS: dict[str, Callable[[ProbeContext], list[str]]] = {
     "billing_contract_registered": _check_billing_contract_registered,
     "unknown_never_worker": _check_unknown_never_worker,
     "handler_param_manifest_v2": _check_handler_param_manifest_v2,
+    "paths_fail_loud_env": _check_paths_fail_loud_env,
     "recipe_ast_registered": _check_recipe_ast_registered,
     "per_type_solve_mode": _check_per_type_solve_mode,
     "dropdown_opts_gate_fresh_ref": _check_dropdown_opts_gate_fresh_ref,
