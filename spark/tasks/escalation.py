@@ -133,6 +133,8 @@ def classify_infra_failure(reason) -> Optional[str]:
     limits, missing binaries and schema typos climbed the ladder to a Tier-3
     Family fan-out before being held by hand."""
     r = str(reason or "")
+    if r.startswith("conformance_rejection:") or "BT recipe-conformance validation failed" in r:
+        return None
     if r.startswith("worker_fallback:"):
         return f"infra/worker_pipeline — {r[:160]}"
     return None
@@ -362,23 +364,33 @@ def build_packet(
 
     # Copy artifacts alongside the packet so it's a single-folder unit.
     # Primary source: the consult_path (worker-mode escalations have full
-    # consult dir with tree.json + screenshot.png + metadata.json).
+    # consult dir with tree.json + screenshot.png + metadata.json + optional
+    # rejected_bt.json from recipe-conformance failures).
     # Fallback source: the diag_state_dir (Step 4.5 → claude-primary
     # escalations have no consult_id; tree+screenshot are persisted to the
     # diag dir at escalation time — see next_action.py::_escalate_to_
     # claude_diagnosing 2026-05-19 bug fix).
     tree_dst = esc_dir / "tree.json"
     shot_dst = esc_dir / "screenshot.png"
+    rejected_bt_dst = esc_dir / "rejected_bt.json"
 
     def _try_copy(src_dir: Path):
         if (src_dir / "tree.json").exists() and not tree_dst.exists():
             shutil.copy2(src_dir / "tree.json", tree_dst)
         if (src_dir / "screenshot.png").exists() and not shot_dst.exists():
             shutil.copy2(src_dir / "screenshot.png", shot_dst)
+        if (src_dir / "rejected_bt.json").exists() and not rejected_bt_dst.exists():
+            shutil.copy2(src_dir / "rejected_bt.json", rejected_bt_dst)
 
     _try_copy(consult_path)
     if not tree_dst.exists() or not shot_dst.exists():
         _try_copy(diag_state_dir)
+
+    rejected_bt_line = (
+        f"- rejected_bt: `{rejected_bt_dst}`  (worker BT rejected by conformance)\n"
+        if rejected_bt_dst.exists()
+        else ""
+    )
 
     # Load tree for AX summary
     tree = {}
@@ -421,6 +433,7 @@ def build_packet(
 ## 2. Screen artifacts
 - screenshot: `{shot_dst}`  (attach to LLM prompt)
 - tree.json: `{tree_dst}`  (full AX tree, large file — excerpt below)
+{rejected_bt_line}
 
 ### AX summary
 

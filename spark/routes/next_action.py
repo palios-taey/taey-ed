@@ -331,6 +331,7 @@ def _escalate_to_claude_diagnosing(
                 screen_hash=_screen_hash,
                 retry_count=retries,
                 bt_debug_tail=bt_debug_tail,
+                reason=reason,
             )
             if dispatch_body:
                 # DEDUP (operator defect 2026-06-14): dispatch once per
@@ -1565,19 +1566,44 @@ def _next_action_impl(request: NextActionRequest):
                 _wf_reason = consult_status.get(
                     "_worker_failure_reason", "worker failed to generate BT"
                 )
+                _wf_kind = consult_status.get("_worker_failure_kind") or "worker_pipeline"
+                if (
+                    _wf_kind == "worker_pipeline"
+                    and "BT recipe-conformance validation failed" in str(_wf_reason)
+                ):
+                    _wf_kind = "conformance_rejection"
+                _cp = Path("/tmp/taey-ed-consult") / consultation_id
+                _failed_bt = lr.failed_bt if lr and lr.failed_bt else None
+                if _wf_kind == "conformance_rejection":
+                    _rbp = Path(
+                        consult_status.get("_rejected_bt_path")
+                        or (_cp / "rejected_bt.json")
+                    )
+                    try:
+                        if _rbp.exists():
+                            _failed_bt = json.loads(_rbp.read_text())
+                    except Exception:
+                        logger.exception("failed to load rejected_bt.json for conformance escalation")
+                _escalation_reason = (
+                    f"conformance_rejection: {_wf_reason}"
+                    if _wf_kind == "conformance_rejection"
+                    else f"worker_fallback: {_wf_reason}"
+                )
                 logger.error(
                     f"Step 1: worker_fallback for {consultation_id} — "
-                    f"routing through claude_diagnosing helper. reason={_wf_reason}"
+                    f"routing through claude_diagnosing helper. "
+                    f"kind={_wf_kind} reason={_wf_reason}"
                 )
                 # Route through the single canonical helper (escalate/notify).
                 _esc_result = _escalate_to_claude_diagnosing(
                     platform=platform,
                     tree=tree,
                     consultation_id=consultation_id,
-                    reason=f"worker_fallback: {_wf_reason}",
+                    reason=_escalation_reason,
                     screen_type_hint=consult_status.get("screen_type", "UNKNOWN"),
                     bt_debug_tail=(lr.bt_debug_tail or "") if lr else "",
-                    failed_bt=lr.failed_bt if lr and lr.failed_bt else None,
+                    failed_bt=_failed_bt,
+                    screenshot_b64=request.screenshot_b64,
                 )
                 # INVALIDATE the failed consult so the NEXT cycle mints a FRESH
                 # consult from the CURRENT YAML (operator defect 2026-06-14: a
@@ -1587,7 +1613,6 @@ def _next_action_impl(request: NextActionRequest):
                 # is done. Abandon it (+ remove its cached response) so Step 1's
                 # next read finds it abandoned -> re-matches -> fresh consult.
                 try:
-                    _cp = Path("/tmp/taey-ed-consult") / consultation_id
                     _mp = _cp / "metadata.json"
                     if _mp.exists():
                         _m = json.loads(_mp.read_text())

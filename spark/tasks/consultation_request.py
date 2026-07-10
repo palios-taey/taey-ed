@@ -449,6 +449,7 @@ def request_consultation(
                 screen_hash=screen_hash,
                 retry_count=retry_count,
                 bt_debug_tail=bt_debug_log,
+                reason=metadata.get("failure_reason"),
             )
             if dispatch_body:
                 from spark.tasks.paths import REVIEWS_DIR as _REVIEWS_DIR

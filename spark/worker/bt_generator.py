@@ -35,6 +35,17 @@ class BTGenerationError(RuntimeError):
     """Raised on any failure during BT generation: invocation, parsing,
     schema validation."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        failure_kind: str = "worker_pipeline",
+        rejected_bt_path: str | None = None,
+    ):
+        super().__init__(message)
+        self.failure_kind = failure_kind
+        self.rejected_bt_path = rejected_bt_path
+
 
 def _load_consult_context(consultation_id: str) -> tuple[dict, dict]:
     """Load tree + metadata from the consult dir."""
@@ -499,14 +510,17 @@ def generate_bt(
         # conformance rejection so the failure is diagnosable. The raw output
         # is otherwise lost — we could only infer why the worker's actions
         # weren't recognized. No behavior change; written before the raise.
+        rejected_bt_path = consult_dir / "rejected_bt.json"
         try:
-            (consult_dir / "rejected_bt.json").write_text(
+            rejected_bt_path.write_text(
                 json.dumps(bt, indent=2, ensure_ascii=False), encoding="utf-8"
             )
         except Exception:
             logger.exception("failed to persist rejected_bt.json (non-fatal)")
         raise BTGenerationError(
-            f"BT recipe-conformance validation failed for {consultation_id}: {e}"
+            f"BT recipe-conformance validation failed for {consultation_id}: {e}",
+            failure_kind="conformance_rejection",
+            rejected_bt_path=str(rejected_bt_path),
         ) from e
 
     # Screen session: absorb the worker's _session contribution (facts/plan/

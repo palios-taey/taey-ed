@@ -163,7 +163,13 @@ def _list_pending_classifications() -> list[str]:
     return pending
 
 
-def _write_user_input_needed_fallback(consultation_id: str, reason: str) -> None:
+def _write_user_input_needed_fallback(
+    consultation_id: str,
+    reason: str,
+    *,
+    failure_kind: str = "worker_pipeline",
+    rejected_bt_path: str | None = None,
+) -> None:
     """If generation fails, write a fallback response that surfaces back to
     the Mac as user_input_needed. Step 1 of /next_action checks the
     _worker_fallback flag and converts to a user_input_needed directive
@@ -174,30 +180,42 @@ def _write_user_input_needed_fallback(consultation_id: str, reason: str) -> None
     key — but the contract is: Step 1 must read `_worker_fallback` first.
     """
     consult_dir = CONSULT_DIR / consultation_id
+    meta_path = consult_dir / "metadata.json"
+    meta = {}
+    try:
+        meta = _read_metadata(meta_path)
+    except Exception:
+        pass
     fallback = {
         "tree": {
             "type": "action",
             "action": "wait",
             "params": {"seconds": 5.0},
         },
-        "screen_type": "UNKNOWN",
+        "screen_type": meta.get("screen_type_hint") or "UNKNOWN",
         "expected_next": [],
         "extract": None,
         "_worker_fallback": True,
         "_worker_failure_reason": reason,
+        "_worker_failure_kind": failure_kind,
     }
+    if rejected_bt_path:
+        fallback["_rejected_bt_path"] = rejected_bt_path
     atomic_write_json(consult_dir / "response.json", fallback)
-    meta_path = consult_dir / "metadata.json"
-    try:
-        meta = _read_metadata(meta_path)
+    if meta:
         meta["status"] = "worker_failed"
         meta["worker_failure_reason"] = reason
-        atomic_write_json(meta_path, meta)
-    except Exception:
-        pass
+        meta["worker_failure_kind"] = failure_kind
+        if rejected_bt_path:
+            meta["rejected_bt_path"] = rejected_bt_path
+        try:
+            atomic_write_json(meta_path, meta)
+        except Exception:
+            pass
     _mirror_worker_failed(consultation_id, reason, "write_user_input_needed_fallback")
     logger.error(
-        f"worker: wrote fallback for {consultation_id} (reason: {reason})"
+        f"worker: wrote fallback for {consultation_id} "
+        f"(kind={failure_kind}, reason: {reason})"
     )
 
 
@@ -230,7 +248,12 @@ def _process_one(consultation_id: str) -> None:
     try:
         bt = generate_bt(consultation_id, timeout_s=JOB_TIMEOUT_S)
     except BTGenerationError as e:
-        _write_user_input_needed_fallback(consultation_id, str(e))
+        _write_user_input_needed_fallback(
+            consultation_id,
+            str(e),
+            failure_kind=getattr(e, "failure_kind", "worker_pipeline"),
+            rejected_bt_path=getattr(e, "rejected_bt_path", None),
+        )
         return
     except Exception as e:
         _write_user_input_needed_fallback(consultation_id, f"unexpected: {e}")
