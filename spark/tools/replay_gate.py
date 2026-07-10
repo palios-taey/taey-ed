@@ -117,8 +117,13 @@ def _executor_shape_violations(node, path: str = "tree") -> list[str]:
         elif node_type == "action":
             if not isinstance(action, str) or not action:
                 violations.append(f"{path}: type='action' missing action")
-        elif node_type not in {"sequence", "fallback"} and action != node_type:
-            violations.append(f"{path}: type={node_type!r} action={action!r}")
+        elif node_type not in {"sequence", "fallback"}:
+            # Bundle tick_node truth (ccm 2026-07-10 verbatim): ANY type outside
+            # {sequence, fallback, action} is "Unknown node type" -> FAILURE on
+            # the Mac, regardless of the action key. The earlier action==type
+            # allowance encoded a wrong dispatcher belief and passed shapes the
+            # executor rejects.
+            violations.append(f"{path}: executor-unknown type={node_type!r} (action={action!r})")
         for index, child in enumerate(node.get("children") or []):
             violations.extend(_executor_shape_violations(child, f"{path}.children[{index}]"))
         for key in ("do", "then", "else"):

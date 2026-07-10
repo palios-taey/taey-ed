@@ -266,18 +266,22 @@ def _normalize_bt_nodes(node) -> None:
         # CANONICALIZE a MALFORMED for_each / conditional FIRST. These are
         # LOAD-BEARING composables (a click-loop over N runtime items cannot be
         # unrolled at build time, so unlike extract_question they can't be
-        # dropped). The worker sometimes emits them as an ACTION
-        # ({type:action, action:for_each}) or nests their structural keys under
-        # params: ({type:for_each, params:{items,variable,do}}). The Mac reads
-        # items/variable/do/condition/then/else at NODE level (Rule 6), but its
-        # dispatcher reaches these handlers through action=="for_each"/"conditional".
-        # Keep action=<type> on control nodes; type-only control nodes fail as
-        # action=None on the Mac. Run this BEFORE missing-type inference and
-        # action-param-nesting. (2026-06-15 for_each RCA; 2026-07-10 conditional RCA.)
+        # dropped). EXECUTOR TRUTH (bundle bt_core tick_node VERBATIM, ccm
+        # 2026-07-10): type is dispatched against EXACTLY {sequence, fallback,
+        # action} — any other type logs "Unknown node type" and returns FAILURE
+        # before action is ever read. _tick_action then routes
+        # action=="for_each"/"conditional" to the composable handlers, which
+        # read items/variable/do/condition/then/else at NODE level. So the ONE
+        # executor-native composable shape is {type:'action', action:<name>,
+        # <structural keys at node level>}. Serving type='conditional' burned
+        # the 2026-07-10 dropdown afternoon twice — first with no action key,
+        # then WITH action but type still ='conditional'. Run this BEFORE
+        # missing-type inference and action-param-nesting.
         if node.get("action") in ("for_each", "conditional"):
-            node["type"] = node["action"]
+            node["type"] = "action"
         if node.get("type") in ("for_each", "conditional"):
             node.setdefault("action", node["type"])
+            node["type"] = "action"
             _p = node.get("params")
             if isinstance(_p, dict):
                 for _k in ("items", "variable", "do", "condition", "then", "else"):
@@ -300,9 +304,11 @@ def _normalize_bt_nodes(node) -> None:
             if isinstance(node.get("action"), str):
                 node["type"] = "action"
             elif "condition" in node:
-                node["type"] = "conditional"
+                node["type"] = "action"
+                node.setdefault("action", "conditional")
             elif "items" in node or "variable" in node:
-                node["type"] = "for_each"
+                node["type"] = "action"
+                node.setdefault("action", "for_each")
             elif isinstance(node.get("children"), list):
                 node["type"] = "sequence"
         # Normalize action-as-node-type -> {type: action, action: X}. The Mac
