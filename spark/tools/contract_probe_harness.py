@@ -889,7 +889,10 @@ def _check_dropdown_opts_gate_fresh_ref(ctx: ProbeContext) -> list[str]:
             "condition: $opts_<i>",
             "discover_menu: {role: AXMenuItem, store: opts_<i>}",
             "find_all: {role: AXComboBox, store: popups_sel_<i>}",
-            "trigger_element: $popups_sel_<i>.<i>.element",
+            # element (not trigger_element): both are legal chain members per
+            # manifest v2; element is the PRODUCTION-VALIDATED form (2026-07-10
+            # 21:04:58 dropdown success). The fence pins the proven recipe text.
+            "element: $popups_sel_<i>.<i>.element",
             "select_dropdown_option:",
         ),
     )
