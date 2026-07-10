@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -38,6 +39,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 VALIDATED_SOURCES = {"r9_10_validated_success"}
+DEFAULT_EXPECTED_RED_REGISTER = Path(__file__).with_name("replay_expected_red.jsonl")
 
 
 def _load(path: Path):
@@ -97,7 +99,7 @@ def _iter_served_bts(corpus: Path):
         screen = lr.get("screen") or ""
         platform = body.get("platform") or "khan_academy"
         if isinstance(bt, dict) and screen:
-            yield dump.name, platform, screen, bt
+            yield f"raw_dumps/{dump.name}", platform, screen, bt
     for resp in sorted((corpus / "consults").glob("consult_*/response.json")):
         body = _load(resp)
         bt = body.get("tree") if isinstance(body.get("tree"), dict) else None
@@ -105,7 +107,7 @@ def _iter_served_bts(corpus: Path):
         screen = body.get("screen_type") or meta.get("screen_type_hint") or ""
         platform = meta.get("platform") or "khan_academy"
         if bt and screen:
-            yield f"{resp.parent.name}/response.json", platform, screen, bt
+            yield f"consults/{resp.parent.name}/response.json", platform, screen, bt
 
 
 def _executor_shape_violations(node, path: str = "tree") -> list[str]:
@@ -137,16 +139,75 @@ def _executor_shape_violations(node, path: str = "tree") -> list[str]:
     return violations
 
 
-def check_served(corpus: Path, findings: list, audit_dir: Path | None = None) -> dict:
+def _entry_hash(previous_hash: str, entry: dict) -> str:
+    encoded = json.dumps(
+        {"previous_entry_hash": previous_hash, "entry": entry},
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def _load_expected_red_register(path: Path, findings: list) -> dict[tuple[str, str], dict]:
+    entries: dict[tuple[str, str], dict] = {}
+    if not path.exists():
+        findings.append(f"REGISTER:{path}: expected-red register missing")
+        return entries
+    previous = "GENESIS"
+    for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError as exc:
+            findings.append(f"REGISTER:{path}:{lineno}: invalid JSONL: {exc}")
+            continue
+        entry = record.get("entry")
+        if not isinstance(entry, dict):
+            findings.append(f"REGISTER:{path}:{lineno}: entry must be an object")
+            continue
+        expected_previous = record.get("previous_entry_hash")
+        if expected_previous != previous:
+            findings.append(
+                f"REGISTER:{path}:{lineno}: previous_entry_hash {expected_previous!r} "
+                f"does not match chain head {previous!r}"
+            )
+        observed_hash = _entry_hash(previous, entry)
+        if record.get("entry_hash") != observed_hash:
+            findings.append(
+                f"REGISTER:{path}:{lineno}: entry_hash mismatch "
+                f"(observed {observed_hash})"
+            )
+        artifact_path = entry.get("artifact_path")
+        violation_hash_value = entry.get("violation_hash")
+        if not artifact_path or not violation_hash_value:
+            findings.append(f"REGISTER:{path}:{lineno}: artifact_path and violation_hash are required")
+        else:
+            key = (artifact_path, violation_hash_value)
+            if key in entries:
+                findings.append(f"REGISTER:{path}:{lineno}: duplicate expected-red key {key}")
+            entries[key] = entry
+        previous = record.get("entry_hash") or observed_hash
+    return entries
+
+
+def check_served(
+    corpus: Path,
+    findings: list,
+    audit_dir: Path | None = None,
+    expected_red: dict[tuple[str, str], dict] | None = None,
+) -> dict:
     from spark.tasks.screen_type_assembler import (
         ScreenTypeAssemblerError,
         validate_worker_bt_response,
     )
     from spark.tasks.screen_type_util import get_master_category
-    from spark.tasks.bt_lint import lint_bt, summarize_violations, write_lint_audit
+    from spark.tasks.bt_lint import lint_bt, summarize_violations, violation_hash, write_lint_audit
     from spark.worker.bt_generator import _normalize_bt_nodes
 
-    checked = skipped = executor_shape_violations = bt_lint_rejections = 0
+    expected_red = expected_red or {}
+    checked = skipped = executor_shape_violations = bt_lint_rejections = expected_red_rejections = 0
     for name, platform, screen, bt in _iter_served_bts(corpus):
         if get_master_category(screen) != "EXERCISE":
             skipped += 1
@@ -155,6 +216,7 @@ def check_served(corpus: Path, findings: list, audit_dir: Path | None = None) ->
         if not lint_result.ok:
             bt_lint_rejections += 1
             executor_shape_violations += len(lint_result.violations)
+            digest = violation_hash(lint_result)
             artifact = write_lint_audit(
                 result=lint_result,
                 tree=bt,
@@ -163,12 +225,18 @@ def check_served(corpus: Path, findings: list, audit_dir: Path | None = None) ->
                     "corpus_item": name,
                     "platform": platform,
                     "screen": screen,
+                    "violation_hash": digest,
+                    "expected_red": (name, digest) in expected_red,
                 },
                 audit_dir=audit_dir,
             )
+            if (name, digest) in expected_red:
+                expected_red_rejections += 1
+                continue
             findings.append(
                 f"B:{name}: bt_lint rejected production-served {screen} BT: "
-                f"{summarize_violations(lint_result)}; audit={artifact}"
+                f"{summarize_violations(lint_result)}; "
+                f"violation_hash={digest}; audit={artifact}"
             )
             continue
         parsed = {"screen_type": screen, "tree": copy.deepcopy(bt)}
@@ -195,6 +263,9 @@ def check_served(corpus: Path, findings: list, audit_dir: Path | None = None) ->
         "served_skipped": skipped,
         "executor_shape_violations": executor_shape_violations,
         "bt_lint_rejections": bt_lint_rejections,
+        "expected_red_rejections": expected_red_rejections,
+        "unregistered_bt_lint_rejections": bt_lint_rejections - expected_red_rejections,
+        "expected_red_register_entries": len(expected_red),
     }
 
 
@@ -226,13 +297,15 @@ def main() -> int:
     parser.add_argument("--corpus", type=Path, required=True)
     parser.add_argument("--data-dir", type=Path, required=True)
     parser.add_argument("--audit-dir", type=Path)
+    parser.add_argument("--expected-red-register", type=Path, default=DEFAULT_EXPECTED_RED_REGISTER)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
     findings: list[str] = []
     stats = {}
+    expected_red = _load_expected_red_register(args.expected_red_register, findings)
     stats.update(check_trees(args.corpus, args.data_dir, findings))
-    stats.update(check_served(args.corpus, findings, args.audit_dir))
+    stats.update(check_served(args.corpus, findings, args.audit_dir, expected_red))
     stats.update(check_store(args.data_dir, findings))
 
     green = not findings

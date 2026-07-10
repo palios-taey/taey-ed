@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -36,6 +38,7 @@ NODE_TYPE_SET = set(NODE_TYPES)
 COMPOSABLE_ACTION_SET = set(COMPOSABLE_ACTIONS)
 REGISTERED_ACTION_SET = set(REGISTERED_ACTIONS)
 ALL_ACTION_SET = set(ALL_ACTIONS)
+REF_RE = re.compile(r"^\$[A-Za-z_][A-Za-z0-9_]*(?:\.(?:[A-Za-z_][A-Za-z0-9_]*|\d+))*$")
 
 
 def lint_bt(tree: Any) -> LintResult:
@@ -56,6 +59,20 @@ def summarize_violations(result: LintResult, *, limit: int = 3) -> str:
     if len(result.violations) > limit:
         parts.append(f"... +{len(result.violations) - limit} more")
     return "; ".join(parts)
+
+
+def violation_hash(result: LintResult) -> str:
+    payload = {
+        "manifest_hash": result.manifest_hash,
+        "violations": [asdict(v) for v in result.violations],
+    }
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
 def write_lint_audit(
@@ -207,9 +224,7 @@ def _lint_refs(node: dict[str, Any], path: str, violations: list[LintViolation])
     for key in ("items", "condition"):
         value = node.get(key)
         if isinstance(value, str) and value.startswith("$") and not _valid_ref(value):
-            violations.append(
-                LintViolation("M8.4", f"{path}.{key}", f"invalid blackboard ref {value!r}")
-            )
+            violations.append(_invalid_ref(path=f"{path}.{key}", value=value))
     params = node.get("params")
     if isinstance(params, dict):
         _lint_param_refs(params, f"{path}.params", violations)
@@ -223,16 +238,22 @@ def _lint_param_refs(value: Any, path: str, violations: list[LintViolation]) -> 
         for index, child in enumerate(value):
             _lint_param_refs(child, f"{path}[{index}]", violations)
     elif isinstance(value, str) and value.startswith("$") and not _valid_ref(value):
-        violations.append(
-            LintViolation("M8.4", path, f"invalid blackboard ref {value!r}")
-        )
+        violations.append(_invalid_ref(path=path, value=value))
 
 
 def _valid_ref(value: str) -> bool:
-    if value == "$" or not value.startswith("$"):
-        return False
-    parts = value[1:].split(".")
-    return all(part and "$" not in part and not any(ch.isspace() for ch in part) for part in parts)
+    return bool(REF_RE.fullmatch(value))
+
+
+def _invalid_ref(*, path: str, value: str) -> LintViolation:
+    return LintViolation(
+        "M8.4",
+        path,
+        (
+            f"invalid blackboard ref {value!r}; manifest section 4 accepts one "
+            "$var(.field|.N)* reference, not interpolation or multiple refs"
+        ),
+    )
 
 
 def _lint_child_shapes(
